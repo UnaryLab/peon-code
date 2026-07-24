@@ -1,0 +1,12 @@
+# peon-code team: one agent per line, "name command... role".
+# The role is the last token and is required; use - for no role.
+# A bare role name reads roles/<name>.md next to peon-code.sh;
+# a role token with a / is a file path, relative to this config file.
+# Full-line # comments and blank lines are skipped. No inline comments.
+
+# name    command                   role
+boss      claude                    manager
+archie    claude                    reviewer
+impl      codex                     implementer
+scout     codex --model gpt-5-mini  researcher
+fast      claude                    -
