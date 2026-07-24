@@ -53,7 +53,7 @@ for i in "${!AGENTS[@]}"; do
   read -r -d '' BRIEF <<EOF || true
 You are ${AGENTS[$i]} in pane $i of $N (this pane is $SESSION:agents.$i), one of $N AI coding agents collaborating side-by-side in tmux session "$SESSION". The panes are:
 $ROSTER
-You should always monitor the other agents' messages for collaboration. To read another agent's latest output, run: tmux capture-pane -pt $SESSION:agents.<other-index> -S -100. To send another agent a message, run: tmux send-keys -t $SESSION:agents.<other-index> 'your message' && sleep 1 && tmux send-keys -t $SESSION:agents.<other-index> Enter. The Enter must be a separate send-keys after the sleep, or the receiver's TUI treats it as pasted text and never submits. Check the other panes before starting a task and after finishing one, coordinate to avoid duplicate or conflicting edits.
+To read another agent's latest output, run: tmux capture-pane -pt $SESSION:agents.<other-index> -S -100. To send another agent a message, run: tmux send-keys -t $SESSION:agents.<other-index> 'your message' && sleep 1 && tmux send-keys -t $SESSION:agents.<other-index> Enter. The Enter must be a separate send-keys after the sleep, or the receiver's TUI treats it as pasted text and never submits. Message another agent only when: (1) you start a task, to claim the files you will touch; (2) you finish a task, with a one-line summary; (3) you are blocked or detect a conflicting edit. Do not message for routine progress or individual file saves. Check the other panes at task start and task end only.
 EOF
   Q=$(printf %q "$BRIEF")
   # Map known CLIs to their interactive-session-with-initial-prompt syntax.
