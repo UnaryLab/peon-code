@@ -31,15 +31,8 @@ if tmux has-session -t "=$SESSION" 2>/dev/null; then
   goto_session
 fi
 
-# Roster line for every pane, shared by all briefs.
-ROSTER=""
-for i in "${!AGENTS[@]}"; do
-  ROSTER+="pane $SESSION:agents.$i runs ${AGENTS[$i]}"$'\n'
-done
-
 # First agent is the new-session window; the rest are split off it.
 tmux new-session -d -s "$SESSION" -n agents -c "$PWD"
-tmux set -t "$SESSION" pane-base-index 0
 for ((i = 1; i < N; i++)); do
   tmux split-window -t "$SESSION":agents -c "$PWD"
 done
@@ -49,11 +42,20 @@ else
   tmux select-layout -t "$SESSION":agents tiled
 fi
 
+# Stable pane IDs survive pane moves and layout changes, unlike indices.
+PANE_IDS=($(tmux list-panes -t "$SESSION:agents" -F '#{pane_id}'))
+
+# Roster line for every pane, shared by all briefs.
+ROSTER=""
+for i in "${!AGENTS[@]}"; do
+  ROSTER+="pane ${PANE_IDS[$i]} runs ${AGENTS[$i]}"$'\n'
+done
+
 for i in "${!AGENTS[@]}"; do
   read -r -d '' BRIEF <<EOF || true
-You are ${AGENTS[$i]} in pane $i of $N (this pane is $SESSION:agents.$i), one of $N AI coding agents collaborating side-by-side in tmux session "$SESSION". The panes are:
+You are ${AGENTS[$i]} in pane $i of $N (this pane is ${PANE_IDS[$i]}), one of $N AI coding agents collaborating side-by-side in tmux session "$SESSION". The panes are:
 $ROSTER
-To read another agent's latest output, run: tmux capture-pane -pt $SESSION:agents.<other-index> -S -100. To send another agent a message, run: tmux send-keys -t $SESSION:agents.<other-index> 'your message' && sleep 1 && tmux send-keys -t $SESSION:agents.<other-index> Enter. The Enter must be a separate send-keys after the sleep, or the receiver's TUI treats it as pasted text and never submits. Message another agent only when: (1) you start a task, to claim the files you will touch; (2) you finish a task, with a one-line summary; (3) you are blocked or detect a conflicting edit. Do not message for routine progress or individual file saves. Check the other panes at task start and task end only.
+To read another agent's latest output, run: tmux capture-pane -pt <other-pane-id> -S -100. To send another agent a message, run: tmux send-keys -t <other-pane-id> 'your message' && sleep 1 && tmux send-keys -t <other-pane-id> Enter. The Enter must be a separate send-keys after the sleep, or the receiver's TUI treats it as pasted text and never submits. Start every message you send with [from ${AGENTS[$i]} ${PANE_IDS[$i]}] so receivers know who sent it and can tell messages apart from scraped output. Avoid single quotes/apostrophes in messages, since the message is wrapped in single quotes in the send-keys command. Message another agent only when: (1) you start a task, to claim the files you will touch; (2) you finish a task, with a one-line summary; (3) you are blocked or detect a conflicting edit. Do not message for routine progress or individual file saves. Check the other panes at task start and task end only.
 EOF
   Q=$(printf %q "$BRIEF")
   # Map known CLIs to their interactive-session-with-initial-prompt syntax.
@@ -63,7 +65,7 @@ EOF
     gemini|qwen) LAUNCH="${AGENTS[$i]} -i $Q" ;;  # unverified on this machine
     *)           LAUNCH="${AGENTS[$i]} $Q" ;;     # claude, codex, anything else: positional prompt, stays interactive
   esac
-  tmux send-keys -t "$SESSION":agents."$i" "$LAUNCH" Enter
+  tmux send-keys -t "${PANE_IDS[$i]}" "$LAUNCH" Enter
 done
 
 goto_session
