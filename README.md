@@ -42,12 +42,12 @@ With no TTY on stdin (a headless caller such as a script or an agent running the
 One agent per line: `name command... role`. The first token is the name, the last is the role, everything between is the command. See [peon-code.conf.example](peon-code.conf.example).
 
 ```
-# name   command                                            role
-boss     claude --model claude-fable-5 --effort high        manager
-archie   claude --model claude-opus-5 --effort medium       reviewer
-impl     codex --model sol -c model_reasoning_effort=high   implementer
-scout    codex --model sol -c model_reasoning_effort=medium explorer
-weird    claude                                             ./my-roles/chaos.md
+# name   command                                                     role
+boss     claude --model claude-fable-5 --effort high                 manager
+archie   claude --model claude-opus-5 --effort medium                reviewer
+impl     codex --model gpt-5.6-sol -c model_reasoning_effort=high    implementer
+scout    codex --model gpt-5.6-sol -c model_reasoning_effort=medium  explorer
+weird    claude                                                      ./my-roles/chaos.md
 ```
 
 - Names must match `[A-Za-z0-9_-]+` and be unique.

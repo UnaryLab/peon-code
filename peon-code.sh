@@ -39,7 +39,7 @@ relative paths resolving against the config file's directory.
 Full-line # comments and blank lines are skipped.
 
   boss   claude               manager
-  impl   codex --model gpt-5  implementer
+  impl   codex --model gpt-5.6-sol  implementer
   fast   codex                -
   weird  claude               ./my-roles/chaos.md
 

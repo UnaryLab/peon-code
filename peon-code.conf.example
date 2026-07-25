@@ -4,8 +4,8 @@
 # a role token with a / is a file path, relative to this config file.
 # Full-line # comments and blank lines are skipped. No inline comments.
 
-# name    command                                            role
-boss      claude --model claude-fable-5 --effort high        manager
-archie    claude --model claude-opus-5 --effort medium       reviewer
-impl      codex --model sol -c model_reasoning_effort=high   implementer
-scout     codex --model sol -c model_reasoning_effort=medium explorer
+# name   command                                                     role
+boss     claude --model claude-fable-5 --effort high                 manager
+archie   claude --model claude-opus-5 --effort medium                reviewer
+impl     codex --model gpt-5.6-sol -c model_reasoning_effort=high    implementer
+scout    codex --model gpt-5.6-sol -c model_reasoning_effort=medium  explorer
