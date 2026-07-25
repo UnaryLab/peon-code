@@ -3,10 +3,12 @@
 # each launched with a prompt telling it to watch the other panes.
 # Usage:
 #   ./peon-code.sh [-c file] [<session>] [<cmd> ...]
-#   ./peon-code.sh quit
+#   ./peon-code.sh quit|kill
 #   ./peon-code.sh msg <name|all> 'text'
+#   ./peon-code.sh uninstall [bin-dir]
 #   ./peon-code.sh -h
-# Team resolution: CLI agent commands > config file > claude codex.
+# Team resolution: CLI agent commands > -c file > ./peon-code.conf >
+# ~/.config/peon-code/peon-code.conf > claude codex.
 # Known agents get the right "interactive session + initial prompt" launch:
 #   claude          launched bare, brief pasted in once its TUI is up
 #   codex           positional prompt, stays interactive (default passthrough)
@@ -22,16 +24,18 @@ TASK_BOARD=.peon-tasks.md
 usage() {
   cat <<'USAGE'
 peon-code.sh [-c file] [<session>] [<cmd> ...]  start or attach a team
-peon-code.sh quit                               kill the tmux server
+peon-code.sh quit (or kill)                     kill the tmux server
 peon-code.sh msg <name|all> 'text'              send text to an agent pane
 peon-code.sh uninstall [bin-dir]                remove the install.sh symlink
 peon-code.sh -h                                 this help
 
-  -c file   agent config file (default ./peon-code.conf if present)
+  -c file   agent config file (default ./peon-code.conf, then
+            ~/.config/peon-code/peon-code.conf, if present)
 
 Config file: one agent per line, "name command... role".
 The role is required; use - for no role. A bare role name reads
-<script dir>/roles/<name>.md; a role token with a / is a file path.
+<script dir>/roles/<name>.md; a role token with a / is a file path,
+relative paths resolving against the config file's directory.
 Full-line # comments and blank lines are skipped.
 
   boss   claude               manager
@@ -39,7 +43,8 @@ Full-line # comments and blank lines are skipped.
   fast   codex                -
   weird  claude               ./my-roles/chaos.md
 
-Team resolution: CLI agent commands > config file > claude codex.
+Team resolution: CLI agent commands > -c file > ./peon-code.conf >
+~/.config/peon-code/peon-code.conf > claude codex.
 USAGE
 }
 
@@ -60,16 +65,18 @@ while getopts ":c:h" opt; do
 done
 shift $((OPTIND - 1))
 
-# Pane titles carry the agent name; msg and the human pane borders read them.
-# Panes running a shell are skipped: pasted text there would run as commands.
+# The @peon_name pane option carries the agent name: unlike the pane title,
+# an app cannot overwrite it. Panes without it are not ours and are skipped,
+# as are panes running a shell: pasted text there would run as commands.
 list_agent_panes() {
-  local id cmd title
-  tmux list-panes -a -F '#{pane_id} #{pane_current_command} #{pane_title}' 2>/dev/null |
-    while read -r id cmd title; do
+  local id cmd name
+  tmux list-panes -a -F '#{pane_id} #{pane_current_command} #{@peon_name}' 2>/dev/null |
+    while read -r id cmd name; do
+      [ -n "$name" ] || continue
       case $cmd in
         sh|bash|zsh|fish|dash|ksh) continue ;;
       esac
-      echo "$id $title"
+      echo "$id $name"
     done
 }
 
@@ -139,20 +146,20 @@ cmd_quit() {
 }
 
 cmd_msg() {
-  local target=${1:-} text=${2:-} panes id title
+  local target=${1:-} text=${2:-} panes id name
   [ -n "$target" ] && [ -n "$text" ] || die "usage: peon-code.sh msg <name|all> 'text'"
   panes=$(list_agent_panes) || true
   [ -n "$panes" ] || die "no agent panes found"
   local ids=()
-  while read -r id title; do
-    if [ "$target" = all ] || [ "$target" = "$title" ]; then
+  while read -r id name; do
+    if [ "$target" = all ] || [ "$target" = "$name" ]; then
       ids+=("$id")
     fi
   done <<<"$panes"
   if [ ${#ids[@]} -eq 0 ]; then
     echo "peon-code: no pane named $target. Agent panes found:" >&2
-    while read -r id title; do
-      echo "  $title $id" >&2
+    while read -r id name; do
+      echo "  $name $id" >&2
     done <<<"$panes"
     exit 1
   fi
@@ -169,7 +176,7 @@ cmd_msg() {
 }
 
 case "${1:-}" in
-  quit) cmd_quit; exit 0 ;;
+  quit|kill) cmd_quit; exit 0 ;;
   msg)  shift; cmd_msg "$@"; exit 0 ;;
   uninstall)
     LINK="${2:-$HOME/.local/bin}/peon-code"
@@ -248,7 +255,11 @@ if [ $# -gt 0 ]; then
     ROLES+=("")
   done
 else
-  [ -n "$CONF" ] || CONF=$DEFAULT_CONF
+  # Resolution: ./peon-code.conf, then the user fallback, then claude codex.
+  if [ -z "$CONF" ]; then
+    CONF=$DEFAULT_CONF
+    [ -f "$CONF" ] || CONF="$HOME/.config/peon-code/peon-code.conf"
+  fi
   if [ -f "$CONF" ]; then
     read_conf "$CONF"
   elif [ "$CONF_GIVEN" -eq 1 ]; then
@@ -314,7 +325,8 @@ if [ ${#PANE_IDS[@]} -ne "$N" ]; then
 fi
 
 for i in "${!NAMES[@]}"; do
-  tmux select-pane -t "${PANE_IDS[$i]}" -T "${NAMES[$i]}"
+  tmux set -pt "${PANE_IDS[$i]}" @peon_name "${NAMES[$i]}"
+  tmux select-pane -t "${PANE_IDS[$i]}" -T "${NAMES[$i]}"  # border label only
   wait_shell_ready "${PANE_IDS[$i]}"
 done
 
