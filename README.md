@@ -60,7 +60,7 @@ Shipped roles: `manager`, `implementer`, `reviewer`, `explorer`.
 
 ## Task board
 
-The launcher creates `.peon-tasks.md` in the working directory if it is missing, a table of `who | task | files | status`. Agents record task claims and finishes there and read it before claiming files. Messages are alerts; the board is the record that lasts.
+The launcher creates `.peon-code-task.md` in the working directory if it is missing, a table of `who | task | files | status`. Agents record task claims and finishes there and read it before claiming files. Messages are alerts; the board is the record that lasts.
 
 ## Supported providers
 

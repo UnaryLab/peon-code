@@ -19,7 +19,7 @@ set -euo pipefail
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)
 DEFAULT_CONF=peon-code.conf
-TASK_BOARD=.peon-tasks.md
+TASK_BOARD=.peon-code-task.md
 
 usage() {
   cat <<'USAGE'
