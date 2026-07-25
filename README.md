@@ -1,5 +1,7 @@
 # peon-code
 
+## Overview
+
 A tmux session of side-by-side AI coding agent CLIs that watch and message each other's panes.
 
 ## Requirements
@@ -7,7 +9,7 @@ A tmux session of side-by-side AI coding agent CLIs that watch and message each 
 - tmux
 - At least one agent CLI installed (claude, codex, copilot, ...)
 
-## Install
+## Installation
 
 ```sh
 ./install.sh                    # symlink as peon-code into ~/.local/bin
@@ -16,7 +18,7 @@ peon-code uninstall [bin-dir]   # remove that symlink
 
 Optional: the script also runs in place as `./peon-code.sh`. `install.sh` seeds `~/.config/peon-code/peon-code.conf` from the example if it is missing.
 
-## Usage
+## Quick start
 
 ```sh
 ./peon-code.sh                              # session named after the current directory, team from ./peon-code.conf if present, else claude codex
@@ -25,7 +27,8 @@ Optional: the script also runs in place as `./peon-code.sh`. `install.sh` seeds 
 ./peon-code.sh <session> <cmd> [<cmd> ...]  # one pane per agent command, config ignored
 ./peon-code.sh lab claude codex claude      # 3-agent example
 ./peon-code.sh dismiss [<session>]          # kill one session, default the current directory name
-./peon-code.sh msg <name|all> 'text'        # send text to an agent pane
+./peon-code.sh msg <name|all> 'text' [<session>]  # send text to an agent pane of one session
+./peon-code.sh list                         # agent panes of every session
 ./peon-code.sh -h                           # help
 ```
 
@@ -35,7 +38,9 @@ The session sets `set-titles` for itself, so the terminal tab caption is `<sessi
 
 With no TTY on stdin (a headless caller such as a script or an agent running the launcher), the session is still built, but instead of attaching the launcher prints the session name and the `tmux attach -t <session>` command and exits 0.
 
-## Detach and reattach
+If any agent command does not start, the launcher kills the new session, names the failed agents, and exits nonzero.
+
+### Detach and reattach
 
 Detaching is plain tmux: press `Ctrl-b d`, the default detach binding. The agents keep running in the background.
 
@@ -45,9 +50,22 @@ Detaching leaves the session alive. Use `dismiss` to actually stop it.
 
 `dismiss` kills one session: the name given, else the current directory name, matched exactly. Other sessions and the tmux server keep running. With no such session it says so and exits 0.
 
-`msg` sends text to the named agent's pane, or to every agent pane with `all`, prefixed `[from user]`. Names live in the `@peon_name` pane option, which apps cannot overwrite; the pane title only labels the border. An unknown name aborts and prints the panes it found.
+peon-code marks each session it creates and refuses to attach, message, or dismiss an unmarked session with the same name.
 
-## Config file
+`msg` sends text to the named agent's pane, or to every agent pane with `all`, prefixed `[from user]`. It reaches one session: the name given as the third argument, else the current directory name. Teams share agent names, so this keeps `msg boss` from interrupting every team on the tmux server. Names live in the `@peon_name` pane option, which apps cannot overwrite; the pane title only labels the border. An unknown name aborts and prints the panes that session has.
+
+`list` prints every agent pane on the server as `SESSION AGENT PANE STATUS`, so a session can be found without remembering the directory it was launched from. A pane back at a shell is reported as `gone`: its agent exited.
+
+## Reproducing results
+
+```sh
+shellcheck -x peon-code.sh install.sh tests/test_peon_code.sh
+tests/test_peon_code.sh
+```
+
+## Configuration
+
+### Config file
 
 One agent per line: `name command... role`. The first token is the name, the last is the role, everything between is the command. See [peon-code.conf.example](peon-code.conf.example).
 
@@ -68,11 +86,13 @@ weird    claude                                                      ./my-roles/
 
 Shipped roles: `manager`, `implementer`, `reviewer`, `explorer`.
 
-## Task board
+### Task board
 
-The launcher creates `.peon-code-task.md` in the working directory if it is missing, a table of `who | task | files | status`. Agents record task claims and finishes there and read it before claiming files. Messages are alerts; the board is the record that lasts.
+The launcher creates `.peon-code-task.md` in the working directory if it is missing and at least one agent has a role, a table of `who | task | files | status`. Agents record task claims and finishes there and read it before claiming files. Messages are alerts; the board is the record that lasts.
 
-## Supported providers
+A team without roles (agent commands on the command line, or a config of all `-` roles) leaves no file behind; its agents create the board themselves if they need it.
+
+### Supported providers
 
 | Provider | How it launches |
 |----------|-----------------|
@@ -82,13 +102,21 @@ The launcher creates `.peon-code-task.md` in the working directory if it is miss
 | gemini, qwen | `-i <prompt>` (unverified on this machine) |
 | anything else | passed through as-is |
 
-## How messaging works
+Every brief is written to a file under `$TMPDIR`, and the pane launches with `<cmd> "$(cat <file>)"`, so the command line stays one line instead of thousands of escaped characters.
+
+A claude pane gets its brief only once its input line is drawn and the pane has stopped changing. A menu such as the folder-trust dialog counts as unsettled, so the launcher never types into it: it waits up to 30 seconds for the dialog to be answered, then prints the pane's brief file for you to paste yourself.
+
+### How messaging works
 
 Each agent reads another pane with `tmux capture-pane` and messages it with `tmux send-keys`. The message text is sent first, then after a 1-second sleep the `Enter` is sent as a separate `send-keys` call. The Enter must be separate: a same-call trailing Enter is treated by the receiver's TUI as pasted text and never submits.
 
-## Environment
+### Environment
 
 The tmux server captures its environment when it first starts. An agent that cannot see an environment variable you exported later is reading the older environment: run `tmux kill-server` and launch again. `dismiss` only kills one session, so the server keeps its old environment.
+
+## Citation
+
+No formal citation is provided. Link to the [peon-code repository](https://github.com/UnaryLab/peon-code) when referring to this project.
 
 ## License
 

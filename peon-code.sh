@@ -4,7 +4,8 @@
 # Usage:
 #   ./peon-code.sh [-c file] [<session>] [<cmd> ...]
 #   ./peon-code.sh dismiss [<session>]
-#   ./peon-code.sh msg <name|all> 'text'
+#   ./peon-code.sh msg <name|all> 'text' [<session>]
+#   ./peon-code.sh list
 #   ./peon-code.sh uninstall [bin-dir]
 #   ./peon-code.sh -h
 # Team resolution: CLI agent commands > -c file > ./peon-code.conf >
@@ -27,7 +28,9 @@ peon-code.sh [-c file] [<session>] [<cmd> ...]  start or attach a team
                                                 (session defaults to the current directory name)
 peon-code.sh dismiss [<session>]                kill one session
                                                 (session defaults to the current directory name)
-peon-code.sh msg <name|all> 'text'              send text to an agent pane
+peon-code.sh msg <name|all> 'text' [<session>]  send text to an agent pane
+                                                (session defaults to the current directory name)
+peon-code.sh list                               agent panes of every session
 peon-code.sh uninstall [bin-dir]                remove the install.sh symlink
 peon-code.sh -h                                 this help
 
@@ -55,6 +58,11 @@ die() {
   exit 1
 }
 
+# shellcheck source=lib/tmux.sh
+source "$SCRIPT_DIR/lib/tmux.sh"
+# shellcheck source=lib/config.sh
+source "$SCRIPT_DIR/lib/config.sh"
+
 CONF=""
 CONF_GIVEN=0
 while getopts ":c:h" opt; do
@@ -67,121 +75,10 @@ while getopts ":c:h" opt; do
 done
 shift $((OPTIND - 1))
 
-# The @peon_name pane option carries the agent name: unlike the pane title,
-# an app cannot overwrite it. Panes without it are not ours and are skipped,
-# as are panes running a shell: pasted text there would run as commands.
-list_agent_panes() {
-  local id cmd name
-  tmux list-panes -a -F '#{pane_id} #{pane_current_command} #{@peon_name}' 2>/dev/null |
-    while read -r id cmd name; do
-      [ -n "$name" ] || continue
-      case $cmd in
-        sh|bash|zsh|fish|dash|ksh) continue ;;
-      esac
-      echo "$id $name"
-    done
-}
-
-# Paste stdin into a pane, then press Enter as a separate call. Bracketed
-# paste keeps a multi-line block in the input line instead of submitting it
-# early; long lines sent with send-keys are cut at the tty line limit.
-paste_to_pane() {
-  local pane=$1
-  tmux load-buffer -
-  tmux paste-buffer -dpt "$pane"
-  sleep 1
-  tmux send-keys -t "$pane" Enter
-}
-
-# Wait until a pane's shell has started: it reports a shell, or has drawn
-# something. Bounded, so a pane that never reports still lets the run finish.
-wait_shell_ready() {
-  local pane=$1 i cur out
-  for ((i = 0; i < 50; i++)); do
-    cur=$(tmux display -pt "$pane" '#{pane_current_command}' 2>/dev/null) || cur=""
-    case $cur in
-      sh|bash|zsh|fish|dash|ksh) return 0 ;;
-    esac
-    out=$(tmux capture-pane -pt "$pane" 2>/dev/null) || out=""
-    [ -n "${out//[[:space:]]/}" ] && return 0
-    sleep 0.2
-  done
-}
-
-# Wait until the agent CLI has replaced the shell in a pane.
-wait_agent_ready() {
-  local pane=$1 i cur
-  for ((i = 0; i < 100; i++)); do
-    cur=$(tmux display -pt "$pane" '#{pane_current_command}' 2>/dev/null) || cur=""
-    case $cur in
-      sh|bash|zsh|fish|dash|ksh|"") sleep 0.2 ;;
-      *) return 0 ;;
-    esac
-  done
-}
-
-# Wait until the claude prompt line is drawn and the pane has stopped
-# changing: a capture holds a line starting with the prompt marker and
-# matches the capture 0.3s before.
-# ponytail: the 30s ceiling ends the wait when a spinner keeps redrawing or
-# the prompt never shows, as on a trust dialog.
-wait_pane_settled() {
-  local pane=$1 i prev="" cur
-  for ((i = 0; i < 100; i++)); do
-    cur=$(tmux capture-pane -pt "$pane" 2>/dev/null) || cur=""
-    if [[ $cur == *❯* ]] && [ "$cur" = "$prev" ]; then
-      return 0
-    fi
-    prev=$cur
-    sleep 0.3
-  done
-}
-
-cmd_dismiss() {
-  local session=${1:-${PWD##*/}}
-  session=${session:-peon-code}
-  session=${session//[.:]/_}
-  if ! tmux has-session -t "=$session" 2>/dev/null; then
-    echo "peon-code: no session $session"
-    exit 0
-  fi
-  echo "peon-code: killing session $session"
-  tmux kill-session -t "=$session"
-}
-
-cmd_msg() {
-  local target=${1:-} text=${2:-} panes id name
-  [ -n "$target" ] && [ -n "$text" ] || die "usage: peon-code.sh msg <name|all> 'text'"
-  panes=$(list_agent_panes) || true
-  [ -n "$panes" ] || die "no agent panes found"
-  local ids=()
-  while read -r id name; do
-    if [ "$target" = all ] || [ "$target" = "$name" ]; then
-      ids+=("$id")
-    fi
-  done <<<"$panes"
-  if [ ${#ids[@]} -eq 0 ]; then
-    echo "peon-code: no pane named $target. Agent panes found:" >&2
-    while read -r id name; do
-      echo "  $name $id" >&2
-    done <<<"$panes"
-    exit 1
-  fi
-  printf '%s' "[from user] $text" | tmux load-buffer -b peon-msg -
-  for id in "${ids[@]}"; do
-    tmux paste-buffer -b peon-msg -t "$id" -p
-  done
-  sleep 1
-  for id in "${ids[@]}"; do
-    tmux send-keys -t "$id" Enter
-  done
-  tmux delete-buffer -b peon-msg
-  echo "peon-code: sent to ${#ids[@]} pane(s)"
-}
-
 case "${1:-}" in
   dismiss) shift; cmd_dismiss "$@"; exit 0 ;;
   msg)  shift; cmd_msg "$@"; exit 0 ;;
+  list) [ $# -eq 1 ] || die "list takes no arguments"; cmd_list; exit 0 ;;
   uninstall)
     LINK="${2:-$HOME/.local/bin}/peon-code"
     if [ -L "$LINK" ] && [ "$(readlink "$LINK")" = "$SCRIPT_DIR/peon-code.sh" ]; then
@@ -195,109 +92,23 @@ case "${1:-}" in
     exit 0 ;;
 esac
 
-NAMES=()
-CMDS=()
-ROLES=()  # resolved role file path, empty for no role
-
-# Role token: - is none, a token with / is a path (relative to the config
-# file's directory), a bare name is <script dir>/roles/<name>.md.
-resolve_role() {
-  local role=$1 conf_dir=$2
-  case $role in
-    -)   echo "" ;;
-    /*)  echo "$role" ;;
-    */*) echo "$conf_dir/$role" ;;
-    *)   echo "$SCRIPT_DIR/roles/$role.md" ;;
-  esac
-}
-
-role_label() {
-  local path=$1 base
-  [ -n "$path" ] || { echo "none"; return; }
-  base=${path##*/}
-  echo "${base%.md}"
-}
-
-read_conf() {
-  local conf=$1 conf_dir line lineno=0 n name cmd role path known
-  conf_dir=$(cd -- "$(dirname -- "$conf")" && pwd)
-  while IFS= read -r line || [ -n "$line" ]; do
-    lineno=$((lineno + 1))
-    [[ $line =~ ^[[:space:]]*(#|$) ]] && continue
-    local tokens=()
-    read -ra tokens <<<"$line"
-    n=${#tokens[@]}
-    [ "$n" -ge 3 ] || die "$conf line $lineno: need name, command, and role (got $n): $line"
-    name=${tokens[0]}
-    role=${tokens[$((n - 1))]}
-    cmd="${tokens[*]:1:$((n - 2))}"
-    [[ $name =~ ^[A-Za-z0-9_-]+$ ]] || die "$conf line $lineno: name \"$name\" must be letters, digits, _ or -"
-    for known in ${NAMES[@]+"${NAMES[@]}"}; do
-      if [ "$known" = "$name" ]; then
-        die "$conf line $lineno: name \"$name\" is used twice"
-      fi
-    done
-    path=$(resolve_role "$role" "$conf_dir")
-    [ -z "$path" ] || [ -f "$path" ] || die "$conf line $lineno: role file not found: $path"
-    NAMES+=("$name")
-    CMDS+=("$cmd")
-    ROLES+=("$path")
-  done <"$conf"
-  [ ${#NAMES[@]} -gt 0 ] || die "$conf has no agents"
-}
-
-SESSION=${1:-${PWD##*/}}       # default session name: current directory
-SESSION=${SESSION:-peon-code}  # PWD is /
+SESSION=$(session_name "${1:-}")  # default session name: current directory
 [ $# -gt 0 ] && shift
-if [ $# -gt 0 ]; then
-  # CLI agent commands win; the name is the command string, no role.
-  for arg in "$@"; do
-    case $arg in
-      -*) die "agent command \"$arg\" starts with -; put options before the session name" ;;
-    esac
-    NAMES+=("$arg")
-    CMDS+=("$arg")
-    ROLES+=("")
-  done
-else
-  # Resolution: ./peon-code.conf, then the user fallback, then claude codex.
-  if [ -z "$CONF" ]; then
-    CONF=$DEFAULT_CONF
-    [ -f "$CONF" ] || CONF="$HOME/.config/peon-code/peon-code.conf"
-  fi
-  if [ -f "$CONF" ]; then
-    read_conf "$CONF"
-  elif [ "$CONF_GIVEN" -eq 1 ]; then
-    die "config file not found: $CONF"
-  else
-    for arg in claude codex; do
-      NAMES+=("$arg")
-      CMDS+=("$arg")
-      ROLES+=("")
-    done
-  fi
-fi
-
-SESSION=${SESSION//[.:]/_}  # tmux rewrites . and : in session names
+load_team "$@"
 N=${#NAMES[@]}
 
-goto_session() {
-  # No TTY means a headless caller: build the session, print how to reach it.
-  if [ ! -t 0 ]; then
-    echo "peon-code: session $SESSION is ready. Attach with: tmux attach -t $SESSION"
-    exit 0
-  fi
-  if [ -n "${TMUX:-}" ]; then
-    exec tmux switch-client -t "=$SESSION"
-  fi
-  exec tmux attach -t "=$SESSION"
-}
-
 if tmux has-session -t "=$SESSION" 2>/dev/null; then
-  goto_session
+  is_peon_session "$SESSION" || die "session $SESSION already exists and was not created by peon-code"
+  goto_session "$SESSION"
 fi
 
-if [ ! -f "$TASK_BOARD" ]; then
+# Only a team with roles gets a board seeded; a throwaway CLI team would
+# leave an untracked file behind in a directory that never coordinates.
+HAS_ROLES=0
+for role_path in ${ROLES[@]+"${ROLES[@]}"}; do
+  [ -n "$role_path" ] && HAS_ROLES=1
+done
+if [ "$HAS_ROLES" -eq 1 ] && [ ! -f "$TASK_BOARD" ]; then
   cat >"$TASK_BOARD" <<'BOARD'
 # task board
 
@@ -306,37 +117,19 @@ if [ ! -f "$TASK_BOARD" ]; then
 BOARD
 fi
 
-# First agent is the new-session window; the rest are split off it.
-# Retile after each split so large teams do not hit "pane too small".
-tmux new-session -d -s "$SESSION" -n agents -c "$PWD"
-# Session-scoped, so the terminal tab caption is set only here.
-tmux set -t "$SESSION" set-titles on
-tmux set -t "$SESSION" set-titles-string '#S : #{b:pane_current_path}'
-for ((i = 1; i < N; i++)); do
-  tmux split-window -t "$SESSION":agents -c "$PWD"
-  tmux select-layout -t "$SESSION":agents tiled >/dev/null
-done
-if [ "$N" -eq 2 ]; then
-  tmux select-layout -t "$SESSION":agents even-horizontal >/dev/null
-fi
-
-# Stable pane IDs survive pane moves and layout changes, unlike indices.
-PANE_IDS=()
-while read -r pane_id; do
-  PANE_IDS+=("$pane_id")
-done < <(tmux list-panes -t "$SESSION:agents" -F '#{pane_id}')
-
-# A failed split leaves a half-built session; drop the one this run made.
-if [ ${#PANE_IDS[@]} -ne "$N" ]; then
-  tmux kill-session -t "=$SESSION"
-  die "made ${#PANE_IDS[@]} panes for $N agents; killed session $SESSION"
-fi
-
+create_agent_session "$SESSION" "$N"
+FAILED_AGENTS=()
 for i in "${!NAMES[@]}"; do
   tmux set -pt "${PANE_IDS[$i]}" @peon_name "${NAMES[$i]}"
   tmux select-pane -t "${PANE_IDS[$i]}" -T "${NAMES[$i]}"  # border label only
   wait_shell_ready "${PANE_IDS[$i]}"
 done
+
+# Briefs go to files: pasting one on a shell command line would fill the
+# pane with thousands of escaped characters before the agent even starts.
+# ponytail: the directory is left for the OS to clear, since the launcher
+# ends in exec and the panes read the files after it is gone.
+BRIEF_DIR=$(mktemp -d "${TMPDIR:-/tmp}/peon-code.XXXXXX")
 
 # Roster line for every pane, shared by all briefs.
 ROSTER=""
@@ -359,7 +152,7 @@ $ROSTER
 $ROLE_SECTION
 To read another agent's latest output, run: tmux capture-pane -pt <other-pane-id> -S -100. To send another agent a message, run: tmux send-keys -t <other-pane-id> -l -- 'your message' && sleep 1 && tmux send-keys -t <other-pane-id> Enter. The Enter must be a separate send-keys after the sleep, or the receiver's TUI treats it as pasted text and never submits. Start every message you send with [from ${NAMES[$i]} ${PANE_IDS[$i]}] so receivers know who sent it and can tell messages apart from scraped output. Avoid single quotes/apostrophes in messages, since the message is wrapped in single quotes in the send-keys command. Message another agent only when: (1) you start a task, to claim the files you will touch; (2) you finish a task, with a one-line summary; (3) you are blocked or detect a conflicting edit. Do not message for routine progress or individual file saves. Check the other panes at task start and task end only.
 
-The task board is $TASK_BOARD in the working directory, a table of who | task | files | status. Record your task claims and finishes there, and read it before claiming files someone else already listed. Messages are alerts; the board is the record that lasts.
+The task board is $TASK_BOARD in the working directory, a table of who | task | files | status; create it with that header row if it is not there. Record your task claims and finishes there, and read it before claiming files someone else already listed. Messages are alerts; the board is the record that lasts.
 
 Rules:
 1. Task intake: the user assigns work by typing into the manager pane (pane 0 if the team has no manager). That agent splits the work onto the task board and assigns it; every other agent waits for a board entry or a message instead of inventing work at launch. The agent that split the work posts the final summary to the user.
@@ -370,7 +163,10 @@ Rules:
 6. No idle deadlocks: if you are blocked, message once, work on something else, then re-check once. After that, proceed on your best judgment or tell the user.
 7. Rate limits: if you hit a usage limit, note it and the reset time on the task board so the others can reassign the work.
 EOF
-  Q=$(printf %q "$BRIEF")
+  BRIEF_FILE="$BRIEF_DIR/$i.md"  # by index: a CLI-team name is the command, which can hold / or repeat
+  printf '%s' "$BRIEF" >"$BRIEF_FILE"
+  # The pane reads the brief from the file, so the command line stays one line.
+  Q="\"\$(cat $(printf %q "$BRIEF_FILE"))\""
   # Map known CLIs to their interactive-session-with-initial-prompt syntax.
   # First token is the binary; trailing user args are preserved before the flag.
   case "${CMDS[$i]%% *}" in
@@ -380,11 +176,24 @@ EOF
     *)           LAUNCH="${CMDS[$i]} $Q" ;;     # codex, anything else: positional prompt, stays interactive
   esac
   printf '%s' "$LAUNCH" | paste_to_pane "${PANE_IDS[$i]}"
+  if ! wait_agent_ready "${PANE_IDS[$i]}"; then
+    FAILED_AGENTS+=("${NAMES[$i]}")
+    continue
+  fi
   if [ "${CMDS[$i]%% *}" = claude ]; then
-    wait_agent_ready "${PANE_IDS[$i]}"
-    wait_pane_settled "${PANE_IDS[$i]}"  # let the TUI finish drawing before it takes input
-    printf '%s' "$BRIEF" | paste_to_pane "${PANE_IDS[$i]}"
+    # An unsettled pane is showing a dialog or still starting; pasting there
+    # would answer the dialog blindly, which the brief tells agents never to do.
+    if wait_pane_settled "${PANE_IDS[$i]}"; then
+      printf '%s' "$BRIEF" | paste_to_pane "${PANE_IDS[$i]}"
+    else
+      echo "peon-code: ${NAMES[$i]} is still on a dialog or starting up. Answer it, then paste the brief: $BRIEF_FILE" >&2
+    fi
   fi
 done
 
-goto_session
+if [ ${#FAILED_AGENTS[@]} -gt 0 ]; then
+  tmux kill-session -t "=$SESSION"
+  die "agents failed to start; killed session $SESSION: ${FAILED_AGENTS[*]}"
+fi
+
+goto_session "$SESSION"

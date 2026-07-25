@@ -6,10 +6,19 @@ set -euo pipefail
 
 BIN_DIR=${1:-"$HOME/.local/bin"}
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+LINK="$BIN_DIR/peon-code"
 
 mkdir -p "$BIN_DIR"
-ln -sf "$SCRIPT_DIR/peon-code.sh" "$BIN_DIR/peon-code"
-echo "installed: $BIN_DIR/peon-code -> $SCRIPT_DIR/peon-code.sh"
+if [ -L "$LINK" ]; then
+  [ "$(readlink "$LINK")" = "$SCRIPT_DIR/peon-code.sh" ] ||
+    { echo "not replacing $LINK: it points to $(readlink "$LINK")" >&2; exit 1; }
+elif [ -e "$LINK" ]; then
+  echo "not replacing $LINK: it already exists" >&2
+  exit 1
+else
+  ln -s "$SCRIPT_DIR/peon-code.sh" "$LINK"
+fi
+echo "installed: $LINK -> $SCRIPT_DIR/peon-code.sh"
 
 # Seed the fallback config, used when a directory has no ./peon-code.conf.
 FALLBACK_CONF="$HOME/.config/peon-code/peon-code.conf"
