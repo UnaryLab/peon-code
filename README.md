@@ -35,6 +35,14 @@ The session sets `set-titles` for itself, so the terminal tab caption is `<sessi
 
 With no TTY on stdin (a headless caller such as a script or an agent running the launcher), the session is still built, but instead of attaching the launcher prints the session name and the `tmux attach -t <session>` command and exits 0.
 
+## Detach and reattach
+
+Detaching is plain tmux: press `Ctrl-b d`, the default detach binding. The agents keep running in the background.
+
+To come back, run the launcher again from the same directory (or with the same session name): an existing session is attached instead of rebuilt. From inside another tmux session it switches the client rather than nesting. `tmux attach -t <session>` works too.
+
+Detaching leaves the session alive. Use `dismiss` to actually stop it.
+
 `dismiss` kills one session: the name given, else the current directory name, matched exactly. Other sessions and the tmux server keep running. With no such session it says so and exits 0.
 
 `msg` sends text to the named agent's pane, or to every agent pane with `all`, prefixed `[from user]`. Names live in the `@peon_name` pane option, which apps cannot overwrite; the pane title only labels the border. An unknown name aborts and prints the panes it found.
