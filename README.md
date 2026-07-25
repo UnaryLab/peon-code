@@ -16,7 +16,9 @@ A tmux session of side-by-side AI coding agent CLIs that watch and message each 
 peon-code uninstall [bin-dir]   # remove that symlink
 ```
 
-Optional: the script also runs in place as `./peon-code.sh`. `install.sh` seeds `~/.config/peon-code/peon-code.conf` from the example if it is missing.
+After installation, run `peon-code` from any directory.
+
+`install.sh` seeds `~/.config/peon-code/peon-code.conf` from the example if it is missing.
 
 ## Quick start
 
