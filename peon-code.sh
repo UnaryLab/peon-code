@@ -3,7 +3,7 @@
 # each launched with a prompt telling it to watch the other panes.
 # Usage:
 #   ./peon-code.sh [-c file] [<session>] [<cmd> ...]
-#   ./peon-code.sh dismiss
+#   ./peon-code.sh dismiss [<session>]
 #   ./peon-code.sh msg <name|all> 'text'
 #   ./peon-code.sh uninstall [bin-dir]
 #   ./peon-code.sh -h
@@ -25,7 +25,8 @@ usage() {
   cat <<'USAGE'
 peon-code.sh [-c file] [<session>] [<cmd> ...]  start or attach a team
                                                 (session defaults to the current directory name)
-peon-code.sh dismiss                            kill the tmux server
+peon-code.sh dismiss [<session>]                kill one session
+                                                (session defaults to the current directory name)
 peon-code.sh msg <name|all> 'text'              send text to an agent pane
 peon-code.sh uninstall [bin-dir]                remove the install.sh symlink
 peon-code.sh -h                                 this help
@@ -137,13 +138,15 @@ wait_pane_settled() {
 }
 
 cmd_dismiss() {
-  local sessions
-  if ! sessions=$(tmux list-sessions -F '#{session_name}' 2>/dev/null); then
-    echo "peon-code: no tmux server running"
+  local session=${1:-${PWD##*/}}
+  session=${session:-peon-code}
+  session=${session//[.:]/_}
+  if ! tmux has-session -t "=$session" 2>/dev/null; then
+    echo "peon-code: no session $session"
     exit 0
   fi
-  echo "peon-code: killing tmux server, sessions: $(echo "$sessions" | tr '\n' ' ')"
-  tmux kill-server
+  echo "peon-code: killing session $session"
+  tmux kill-session -t "=$session"
 }
 
 cmd_msg() {
@@ -177,7 +180,7 @@ cmd_msg() {
 }
 
 case "${1:-}" in
-  dismiss) cmd_dismiss; exit 0 ;;
+  dismiss) shift; cmd_dismiss "$@"; exit 0 ;;
   msg)  shift; cmd_msg "$@"; exit 0 ;;
   uninstall)
     LINK="${2:-$HOME/.local/bin}/peon-code"
@@ -306,9 +309,9 @@ fi
 # First agent is the new-session window; the rest are split off it.
 # Retile after each split so large teams do not hit "pane too small".
 tmux new-session -d -s "$SESSION" -n agents -c "$PWD"
-# Session-scoped, so the terminal tab caption is the session name only here.
+# Session-scoped, so the terminal tab caption is set only here.
 tmux set -t "$SESSION" set-titles on
-tmux set -t "$SESSION" set-titles-string '#S'
+tmux set -t "$SESSION" set-titles-string '#S : #{b:pane_current_path}'
 for ((i = 1; i < N; i++)); do
   tmux split-window -t "$SESSION":agents -c "$PWD"
   tmux select-layout -t "$SESSION":agents tiled >/dev/null
