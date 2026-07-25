@@ -3,7 +3,7 @@
 # each launched with a prompt telling it to watch the other panes.
 # Usage:
 #   ./peon-code.sh [-c file] [<session>] [<cmd> ...]
-#   ./peon-code.sh quit|kill
+#   ./peon-code.sh dismiss
 #   ./peon-code.sh msg <name|all> 'text'
 #   ./peon-code.sh uninstall [bin-dir]
 #   ./peon-code.sh -h
@@ -24,7 +24,7 @@ TASK_BOARD=.peon-tasks.md
 usage() {
   cat <<'USAGE'
 peon-code.sh [-c file] [<session>] [<cmd> ...]  start or attach a team
-peon-code.sh quit (or kill)                     kill the tmux server
+peon-code.sh dismiss                            kill the tmux server
 peon-code.sh msg <name|all> 'text'              send text to an agent pane
 peon-code.sh uninstall [bin-dir]                remove the install.sh symlink
 peon-code.sh -h                                 this help
@@ -135,7 +135,7 @@ wait_pane_settled() {
   done
 }
 
-cmd_quit() {
+cmd_dismiss() {
   local sessions
   if ! sessions=$(tmux list-sessions -F '#{session_name}' 2>/dev/null); then
     echo "peon-code: no tmux server running"
@@ -176,7 +176,7 @@ cmd_msg() {
 }
 
 case "${1:-}" in
-  quit|kill) cmd_quit; exit 0 ;;
+  dismiss) cmd_dismiss; exit 0 ;;
   msg)  shift; cmd_msg "$@"; exit 0 ;;
   uninstall)
     LINK="${2:-$HOME/.local/bin}/peon-code"

@@ -24,7 +24,7 @@ Optional: the script also runs in place as `./peon-code.sh`. `install.sh` seeds 
 ./peon-code.sh -c team.conf lab             # session lab, team from team.conf
 ./peon-code.sh <session> <cmd> [<cmd> ...]  # one pane per agent command, config ignored
 ./peon-code.sh lab claude codex claude      # 3-agent example
-./peon-code.sh quit                         # kill the tmux server (alias: kill)
+./peon-code.sh dismiss                      # kill the tmux server
 ./peon-code.sh msg <name|all> 'text'        # send text to an agent pane
 ./peon-code.sh -h                           # help
 ```
@@ -33,7 +33,7 @@ Team resolution: CLI agent commands > `-c` file > `./peon-code.conf` > `~/.confi
 
 With no TTY on stdin (a headless caller such as a script or an agent running the launcher), the session is still built, but instead of attaching the launcher prints the session name and the `tmux attach -t <session>` command and exits 0.
 
-`quit` runs `tmux kill-server`, which ends every session on the tmux server, not just peon-code's. It prints what it killed; with no server running it says so and exits 0.
+`dismiss` runs `tmux kill-server`, which ends every session on the tmux server, not just peon-code's. It prints what it killed; with no server running it says so and exits 0.
 
 `msg` sends text to the named agent's pane, or to every agent pane with `all`, prefixed `[from user]`. Names live in the `@peon_name` pane option, which apps cannot overwrite; the pane title only labels the border. An unknown name aborts and prints the panes it found.
 
@@ -78,7 +78,7 @@ Each agent reads another pane with `tmux capture-pane` and messages it with `tmu
 
 ## Environment
 
-The tmux server captures its environment when it first starts. An agent that cannot see an environment variable you exported later is reading the older environment: run `./peon-code.sh quit` and launch again.
+The tmux server captures its environment when it first starts. An agent that cannot see an environment variable you exported later is reading the older environment: run `./peon-code.sh dismiss` and launch again.
 
 ## License
 
