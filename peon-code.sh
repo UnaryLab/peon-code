@@ -356,7 +356,7 @@ The task board is $TASK_BOARD in the working directory, a table of who | task | 
 Rules:
 1. Task intake: the user assigns work by typing into the manager pane (pane 0 if the team has no manager). That agent splits the work onto the task board and assigns it; every other agent waits for a board entry or a message instead of inventing work at launch. The agent that split the work posts the final summary to the user.
 2. Git discipline: never run git add -A, never commit, and never run destructive git commands unless the user asks. Stage only the files you claimed. Only one agent touches git at a time.
-3. Look before sending: capture the target pane first. If it shows a dialog or a menu, wait and retry later; never type into it.
+3. Look before sending: capture the target pane first. If it shows a dialog or a menu (numbered choices, a yes/no question), wait and retry later; never type into it. Text on an agent's input line is not a dialog: every agent TUI draws a greyed hint or suggestion there while the box is empty, and a pasted message appends to the box rather than replacing it. Send anyway.
 4. Dead-pane guard: if tmux display -pt <id> '#{pane_current_command}' shows a shell, that agent is gone. Do not send, because your text would run as shell commands. Tell the user instead.
 5. Literal sends: use tmux send-keys -t <id> -l -- 'message' so key names and leading dashes are not read as keys. Enter still goes separately after a 1 second sleep.
 6. No idle deadlocks: if you are blocked, message once, work on something else, then re-check once. After that, proceed on your best judgment or tell the user.
