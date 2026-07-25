@@ -21,15 +21,15 @@ Optional: the script also runs in place as `./peon-code.sh`. `install.sh` seeds 
 ## Quick start
 
 ```sh
-./peon-code.sh                              # session named after the current directory, team from ./peon-code.conf if present, else claude codex
-./peon-code.sh <session>                    # same team resolution, custom session name
-./peon-code.sh -c team.conf lab             # session lab, team from team.conf
-./peon-code.sh <session> <cmd> [<cmd> ...]  # one pane per agent command, config ignored
-./peon-code.sh lab claude codex claude      # 3-agent example
-./peon-code.sh dismiss [<session>]          # kill one session, default the current directory name
-./peon-code.sh msg <name|all> 'text' [<session>]  # send text to an agent pane of one session
-./peon-code.sh list                         # agent panes of every session
-./peon-code.sh -h                           # help
+peon-code                              # session named after the current directory, team from ./peon-code.conf if present, else claude codex
+peon-code <session>                    # same team resolution, custom session name
+peon-code -c team.conf lab             # session lab, team from team.conf
+peon-code <session> <cmd> [<cmd> ...]  # one pane per agent command, config ignored
+peon-code lab claude codex claude      # 3-agent example
+peon-code dismiss [<session>]          # kill one session, default the current directory name
+peon-code msg <name|all> 'text' [<session>]  # send text to an agent pane of one session
+peon-code list                         # agent panes of every session
+peon-code -h                           # help
 ```
 
 Team resolution: CLI agent commands > `-c` file > `./peon-code.conf` > `~/.config/peon-code/peon-code.conf` > `claude codex`. A `-c` file that does not exist aborts; the default config files may be absent.
