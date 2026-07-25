@@ -19,7 +19,7 @@ Optional: the script also runs in place as `./peon-code.sh`. `install.sh` seeds 
 ## Usage
 
 ```sh
-./peon-code.sh                              # session "peon-code", team from ./peon-code.conf if present, else claude codex
+./peon-code.sh                              # session named after the current directory, team from ./peon-code.conf if present, else claude codex
 ./peon-code.sh <session>                    # same team resolution, custom session name
 ./peon-code.sh -c team.conf lab             # session lab, team from team.conf
 ./peon-code.sh <session> <cmd> [<cmd> ...]  # one pane per agent command, config ignored
@@ -30,6 +30,8 @@ Optional: the script also runs in place as `./peon-code.sh`. `install.sh` seeds 
 ```
 
 Team resolution: CLI agent commands > `-c` file > `./peon-code.conf` > `~/.config/peon-code/peon-code.conf` > `claude codex`. A `-c` file that does not exist aborts; the default config files may be absent.
+
+The session sets `set-titles` for itself, so the terminal tab caption is the session name. Other tmux sessions keep their own title setting.
 
 With no TTY on stdin (a headless caller such as a script or an agent running the launcher), the session is still built, but instead of attaching the launcher prints the session name and the `tmux attach -t <session>` command and exits 0.
 

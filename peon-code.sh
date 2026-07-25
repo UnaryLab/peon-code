@@ -24,6 +24,7 @@ TASK_BOARD=.peon-code-task.md
 usage() {
   cat <<'USAGE'
 peon-code.sh [-c file] [<session>] [<cmd> ...]  start or attach a team
+                                                (session defaults to the current directory name)
 peon-code.sh dismiss                            kill the tmux server
 peon-code.sh msg <name|all> 'text'              send text to an agent pane
 peon-code.sh uninstall [bin-dir]                remove the install.sh symlink
@@ -242,7 +243,8 @@ read_conf() {
   [ ${#NAMES[@]} -gt 0 ] || die "$conf has no agents"
 }
 
-SESSION=${1:-peon-code}
+SESSION=${1:-${PWD##*/}}       # default session name: current directory
+SESSION=${SESSION:-peon-code}  # PWD is /
 [ $# -gt 0 ] && shift
 if [ $# -gt 0 ]; then
   # CLI agent commands win; the name is the command string, no role.
@@ -304,6 +306,9 @@ fi
 # First agent is the new-session window; the rest are split off it.
 # Retile after each split so large teams do not hit "pane too small".
 tmux new-session -d -s "$SESSION" -n agents -c "$PWD"
+# Session-scoped, so the terminal tab caption is the session name only here.
+tmux set -t "$SESSION" set-titles on
+tmux set -t "$SESSION" set-titles-string '#S'
 for ((i = 1; i < N; i++)); do
   tmux split-window -t "$SESSION":agents -c "$PWD"
   tmux select-layout -t "$SESSION":agents tiled >/dev/null
