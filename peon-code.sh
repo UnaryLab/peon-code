@@ -3,6 +3,7 @@
 # each launched with a prompt telling it to watch the other panes.
 # Usage:
 #   ./peon-code.sh [-c file] [<session>] [<cmd> ...]
+#   ./peon-code.sh resume [<session>] [<cmd> ...]
 #   ./peon-code.sh dismiss [<session>]
 #   ./peon-code.sh msg <name|all> 'text' [<session>]
 #   ./peon-code.sh list
@@ -26,6 +27,8 @@ usage() {
   cat <<'USAGE'
 peon-code.sh [-c file] [<session>] [<cmd> ...]  start or attach a team
                                                 (session defaults to the current directory name)
+peon-code.sh resume [<session>] [<cmd> ...]     same, each agent reopening its
+                                                last conversation (claude, codex)
 peon-code.sh dismiss [<session>]                kill one session
                                                 (session defaults to the current directory name)
 peon-code.sh msg <name|all> 'text' [<session>]  send text to an agent pane
@@ -41,9 +44,11 @@ Config file: one agent per line, "name command... role".
 The role is required; use - for no role. A bare role name reads
 <script dir>/roles/<name>.md; a role token with a / is a file path,
 relative paths resolving against the config file's directory.
+A leading * on a name marks the main agent, whose pane gets the big
+left slot; without it, the first manager, else the first agent.
 Full-line # comments and blank lines are skipped.
 
-  boss   claude               manager
+  *boss  claude               manager
   impl   codex --model gpt-5.6-sol  implementer
   fast   codex                -
   weird  claude               ./my-roles/chaos.md
@@ -75,7 +80,9 @@ while getopts ":c:h" opt; do
 done
 shift $((OPTIND - 1))
 
+RESUME=0
 case "${1:-}" in
+  resume) RESUME=1; shift ;;
   dismiss) shift; cmd_dismiss "$@"; exit 0 ;;
   msg)  shift; cmd_msg "$@"; exit 0 ;;
   list) [ $# -eq 1 ] || die "list takes no arguments"; cmd_list; exit 0 ;;
@@ -102,6 +109,19 @@ if tmux has-session -t "=$SESSION" 2>/dev/null; then
   goto_session "$SESSION"
 fi
 
+# The brief marker that identifies each agent's own thread, so two panes of
+# the same CLI in one directory do not both reopen the newest conversation.
+# The trailing comma closes the session name, so a session name that is a
+# prefix of another never matches the other's transcripts.
+RESUME_IDS=()
+for i in "${!NAMES[@]}"; do
+  RESUME_IDS+=("")
+  [ "$RESUME" -eq 1 ] || continue
+  RESUME_IDS[i]=$(last_thread_id "agent ${NAMES[$i]} of peon-code session $SESSION," "${CMDS[$i]%% *}")
+  [ -n "${RESUME_IDS[$i]}" ] ||
+    echo "peon-code: no earlier thread for ${NAMES[$i]}; starting it fresh" >&2
+done
+
 # Only a team with roles gets a board seeded; a throwaway CLI team would
 # leave an untracked file behind in a directory that never coordinates.
 HAS_ROLES=0
@@ -117,7 +137,21 @@ if [ "$HAS_ROLES" -eq 1 ] && [ ! -f "$TASK_BOARD" ]; then
 BOARD
 fi
 
-create_agent_session "$SESSION" "$N"
+# The pane the user types into gets the main slot: the agent marked * in the
+# config, else the first manager, else pane 0. Brief rule 1 names this pane
+# as the task-intake pane.
+MAIN=$MAIN_INDEX
+if [ "$MAIN" -lt 0 ]; then
+  MAIN=0
+  for i in "${!ROLES[@]}"; do
+    if [ "$(role_label "${ROLES[$i]}")" = manager ]; then
+      MAIN=$i
+      break
+    fi
+  done
+fi
+
+create_agent_session "$SESSION" "$N" "$MAIN"
 FAILED_AGENTS=()
 for i in "${!NAMES[@]}"; do
   tmux set -pt "${PANE_IDS[$i]}" @peon_name "${NAMES[$i]}"
@@ -147,7 +181,7 @@ $(cat "${ROLES[$i]}")
 "
   fi
   read -r -d '' BRIEF <<EOF || true
-You are $WHO in pane $i of $N (this pane is ${PANE_IDS[$i]}), one of $N AI coding agents collaborating side-by-side in tmux session "$SESSION". The panes are:
+You are $WHO, agent ${NAMES[$i]} of peon-code session $SESSION, in pane $i of $N (this pane is ${PANE_IDS[$i]}), one of $N AI coding agents collaborating side-by-side in tmux. The panes are:
 $ROSTER
 $ROLE_SECTION
 To read another agent's latest output, run: tmux capture-pane -pt <other-pane-id> -S -100. To send another agent a message, run: tmux send-keys -t <other-pane-id> -l -- 'your message' && sleep 1 && tmux send-keys -t <other-pane-id> Enter. The Enter must be a separate send-keys after the sleep, or the receiver's TUI treats it as pasted text and never submits. Start every message you send with [from ${NAMES[$i]} ${PANE_IDS[$i]}] so receivers know who sent it and can tell messages apart from scraped output. Avoid single quotes/apostrophes in messages, since the message is wrapped in single quotes in the send-keys command. Message another agent only when: (1) you start a task, to claim the files you will touch; (2) you finish a task, with a one-line summary; (3) you are blocked or detect a conflicting edit. Do not message for routine progress or individual file saves. Check the other panes at task start and task end only.
@@ -155,7 +189,7 @@ To read another agent's latest output, run: tmux capture-pane -pt <other-pane-id
 The task board is $TASK_BOARD in the working directory, a table of who | task | files | status; create it with that header row if it is not there. Record your task claims and finishes there, and read it before claiming files someone else already listed. Messages are alerts; the board is the record that lasts.
 
 Rules:
-1. Task intake: the user assigns work by typing into the manager pane (pane 0 if the team has no manager). That agent splits the work onto the task board and assigns it; every other agent waits for a board entry or a message instead of inventing work at launch. The agent that split the work posts the final summary to the user.
+1. Task intake: the user assigns work by typing into the ${NAMES[$MAIN]} pane (${PANE_IDS[$MAIN]}). That agent splits the work onto the task board and assigns it; every other agent waits for a board entry or a message instead of inventing work at launch. The agent that split the work posts the final summary to the user.
 2. Git discipline: never run git add -A, never commit, and never run destructive git commands unless the user asks. Stage only the files you claimed. Only one agent touches git at a time.
 3. Look before sending: capture the target pane first. If it shows a dialog or a menu (numbered choices, a yes/no question), wait and retry later; never type into it. Text on an agent's input line is not a dialog: every agent TUI draws a greyed hint or suggestion there while the box is empty, and a pasted message appends to the box rather than replacing it. Send anyway.
 4. Dead-pane guard: if tmux display -pt <id> '#{pane_current_command}' shows a shell, that agent is gone. Do not send, because your text would run as shell commands. Tell the user instead.
@@ -169,11 +203,18 @@ EOF
   Q="\"\$(cat $(printf %q "$BRIEF_FILE"))\""
   # Map known CLIs to their interactive-session-with-initial-prompt syntax.
   # First token is the binary; trailing user args are preserved before the flag.
-  case "${CMDS[$i]%% *}" in
-    claude)      LAUNCH="${CMDS[$i]}" ;;        # bare, keeping user args; the brief follows the TUI
+  # A resume id, when there is one, goes right after the binary, since codex
+  # takes it as a subcommand and both CLIs read their options after it.
+  BIN=${CMDS[$i]%% *}
+  ARGS=""
+  [ "${CMDS[$i]}" = "$BIN" ] || ARGS=" ${CMDS[$i]#* }"
+  RID=${RESUME_IDS[$i]}
+  case "$BIN" in
+    claude)      LAUNCH="$BIN${RID:+ --resume $RID}$ARGS" ;;  # bare, keeping user args; the brief follows the TUI
+    codex)       LAUNCH="$BIN${RID:+ resume $RID}$ARGS $Q" ;; # positional prompt, stays interactive
     copilot)     LAUNCH="${CMDS[$i]} -i $Q" ;;  # -i starts the interactive TUI and runs the prompt
     gemini|qwen) LAUNCH="${CMDS[$i]} -i $Q" ;;  # unverified on this machine
-    *)           LAUNCH="${CMDS[$i]} $Q" ;;     # codex, anything else: positional prompt, stays interactive
+    *)           LAUNCH="${CMDS[$i]} $Q" ;;     # anything else: positional prompt
   esac
   printf '%s' "$LAUNCH" | paste_to_pane "${PANE_IDS[$i]}"
   if ! wait_agent_ready "${PANE_IDS[$i]}"; then

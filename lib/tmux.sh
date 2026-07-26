@@ -176,7 +176,7 @@ goto_session() {
 }
 
 create_agent_session() {
-  local session=$1 count=$2 i pane_id
+  local session=$1 count=$2 main=$3 i pane_id
   # First agent is the new-session window; the rest are split off it.
   # Retile after each split so large teams do not hit "pane too small".
   tmux new-session -d -s "$session" -n agents -c "$PWD"
@@ -189,11 +189,8 @@ create_agent_session() {
       tmux kill-session -t "=$session"
       die "could not make pane $((i + 1)) of $count; killed session $session"
     fi
-    tmux select-layout -t "$session":agents tiled >/dev/null
+    tmux select-layout -t "$session":agents tiled >/dev/null || true
   done
-  if [ "$count" -eq 2 ]; then
-    tmux select-layout -t "$session":agents even-horizontal >/dev/null
-  fi
 
   # Stable pane IDs survive pane moves and layout changes, unlike indices.
   PANE_IDS=()
@@ -206,4 +203,12 @@ create_agent_session() {
     tmux kill-session -t "=$session"
     die "made ${#PANE_IDS[@]} panes for $count agents; killed session $session"
   fi
+
+  # The main agent's pane takes the whole left side, the others stack to its
+  # right. Swapped into the first position first, since main-vertical makes
+  # that pane the main one. PANE_IDS is left alone: a pane id follows its
+  # pane. A layout call tmux rejects leaves the tiled arrangement in place.
+  [ "$main" -eq 0 ] || tmux swap-pane -d -s "${PANE_IDS[$main]}" -t "${PANE_IDS[0]}"
+  tmux set-option -w -t "$session":agents main-pane-width 60% || true
+  tmux select-layout -t "$session":agents main-vertical >/dev/null || true
 }

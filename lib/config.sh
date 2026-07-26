@@ -19,6 +19,37 @@ role_label() {
   echo "${base%.md}"
 }
 
+# Previous thread of one agent, found by the marker phrase its brief carries:
+# the phrase names the agent and the session, and both CLIs record the prompt
+# in their transcript, so no launch-time bookkeeping is needed. Newest match
+# wins; empty output means there is nothing to resume and the pane starts new.
+# ponytail: the search is capped at 30 days of transcripts, the age past which
+# a thread is not worth reviving.
+last_thread_id() {
+  local marker=$1 bin=$2 dir cwd="" found file id
+  case $bin in
+    claude) dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/${PWD//[^A-Za-z0-9]/-}" ;;
+    codex)  dir="${CODEX_HOME:-$HOME/.codex}/sessions"
+            # Rollouts of every directory share this store; a match must also
+            # carry the cwd line naming this directory.
+            cwd="\"cwd\":\"$PWD\"" ;;
+    *) return 0 ;;  # no known transcript store, so no resume handle
+  esac
+  [ -d "$dir" ] || return 0
+  # Checked before sorting: with no input, xargs still runs ls, which would
+  # then list the working directory instead of transcripts.
+  found=$(find "$dir" -name '*.jsonl' -type f -mtime -30 2>/dev/null) || true
+  [ -n "$found" ] || return 0
+  while IFS= read -r file; do
+    grep -qF -- "$marker" "$file" || continue
+    [ -z "$cwd" ] || grep -qF -- "$cwd" "$file" || continue
+    id=${file##*/}
+    id=${id%.jsonl}
+    printf '%s\n' "${id: -36}"  # claude names the file by id, codex suffixes it
+    return 0
+  done < <(printf '%s\n' "$found" | tr '\n' '\0' | xargs -0 ls -t 2>/dev/null)
+}
+
 read_conf() {
   local conf=$1 conf_dir line lineno=0 n name cmd role path known
   conf_dir=$(cd -- "$(dirname -- "$conf")" && pwd)
@@ -30,6 +61,12 @@ read_conf() {
     n=${#tokens[@]}
     [ "$n" -ge 3 ] || die "$conf line $lineno: need name, command, and role (got $n): $line"
     name=${tokens[0]}
+    # A leading * marks the main agent: its pane gets the big left slot.
+    if [[ $name == \** ]]; then
+      name=${name#\*}
+      [ "$MAIN_INDEX" -lt 0 ] || die "$conf line $lineno: a second agent is marked main with *"
+      MAIN_INDEX=${#NAMES[@]}
+    fi
     role=${tokens[$((n - 1))]}
     cmd="${tokens[*]:1:$((n - 2))}"
     [[ $name =~ ^[A-Za-z0-9_-]+$ ]] || die "$conf line $lineno: name \"$name\" must be letters, digits, _ or -"
@@ -52,6 +89,7 @@ load_team() {
   NAMES=()
   CMDS=()
   ROLES=()
+  MAIN_INDEX=-1
   if [ $# -gt 0 ]; then
     # CLI agent commands win; the name is the command string, no role.
     for arg in "$@"; do

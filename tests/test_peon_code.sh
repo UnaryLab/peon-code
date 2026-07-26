@@ -88,7 +88,9 @@ case ${1:-} in
         printf '%%1 codex impl\n'
         ;;
       *'#{pane_id}'*)
-        printf '%%1\n'
+        for ((p = 1; p <= ${FAKE_TMUX_PANES:-1}; p++)); do
+          printf '%%%d\n' "$p"
+        done
         ;;
       *'#{@peon_name}'*)
         [ "${FAKE_TMUX_MODE:-}" = legacy ] && printf 'impl\n'
@@ -198,6 +200,71 @@ test_config_loading() {
   assert_contains "$brief_file" "Keep changes focused."
 }
 
+# Every agent must reopen its own thread: same-CLI panes share a directory,
+# so a per-agent marker is what keeps them off each other's conversation.
+test_resume_picks_each_agent_thread() {
+  local fake_bin=$1 log="$TEST_DIR/tmux-resume.log" home_dir="$TEST_DIR/home-resume"
+  local work_dir="$TEST_DIR/resume-work" claude_dir codex_dir slug launch
+  mkdir -p "$home_dir" "$work_dir"
+  work_dir=$(cd "$work_dir" && pwd)  # the launcher sees the normalized path
+  slug=${work_dir//[^A-Za-z0-9]/-}
+  claude_dir="$home_dir/.claude/projects/$slug"
+  codex_dir="$home_dir/.codex/sessions/2026/07/26"
+  mkdir -p "$claude_dir" "$codex_dir"
+  printf 'agent boss of peon-code session resume-test, in pane\n' \
+    >"$claude_dir/11111111-1111-1111-1111-111111111111.jsonl"
+  printf 'agent second of peon-code session resume-test, in pane\n' \
+    >"$claude_dir/22222222-2222-2222-2222-222222222222.jsonl"
+  printf '{"cwd":"%s"}\nagent impl of peon-code session resume-test, in pane\n' "$work_dir" \
+    >"$codex_dir/rollout-2026-07-26T00-00-00-33333333-3333-3333-3333-333333333333.jsonl"
+  sleep 1  # the decoy session's transcript sorts newer than the real ones
+  printf 'agent boss of peon-code session resume-test2, in pane\n' \
+    >"$claude_dir/99999999-9999-9999-9999-999999999999.jsonl"
+  printf 'boss claude -\n*second claude -\nimpl codex manager\nscout codex -\n' >"$work_dir/peon-code.conf"
+
+  (
+    cd "$work_dir"
+    PATH="$fake_bin:$PATH" HOME="$home_dir" TMPDIR="$TEST_DIR" \
+      FAKE_TMUX_LOG="$log" FAKE_TMUX_MODE=launch FAKE_TMUX_PANES=4 \
+      "$ROOT/peon-code.sh" resume resume-test
+  ) >"$TEST_DIR/resume.out" 2>"$TEST_DIR/resume.err" || true
+
+  launch=$(grep -F 'buffer-content:claude' "$log")
+  assert_contains <(printf '%s\n' "$launch") \
+    "buffer-content:claude --resume 11111111-1111-1111-1111-111111111111"
+  assert_contains <(printf '%s\n' "$launch") \
+    "buffer-content:claude --resume 22222222-2222-2222-2222-222222222222"
+  assert_contains "$log" "buffer-content:codex resume 33333333-3333-3333-3333-333333333333"
+  assert_contains "$TEST_DIR/resume.err" "no earlier thread for scout"
+  # A session name that is a prefix of another must not match its transcripts.
+  assert_not_contains "$log" "99999999-9999-9999-9999-999999999999"
+  # The *-marked agent (not the manager) is moved into the main slot of a
+  # main-vertical layout, and the mark is stripped from its name.
+  assert_contains "$log" "swap-pane -d -s %2 -t %1"
+  assert_contains "$log" "select-layout -t resume-test:agents main-vertical"
+
+  # Without a * mark, the first manager-role agent takes the main slot.
+  : >"$log"
+  printf 'boss claude -\nimpl codex manager\n' >"$work_dir/peon-code.conf"
+  (
+    cd "$work_dir"
+    PATH="$fake_bin:$PATH" HOME="$home_dir" TMPDIR="$TEST_DIR" \
+      FAKE_TMUX_LOG="$log" FAKE_TMUX_MODE=launch FAKE_TMUX_PANES=2 \
+      "$ROOT/peon-code.sh" mgr-fallback
+  ) >"$TEST_DIR/mgr.out" 2>"$TEST_DIR/mgr.err" || true
+  assert_contains "$log" "swap-pane -d -s %2 -t %1"
+
+  printf '*a claude -\n*b claude -\n' >"$work_dir/peon-code.conf"
+  (
+    cd "$work_dir"
+    PATH="$fake_bin:$PATH" HOME="$home_dir" TMPDIR="$TEST_DIR" \
+      FAKE_TMUX_LOG="$log" FAKE_TMUX_MODE=launch \
+      "$ROOT/peon-code.sh" two-mains
+  ) >"$TEST_DIR/two-mains.out" 2>"$TEST_DIR/two-mains.err" &&
+    fail "a config with two main marks was accepted"
+  assert_contains "$TEST_DIR/two-mains.err" "a second agent is marked main with *"
+}
+
 bash -n "$ROOT/peon-code.sh" "$ROOT/lib/config.sh" "$ROOT/lib/tmux.sh" \
   "$ROOT/install.sh"
 fake_bin=$(make_fake_commands)
@@ -205,4 +272,5 @@ test_install_guard
 test_session_ownership "$fake_bin"
 test_unique_buffers_and_launch_failure "$fake_bin"
 test_config_loading "$fake_bin"
+test_resume_picks_each_agent_thread "$fake_bin"
 echo "tests: PASS"

@@ -6,7 +6,7 @@ A tmux session of side-by-side AI coding agent CLIs that watch and message each 
 
 ## Requirements
 
-- tmux
+- tmux 3.2 or newer (percentage `main-pane-width`)
 - At least one agent CLI installed (claude, codex, copilot, ...)
 
 ## Installation
@@ -28,6 +28,7 @@ peon-code <session>                    # same team resolution, custom session na
 peon-code -c team.conf lab             # session lab, team from team.conf
 peon-code <session> <cmd> [<cmd> ...]  # one pane per agent command, config ignored
 peon-code lab claude codex claude      # 3-agent example
+peon-code resume [<session>] [<cmd> ...]     # same, each agent reopening its last conversation
 peon-code dismiss [<session>]          # kill one session, default the current directory name
 peon-code msg <name|all> 'text' [<session>]  # send text to an agent pane of one session
 peon-code list                         # agent panes of every session
@@ -35,6 +36,8 @@ peon-code -h                           # help
 ```
 
 Team resolution: CLI agent commands > `-c` file > `./peon-code.conf` > `~/.config/peon-code/peon-code.conf` > `claude codex`. A `-c` file that does not exist aborts; the default config files may be absent.
+
+The window uses tmux's `main-vertical` layout: the main agent's pane takes the left 60% of the width, the other agents stack to its right. Main is the agent marked with a leading `*` in the config, else the first agent with the `manager` role, else pane 0.
 
 The session sets `set-titles` for itself, so the terminal tab caption is `<session> : <directory>`, the directory being the active pane's current one. Other tmux sessions keep their own title setting.
 
@@ -49,6 +52,16 @@ Detaching is plain tmux: press `Ctrl-b d`, the default detach binding. The agent
 To come back, run the launcher again from the same directory (or with the same session name): an existing session is attached instead of rebuilt. From inside another tmux session it switches the client rather than nesting. `tmux attach -t <session>` works too.
 
 Detaching leaves the session alive. Use `dismiss` to actually stop it.
+
+### Resume
+
+`resume` builds the session the same way as a plain start, except each agent reopens the conversation it had in that session and directory before, so the team keeps its memory across a `dismiss` or a reboot. The team, session name, and roles resolve exactly as they do for a start.
+
+Each brief carries the phrase `agent <name> of peon-code session <session>,` (trailing comma included, so one session name that is a prefix of another never matches the other's transcripts), and that phrase is what `resume` looks for in the CLIs' own transcripts, newest first: `~/.claude/projects/<directory>/*.jsonl` for claude, `~/.codex/sessions/**/rollout-*.jsonl` for codex, where the rollout must also record the current working directory. The marker is unique per agent, so a team of any size reopens one conversation per pane rather than every same-CLI pane landing in the newest one. Transcripts older than 30 days are not searched.
+
+claude panes launch as `claude --resume <id>`, codex panes as `codex resume <id>`, both keeping the config's own arguments. Other providers have no resume handle here and start fresh. An agent with no earlier thread is named on stderr and starts fresh too.
+
+Each resumed pane still gets the full brief, since pane ids change with every session.
 
 `dismiss` kills one session: the name given, else the current directory name, matched exactly. Other sessions and the tmux server keep running. With no such session it says so and exits 0.
 
@@ -73,14 +86,14 @@ One agent per line: `name command... role`. The first token is the name, the las
 
 ```
 # name   command                                                     role
-boss     claude --model claude-fable-5 --effort high                 manager
+*boss    claude --model claude-fable-5 --effort high                 manager
 archie   claude --model claude-opus-5 --effort medium                reviewer
 impl     codex --model gpt-5.6-sol -c model_reasoning_effort=high    implementer
 scout    codex --model gpt-5.6-sol -c model_reasoning_effort=medium  explorer
 weird    claude                                                      ./my-roles/chaos.md
 ```
 
-- Names must match `[A-Za-z0-9_-]+` and be unique.
+- Names must match `[A-Za-z0-9_-]+` and be unique. A leading `*` marks the main agent; at most one line may carry it.
 - The role field is required. `-` means no role.
 - A bare role name reads `roles/<name>.md` next to `peon-code.sh`. A role token with a `/` is a file path, relative paths resolving against the config file's directory.
 - Full-line `#` comments and blank lines are skipped. Inline comments are not.
@@ -96,13 +109,13 @@ A team without roles (agent commands on the command line, or a config of all `-`
 
 ### Supported providers
 
-| Provider | How it launches |
-|----------|-----------------|
-| claude | launched bare, brief pasted in once its TUI is up |
-| codex | positional prompt, stays interactive |
-| copilot | `-i <prompt>` (verified) |
-| gemini, qwen | `-i <prompt>` (unverified on this machine) |
-| anything else | passed through as-is |
+| Provider | How it launches | How it resumes |
+|----------|-----------------|----------------|
+| claude | launched bare, brief pasted in once its TUI is up | `--resume <id>` |
+| codex | positional prompt, stays interactive | `resume <id>` |
+| copilot | `-i <prompt>` (verified) | not supported |
+| gemini, qwen | `-i <prompt>` (unverified on this machine) | not supported |
+| anything else | passed through as-is | not supported |
 
 Every brief is written to a file under `$TMPDIR`, and the pane launches with `<cmd> "$(cat <file>)"`, so the command line stays one line instead of thousands of escaped characters.
 
