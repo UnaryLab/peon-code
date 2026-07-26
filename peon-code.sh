@@ -12,10 +12,10 @@
 # Team resolution: CLI agent commands > -c file > ./peon-code.conf >
 # ~/.config/peon-code/peon-code.conf > claude codex.
 # Known agents get the right "interactive session + initial prompt" launch:
-#   claude          launched bare, brief pasted in once its TUI is up
-#   codex           positional prompt, stays interactive (default passthrough)
-#   copilot         -i <prompt>  (verified on this machine)
-#   gemini, qwen    -i <prompt>  (documented; unverified on this machine)
+#   claude          launched bare, brief pasted in once its TUI is up; resumes with --resume <id>
+#   codex           positional prompt, stays interactive; resumes with resume <id>
+#   copilot         -i <prompt>  (verified on this machine); resumes with --resume=<id>
+#   gemini, qwen    -i <prompt>  (documented; unverified on this machine); resume with --resume <id>
 # Any other command is passed through as-is: <cmd> <quoted-brief>.
 set -euo pipefail
 
@@ -27,8 +27,9 @@ usage() {
   cat <<'USAGE'
 peon-code.sh [-c file] [<session>] [<cmd> ...]  start or attach a team
                                                 (session defaults to the current directory name)
-peon-code.sh resume [<session>] [<cmd> ...]     same, each agent reopening its
-                                                last conversation (claude, codex)
+peon-code.sh resume [<session>] [<cmd> ...]     same, each agent reopening its last
+                                                conversation (claude, codex, copilot,
+                                                gemini, qwen)
 peon-code.sh dismiss [<session>]                kill one session
                                                 (session defaults to the current directory name)
 peon-code.sh msg <name|all> 'text' [<session>]  send text to an agent pane
@@ -204,16 +205,20 @@ EOF
   # Map known CLIs to their interactive-session-with-initial-prompt syntax.
   # First token is the binary; trailing user args are preserved before the flag.
   # A resume id, when there is one, goes right after the binary, since codex
-  # takes it as a subcommand and both CLIs read their options after it.
+  # takes it as a subcommand and every CLI reads its options after it. For
+  # copilot, gemini, and qwen the id rides alongside -i: their flag
+  # validation permits the pair, though their docs do not show it.
   BIN=${CMDS[$i]%% *}
   ARGS=""
   [ "${CMDS[$i]}" = "$BIN" ] || ARGS=" ${CMDS[$i]#* }"
   RID=${RESUME_IDS[$i]}
+  # Quoted for the pane's shell: a qwen id can be a saved-chat tag, not a uuid.
+  RID=${RID:+$(printf %q "$RID")}
   case "$BIN" in
     claude)      LAUNCH="$BIN${RID:+ --resume $RID}$ARGS" ;;  # bare, keeping user args; the brief follows the TUI
     codex)       LAUNCH="$BIN${RID:+ resume $RID}$ARGS $Q" ;; # positional prompt, stays interactive
-    copilot)     LAUNCH="${CMDS[$i]} -i $Q" ;;  # -i starts the interactive TUI and runs the prompt
-    gemini|qwen) LAUNCH="${CMDS[$i]} -i $Q" ;;  # unverified on this machine
+    copilot)     LAUNCH="$BIN${RID:+ --resume=$RID}$ARGS -i $Q" ;;  # -i starts the interactive TUI and runs the prompt
+    gemini|qwen) LAUNCH="$BIN${RID:+ --resume $RID}$ARGS -i $Q" ;;  # unverified on this machine
     *)           LAUNCH="${CMDS[$i]} $Q" ;;     # anything else: positional prompt
   esac
   printf '%s' "$LAUNCH" | paste_to_pane "${PANE_IDS[$i]}"

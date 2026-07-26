@@ -6,19 +6,24 @@ A tmux session of side-by-side AI coding agent CLIs that watch and message each 
 
 ## Requirements
 
-- tmux 3.2 or newer (percentage `main-pane-width`)
+- tmux 3.2 or newer
 - At least one agent CLI installed (claude, codex, copilot, ...)
 
 ## Installation
 
 ```sh
 ./install.sh                    # symlink as peon-code into ~/.local/bin
-peon-code uninstall [bin-dir]   # remove that symlink
 ```
 
 After installation, run `peon-code` from any directory.
 
 `install.sh` seeds `~/.config/peon-code/peon-code.conf` from the example if it is missing.
+
+To uninstall:
+
+```sh
+peon-code uninstall [bin-dir]   # remove the install.sh symlink
+```
 
 ## Quick start
 
@@ -57,9 +62,9 @@ Detaching leaves the session alive. Use `dismiss` to actually stop it.
 
 `resume` builds the session the same way as a plain start, except each agent reopens the conversation it had in that session and directory before, so the team keeps its memory across a `dismiss` or a reboot. The team, session name, and roles resolve exactly as they do for a start.
 
-Each brief carries the phrase `agent <name> of peon-code session <session>,` (trailing comma included, so one session name that is a prefix of another never matches the other's transcripts), and that phrase is what `resume` looks for in the CLIs' own transcripts, newest first: `~/.claude/projects/<directory>/*.jsonl` for claude, `~/.codex/sessions/**/rollout-*.jsonl` for codex, where the rollout must also record the current working directory. The marker is unique per agent, so a team of any size reopens one conversation per pane rather than every same-CLI pane landing in the newest one. Transcripts older than 30 days are not searched.
+Each brief carries the phrase `agent <name> of peon-code session <session>,` (trailing comma included, so one session name that is a prefix of another never matches the other's transcripts), and that phrase is what `resume` looks for in the CLIs' own transcripts, newest first: `~/.claude/projects/<directory>/*.jsonl` for claude, `~/.codex/sessions/**/rollout-*.jsonl` for codex (the rollout must also record the current working directory), `~/.copilot/session-state/<id>/events.jsonl` for copilot (the events log must also record the current working directory), `~/.gemini/tmp/<sha256 of the directory>/chats/*.jsonl` for gemini, and `~/.qwen/projects/<directory>/chats/<id>.jsonl` for qwen. The marker is unique per agent, so a team of any size reopens one conversation per pane rather than every same-CLI pane landing in the newest one. Transcripts older than 30 days are not searched.
 
-claude panes launch as `claude --resume <id>`, codex panes as `codex resume <id>`, both keeping the config's own arguments. Other providers have no resume handle here and start fresh. An agent with no earlier thread is named on stderr and starts fresh too.
+claude panes launch as `claude --resume <id>`, codex panes as `codex resume <id>`, copilot panes as `copilot --resume=<id>`, gemini and qwen panes as `<cli> --resume <id>`, all keeping the config's own arguments; copilot, gemini, and qwen still get the brief through `-i`. Any other provider has no resume handle here and starts fresh. An agent with no earlier thread is named on stderr and starts fresh too.
 
 Each resumed pane still gets the full brief, since pane ids change with every session.
 
@@ -113,8 +118,8 @@ A team without roles (agent commands on the command line, or a config of all `-`
 |----------|-----------------|----------------|
 | claude | launched bare, brief pasted in once its TUI is up | `--resume <id>` |
 | codex | positional prompt, stays interactive | `resume <id>` |
-| copilot | `-i <prompt>` (verified) | not supported |
-| gemini, qwen | `-i <prompt>` (unverified on this machine) | not supported |
+| copilot | `-i <prompt>` (verified) | `--resume=<id>` |
+| gemini, qwen | `-i <prompt>` (unverified on this machine) | `--resume <id>` |
 | anything else | passed through as-is | not supported |
 
 Every brief is written to a file under `$TMPDIR`, and the pane launches with `<cmd> "$(cat <file>)"`, so the command line stays one line instead of thousands of escaped characters.

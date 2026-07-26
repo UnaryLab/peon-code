@@ -20,19 +20,28 @@ role_label() {
 }
 
 # Previous thread of one agent, found by the marker phrase its brief carries:
-# the phrase names the agent and the session, and both CLIs record the prompt
+# the phrase names the agent and the session, and the CLIs record the prompt
 # in their transcript, so no launch-time bookkeeping is needed. Newest match
 # wins; empty output means there is nothing to resume and the pane starts new.
 # ponytail: the search is capped at 30 days of transcripts, the age past which
 # a thread is not worth reviving.
 last_thread_id() {
-  local marker=$1 bin=$2 dir cwd="" found file id
+  local marker=$1 bin=$2 dir cwd="" hash found file id
   case $bin in
-    claude) dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/${PWD//[^A-Za-z0-9]/-}" ;;
-    codex)  dir="${CODEX_HOME:-$HOME/.codex}/sessions"
-            # Rollouts of every directory share this store; a match must also
-            # carry the cwd line naming this directory.
-            cwd="\"cwd\":\"$PWD\"" ;;
+    claude)  dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/${PWD//[^A-Za-z0-9]/-}" ;;
+    codex)   dir="${CODEX_HOME:-$HOME/.codex}/sessions"
+             # Rollouts of every directory share this store; a match must also
+             # carry the cwd line naming this directory.
+             cwd="\"cwd\":\"$PWD\"" ;;
+    copilot) dir="$HOME/.copilot/session-state"
+             # Session logs of every directory share this store; a match must
+             # also carry the cwd line naming this directory.
+             cwd="\"cwd\":\"$PWD\"" ;;
+    gemini)  # gemini keys its per-directory store by the SHA-256 of the path
+             hash=$(printf '%s' "$PWD" | shasum -a 256 2>/dev/null) ||
+               hash=$(printf '%s' "$PWD" | sha256sum 2>/dev/null) || return 0
+             dir="$HOME/.gemini/tmp/${hash%% *}/chats" ;;
+    qwen)    dir="$HOME/.qwen/projects/${PWD//[^A-Za-z0-9]/-}/chats" ;;
     *) return 0 ;;  # no known transcript store, so no resume handle
   esac
   [ -d "$dir" ] || return 0
@@ -43,9 +52,23 @@ last_thread_id() {
   while IFS= read -r file; do
     grep -qF -- "$marker" "$file" || continue
     [ -z "$cwd" ] || grep -qF -- "$cwd" "$file" || continue
-    id=${file##*/}
-    id=${id%.jsonl}
-    printf '%s\n' "${id: -36}"  # claude names the file by id, codex suffixes it
+    case $bin in
+      copilot) id=${file%/*}          # <id>/events.jsonl: the directory is the id
+               id=${id##*/} ;;
+      gemini)  # the filename holds 8 chars of the id; the body holds it all.
+               # First occurrence in file order: the top-level sessionId comes
+               # before any sessionId nested inside a message.
+               id=$(grep -o '"sessionId"[[:space:]]*:[[:space:]]*"[^"]*"' "$file" | head -n 1) || true
+               id=${id%\"}
+               id=${id##*\"} ;;
+      codex)   id=${file##*/}
+               id=${id%.jsonl}
+               id=${id: -36} ;;       # rollout-<timestamp>-<id>.jsonl
+      *)       id=${file##*/}
+               id=${id%.jsonl} ;;     # claude and qwen name the file by the id
+    esac
+    [ -n "$id" ] || continue
+    printf '%s\n' "$id"
     return 0
   done < <(printf '%s\n' "$found" | tr '\n' '\0' | xargs -0 ls -t 2>/dev/null)
 }
