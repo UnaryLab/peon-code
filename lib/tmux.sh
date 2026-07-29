@@ -65,6 +65,29 @@ wait_agent_ready() {
   return 1
 }
 
+# A resumed claude pane can open on a picker asking how to resume a large or
+# old session; its default row is "Resume from summary (recommended)". Enter
+# accepts that default, so the pane moves on instead of sitting on the dialog
+# until the settle wait gives up. A pane that reaches the input line first
+# never showed the picker, so the wait ends there. Always returns 0: a pane
+# still drawing after the cap is left for wait_pane_settled to judge.
+answer_resume_picker() {
+  local pane=$1 i cur
+  for ((i = 0; i < 50; i++)); do
+    cur=$(tmux capture-pane -pt "$pane" 2>/dev/null) || cur=""
+    if [[ $cur == *"Resume from summary"* ]]; then
+      tmux send-keys -t "$pane" Enter
+      return 0
+    fi
+    case $cur in
+      *"Enter to confirm"*|*"❯ "[0-9]"."*) ;;  # some other menu: keep waiting
+      *❯*) return 0 ;;                         # input line drawn: no picker
+    esac
+    sleep 0.3
+  done
+  return 0
+}
+
 # Wait until the claude prompt line is drawn and the pane has stopped
 # changing: a capture holds a line starting with the prompt marker and
 # matches the capture 0.3s before. A menu such as the folder-trust dialog
@@ -74,8 +97,8 @@ wait_agent_ready() {
 # the prompt never shows, or the dialog goes unanswered; the caller then
 # skips the paste rather than typing into whatever is on screen.
 wait_pane_settled() {
-  local pane=$1 i prev="" cur
-  for ((i = 0; i < 100; i++)); do
+  local pane=$1 tries=${2:-100} i prev="" cur
+  for ((i = 0; i < tries; i++)); do
     cur=$(tmux capture-pane -pt "$pane" 2>/dev/null) || cur=""
     case $cur in
       *"Enter to confirm"*|*"❯ "[0-9]"."*) cur="" ;;  # a menu, not the input line

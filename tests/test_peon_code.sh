@@ -294,6 +294,34 @@ test_resume_picks_each_agent_thread() {
   assert_contains "$TEST_DIR/two-mains.err" "a second agent is marked main with *"
 }
 
+# The resume-summary picker is answered with Enter (its summary default);
+# a pane already at the input line is left alone.
+test_resume_picker_answered() {
+  local fake_bin=$1 log="$TEST_DIR/picker.log" bin_dir="$TEST_DIR/picker-bin"
+  mkdir -p "$bin_dir"
+  cp "$fake_bin/sleep" "$bin_dir/sleep"
+  cat >"$bin_dir/tmux" <<'FAKE_TMUX'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$FAKE_TMUX_LOG"
+case ${1:-} in
+  capture-pane) printf '%s\n' "$FAKE_TMUX_CAPTURE" ;;
+esac
+FAKE_TMUX
+  chmod +x "$bin_dir/tmux"
+
+  : >"$log"
+  FAKE_TMUX_LOG="$log" PATH="$bin_dir:$PATH" \
+    FAKE_TMUX_CAPTURE='❯ 1. Resume from summary (recommended)' \
+    bash -c 'source "$1/lib/tmux.sh"; answer_resume_picker %9' _ "$ROOT"
+  assert_contains "$log" "send-keys -t %9 Enter"
+
+  : >"$log"
+  FAKE_TMUX_LOG="$log" PATH="$bin_dir:$PATH" \
+    FAKE_TMUX_CAPTURE='❯ try "fix the tests"' \
+    bash -c 'source "$1/lib/tmux.sh"; answer_resume_picker %9' _ "$ROOT"
+  assert_not_contains "$log" "send-keys"
+}
+
 bash -n "$ROOT/peon-code.sh" "$ROOT/lib/config.sh" "$ROOT/lib/tmux.sh" \
   "$ROOT/install.sh"
 fake_bin=$(make_fake_commands)
@@ -302,4 +330,5 @@ test_session_ownership "$fake_bin"
 test_unique_buffers_and_launch_failure "$fake_bin"
 test_config_loading "$fake_bin"
 test_resume_picks_each_agent_thread "$fake_bin"
+test_resume_picker_answered "$fake_bin"
 echo "tests: PASS"

@@ -12,7 +12,8 @@
 # Team resolution: CLI agent commands > -c file > ./peon-code.conf >
 # ~/.config/peon-code/peon-code.conf > claude codex.
 # Known agents get the right "interactive session + initial prompt" launch:
-#   claude          launched bare, brief pasted in once its TUI is up; resumes with --resume <id>
+#   claude          launched bare, brief pasted in once its TUI is up; resumes with --resume <id>,
+#                   answering a "Resume from summary" picker with its summary default
 #   codex           positional prompt, stays interactive; resumes with resume <id>
 #   copilot         -i <prompt>  (verified on this machine); resumes with --resume=<id>
 #   gemini, qwen    -i <prompt>  (documented; unverified on this machine); resume with --resume <id>
@@ -227,9 +228,13 @@ EOF
     continue
   fi
   if [ "${CMDS[$i]%% *}" = claude ]; then
+    # A resumed pane may open on the summary picker; take its default,
+    # "Resume from summary", then allow for the compaction that starts:
+    # 400 settle tries (~2 min) instead of the usual 100.
+    [ -z "$RID" ] || answer_resume_picker "${PANE_IDS[$i]}"
     # An unsettled pane is showing a dialog or still starting; pasting there
     # would answer the dialog blindly, which the brief tells agents never to do.
-    if wait_pane_settled "${PANE_IDS[$i]}"; then
+    if wait_pane_settled "${PANE_IDS[$i]}" "${RID:+400}"; then
       printf '%s' "$BRIEF" | paste_to_pane "${PANE_IDS[$i]}"
     else
       echo "peon-code: ${NAMES[$i]} is still on a dialog or starting up. Answer it, then paste the brief: $BRIEF_FILE" >&2
