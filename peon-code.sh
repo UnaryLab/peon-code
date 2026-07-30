@@ -20,7 +20,16 @@
 # Any other command is passed through as-is: <cmd> <quoted-brief>.
 set -euo pipefail
 
-SCRIPT_DIR=$(cd -- "$(dirname -- "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)
+# Resolve symlinks without readlink -f, which macOS lacks before 12.3.
+script_path=${BASH_SOURCE[0]}
+while [ -L "$script_path" ]; do
+  link_target=$(readlink "$script_path")
+  case $link_target in
+    /*) script_path=$link_target ;;
+    *)  script_path=$(dirname -- "$script_path")/$link_target ;;
+  esac
+done
+SCRIPT_DIR=$(cd -- "$(dirname -- "$script_path")" && pwd)
 DEFAULT_CONF=peon-code.conf
 TASK_BOARD=.peon-code-task.md
 
