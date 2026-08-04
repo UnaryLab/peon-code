@@ -26,15 +26,84 @@ list_agent_panes() {
     done
 }
 
-# Paste stdin into a pane, then press Enter as a separate call. Bracketed
-# paste keeps a multi-line block in the input line instead of submitting it
-# early; long lines sent with send-keys are cut at the tty line limit.
-paste_to_pane() {
+# Paste stdin into a pane. Bracketed paste keeps a multi-line block in the
+# input line instead of submitting it early; long lines sent with send-keys
+# are cut at the tty line limit. Every control byte but tab and newline is
+# dropped first: tmux does not escape a bracketed-paste terminator inside the
+# text, so text carrying one would end the paste early and leave the rest of
+# itself to the receiving app as live keystrokes.
+paste_only() {
   local pane=$1 buffer="peon-code-$$-${1#%}"
-  tmux load-buffer -b "$buffer" -
+  LC_ALL=C tr -d '\000-\010\013-\037\177' | tmux load-buffer -b "$buffer" -
   tmux paste-buffer -b "$buffer" -dpt "$pane"
+}
+
+# Paste stdin into a pane, then press Enter as a separate call.
+paste_to_pane() {
+  paste_only "$1"
   sleep 1
-  tmux send-keys -t "$pane" Enter
+  tmux send-keys -t "$1" Enter
+}
+
+# Printable ASCII only, runs of blanks squeezed to one space, ends trimmed:
+# the shape a captured box and a message are both reduced to before they are
+# compared, so the box's wrapping and padding do not count as a difference.
+plain_text() {
+  local s
+  # LC_ALL=C: a capture holds the box drawing of the pane, and tr in a UTF-8
+  # locale rejects those bytes instead of dropping them.
+  s=$(LC_ALL=C tr -cd '\11\12\40-\176' | LC_ALL=C tr -s '\11\12\40' '\40')
+  s=${s# }
+  s=${s% }
+  printf '%s' "$s"
+}
+
+# A capture holding a menu: the marker is drawn on the menu's selected row
+# with the cursor right after it, so the input box measures empty while the
+# pane is waiting on an answer.
+pane_has_menu() {
+  case $1 in
+    *"Enter to confirm"*|*"❯ "[0-9]"."*) return 0 ;;
+  esac
+  return 1
+}
+
+# A pane in copy mode routes keys through the copy-mode key table, so a paste
+# lands in the pane but the Enter after it never reaches the app.
+pane_takes_keys() {
+  [ "$(tmux display -pt "$1" '#{pane_in_mode}' 2>/dev/null || echo 1)" = 0 ]
+}
+
+# What a pane's input box holds: everything from the prompt marker to the end
+# of the cursor's row. Text after the cursor counts too, so a box whose cursor
+# was moved back to the start still measures busy. Empty output means an empty
+# box. A pane sitting on a menu returns 1; a pane drawing no prompt marker at
+# or above the cursor returns 2, which no wait can change.
+# ponytail: one column per glyph, so a box holding wide characters measures
+# short; count widths here if agents start sending CJK or emoji.
+# ponytail: whatever a TUI draws after the cursor on that row (hint text, a
+# right border) reads as typed text and holds the send; read the colors of the
+# region with capture-pane -e if a TUI that draws one has to be supported.
+pane_box_text() {
+  local pane=$1 cy cap box
+  cy=$(tmux display -pt "$pane" '#{cursor_y}' 2>/dev/null) || return 1
+  cap=$(tmux capture-pane -pt "$pane" 2>/dev/null) || return 1
+  if pane_has_menu "$cap"; then
+    return 1
+  fi
+  box=$(printf '%s\n' "$cap" | LC_ALL=C awk -v cy="$cy" '
+    BEGIN { m = "\342\235\257" }
+    { rows[NR] = $0; if (NR <= cy + 1 && index($0, m) > 0) mr = NR }
+    END {
+      if (!mr) exit 2
+      for (r = mr; r <= cy + 1; r++) {
+        s = rows[r]
+        if (r == mr) s = substr(s, index(s, m) + length(m))
+        out = out " " s
+      }
+      print out
+    }') || return 2
+  printf '%s' "$box" | plain_text
 }
 
 # Wait until a pane's shell has started: it reports a shell, or has drawn
@@ -79,10 +148,10 @@ answer_resume_picker() {
       tmux send-keys -t "$pane" Enter
       return 0
     fi
-    case $cur in
-      *"Enter to confirm"*|*"❯ "[0-9]"."*) ;;  # some other menu: keep waiting
-      *❯*) return 0 ;;                         # input line drawn: no picker
-    esac
+    # Input line drawn and no menu on screen: the pane never showed a picker.
+    if ! pane_has_menu "$cur" && [[ $cur == *❯* ]]; then
+      return 0
+    fi
     sleep 0.3
   done
   return 0
@@ -100,9 +169,9 @@ wait_pane_settled() {
   local pane=$1 tries=${2:-100} i prev="" cur
   for ((i = 0; i < tries; i++)); do
     cur=$(tmux capture-pane -pt "$pane" 2>/dev/null) || cur=""
-    case $cur in
-      *"Enter to confirm"*|*"❯ "[0-9]"."*) cur="" ;;  # a menu, not the input line
-    esac
+    if pane_has_menu "$cur"; then
+      cur=""  # a menu, not the input line
+    fi
     if [[ $cur == *❯* ]] && [ "$cur" = "$prev" ]; then
       return 0
     fi
@@ -130,7 +199,7 @@ cmd_dismiss() {
 }
 
 cmd_msg() {
-  local target=${1:-} text=${2:-} session panes id name buffer
+  local target=${1:-} text=${2:-} session panes id name
   [ -n "$target" ] && [ -n "$text" ] || die "usage: peon-code.sh msg <name|all> 'text' [<session>]"
   session=$(session_name "${3:-}")
   tmux has-session -t "=$session" 2>/dev/null || die "no session $session"
@@ -150,17 +219,56 @@ cmd_msg() {
     done <<<"$panes"
     exit 1
   fi
-  buffer="peon-msg-$$"
-  printf '%s' "[from user] $text" | tmux load-buffer -b "$buffer" -
   for id in "${ids[@]}"; do
-    tmux paste-buffer -b "$buffer" -t "$id" -p
+    printf '%s' "[from user] $text" | paste_only "$id"
   done
   sleep 1
   for id in "${ids[@]}"; do
     tmux send-keys -t "$id" Enter
   done
-  tmux delete-buffer -b "$buffer"
   echo "peon-code: sent to ${#ids[@]} pane(s) in session $session"
+}
+
+# Send one agent's message to another agent's pane. A message of - is read
+# from stdin, which keeps quotes in it off the sender's command line. One run
+# makes the box check and the paste back to back, and Enter follows only once
+# the box holds the message; a box holding anything else keeps both the
+# message and whatever the user typed.
+cmd_send() {
+  local pane=${1:-} text=${2:-} want box i
+  [ -n "$pane" ] && [ -n "$text" ] || die "usage: peon-code.sh send <pane-id> 'text'|-"
+  if [ "$text" = - ]; then
+    text=$(cat)
+    [ -n "$text" ] || die "no message on stdin"
+  fi
+  case $(tmux display -pt "$pane" '#{pane_current_command}' 2>/dev/null || true) in
+    "") die "no pane $pane" ;;
+    sh|bash|zsh|fish|dash|ksh) die "pane $pane is back at a shell; its agent is gone" ;;
+  esac
+  # The pane option is set on agent panes at launch: a paste is refused
+  # anywhere else, rather than reaching any pane on the tmux server.
+  [ -n "$(tmux show-options -pqv -t "$pane" @peon_name 2>/dev/null || true)" ] ||
+    die "pane $pane is not a peon-code agent pane"
+  pane_takes_keys "$pane" || die "pane $pane is in copy mode, retry later"
+  box=$(pane_box_text "$pane") || case $? in
+    2) die "pane $pane draws no prompt marker peon-code knows; message it by hand" ;;
+    *) die "pane $pane is on a dialog or a menu, retry later" ;;
+  esac
+  [ -z "$box" ] || die "target box busy, retry later"
+  want=$(printf '%s' "$text" | plain_text)
+  printf '%s' "$text" | paste_only "$pane"
+  for ((i = 0; i < 10; i++)); do
+    sleep 0.2
+    box=$(pane_box_text "$pane") || box=""
+    if [ "$box" = "$want" ]; then
+      pane_takes_keys "$pane" ||
+        die "no Enter sent: pane $pane went into copy mode, and the message is in its box for the user to submit"
+      tmux send-keys -t "$pane" Enter
+      echo "peon-code: sent to $pane"
+      return 0
+    fi
+  done
+  die "no Enter sent: pane $pane holds something other than the message, which is still in its box for the user to sort out"
 }
 
 # Paste a pane's launch brief again, so an agent that compacted its

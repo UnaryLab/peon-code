@@ -152,7 +152,7 @@ test_unique_buffers_and_launch_failure() {
 
   PATH="$fake_bin:$PATH" HOME="$home_dir" FAKE_TMUX_LOG="$log" FAKE_TMUX_MODE=owned \
     "$ROOT/peon-code.sh" msg all hello owned >"$TEST_DIR/msg.out"
-  grep -Eq 'load-buffer -b peon-msg-[0-9]+ -' "$log" ||
+  grep -Eq 'load-buffer -b peon-code-[0-9]+-1 -' "$log" ||
     fail "msg did not use a unique tmux buffer"
 
   : >"$log"
@@ -201,9 +201,216 @@ test_config_loading() {
   assert_contains "$brief_file" "Keep changes focused."
   # The message prefix names the sender's CLI, its agent name, and its pane.
   assert_contains "$brief_file" "Start every message you send with [from ./missing-agent boss %"
-  # An empty focused box shows no hint, only the marker (and in some TUIs a
-  # drawn cursor cell); the brief must call that empty so sends are not held.
-  assert_contains "$brief_file" "Nothing after the marker, dim or gray hint text, or a single highlighted blank cell (the cursor some TUIs draw) all mean the box is empty"
+  # Agents send through the subcommand, which checks and pastes in one run,
+  # instead of the raw send-keys recipe that left a gap between the two.
+  assert_contains "$brief_file" "$ROOT/peon-code.sh send <other-pane-id> - <<'PEON'"
+  assert_contains "$brief_file" "3. Held sends: send makes the box check and the paste back to back"
+  assert_not_contains "$brief_file" "tmux send-keys -t <other-pane-id> -l"
+  # The message goes in on stdin, so nothing asks agents to mind their quoting.
+  assert_not_contains "$brief_file" "Avoid single quotes"
+}
+
+# A tmux stand-in for send: the pane keeps its before-the-paste look until a
+# paste is logged, then keeps it for FAKE_SETTLE more box reads before showing
+# the box the message landed in. A box read is one cursor lookup followed by
+# one capture, so the capture count is the number of polls send made.
+SEND_LOG="$TEST_DIR/tmux-send.log"
+make_send_bin() {
+  local fake_bin=$1 bin_dir="$TEST_DIR/send-bin"
+  mkdir -p "$bin_dir"
+  cp "$fake_bin/sleep" "$bin_dir/sleep"
+  cat >"$bin_dir/tmux" <<'FAKE_TMUX'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$FAKE_TMUX_LOG"
+state=before
+grep -Fq paste-buffer "$FAKE_TMUX_LOG" && state=after
+reads=0
+[ -f "$FAKE_TMUX_LOG.reads" ] && reads=$(cat "$FAKE_TMUX_LOG.reads")
+box=$FAKE_BOX
+cursor=$FAKE_CURSOR
+in_mode=${FAKE_IN_MODE:-0}
+if [ "$state" = after ]; then
+  in_mode=${FAKE_IN_MODE_AFTER:-0}
+  if [ "$reads" -ge "${FAKE_SETTLE:-0}" ]; then
+    box=$FAKE_BOX_AFTER
+    cursor=$FAKE_CURSOR_AFTER
+  fi
+fi
+case ${1:-} in
+  display)
+    case "$*" in
+      *pane_current_command*) printf '%s\n' "${FAKE_CMD:-node}" ;;
+      *pane_in_mode*) printf '%s\n' "$in_mode" ;;
+      *cursor_x*) printf '%s\n' "$cursor" ;;
+      *cursor_y*) printf '%s\n' "${cursor##* }" ;;
+    esac
+    ;;
+  capture-pane)
+    printf '%s\n' "$box"
+    [ "$state" = after ] && printf '%s' "$((reads + 1))" >"$FAKE_TMUX_LOG.reads"
+    ;;
+  show-options) printf '%s\n' "${FAKE_PEON_NAME-impl}" ;;
+  load-buffer) printf 'buffer-content:%s\n' "$(cat)" >>"$FAKE_TMUX_LOG" ;;
+esac
+exit 0
+FAKE_TMUX
+  chmod +x "$bin_dir/tmux"
+  printf '%s\n' "$bin_dir"
+}
+
+reset_send_log() {
+  : >"$SEND_LOG"
+  rm -f "$SEND_LOG.reads"
+}
+
+# How many times send read the target's box.
+send_captures() {
+  grep -c '^capture-pane' "$SEND_LOG" || true
+}
+
+# One refused send. Arguments after the wanted message are the FAKE_ settings
+# that put the pane in the state under test.
+assert_send_refused() {
+  local what=$1 want=$2 out="$TEST_DIR/send-refuse.out" err="$TEST_DIR/send-refuse.err"
+  shift 2
+  reset_send_log
+  if PATH="$SEND_BIN:$PATH" FAKE_TMUX_LOG="$SEND_LOG" \
+    env "$@" "$ROOT/peon-code.sh" send %2 'hello world' >"$out" 2>"$err"; then
+    fail "send pasted into $what"
+  fi
+  assert_contains "$err" "$want"
+  assert_not_contains "$SEND_LOG" "paste-buffer"
+  assert_not_contains "$SEND_LOG" "send-keys"
+}
+
+# Every state that must stop a send before anything is pasted.
+test_send_refuses() {
+  local empty_box busy_box menu_box bare_box
+  empty_box='output line
+❯
+────'
+  busy_box='output line
+❯ busy text
+────'
+  # A menu draws the marker on its selected row with the cursor right after
+  # it, so the box measures empty and only the menu itself gives it away.
+  menu_box='Do you trust this folder?
+❯ 1. Yes, I trust this folder
+  2. No, exit'
+  bare_box='some other CLI
+> ready
+────'
+
+  assert_send_refused "a box that already had typed text" "target box busy, retry later" \
+    FAKE_BOX="$busy_box" FAKE_CURSOR='11 1'
+  # The user typed, then moved the cursor back to the start of the line: the
+  # text sits after the cursor, and the box is busy all the same.
+  assert_send_refused "a box holding text the cursor had moved back over" "target box busy, retry later" \
+    FAKE_BOX="$busy_box" FAKE_CURSOR='2 1'
+  # In copy mode a paste lands but Enter goes to the copy-mode key table.
+  assert_send_refused "a pane in copy mode" "is in copy mode, retry later" \
+    FAKE_BOX="$empty_box" FAKE_CURSOR='2 1' FAKE_IN_MODE=1
+  assert_send_refused "a pane sitting on a menu" "is on a dialog or a menu, retry later" \
+    FAKE_BOX="$menu_box" FAKE_CURSOR='1 1'
+  # No marker means no box peon-code can measure, which no waiting fixes, so
+  # the message says to send it by hand instead of to retry.
+  assert_send_refused "a pane drawing no prompt marker" "draws no prompt marker peon-code knows" \
+    FAKE_BOX="$bare_box" FAKE_CURSOR='7 1'
+  assert_send_refused "a pane back at a shell" "back at a shell" \
+    FAKE_BOX="$empty_box" FAKE_CURSOR='2 1' FAKE_CMD=zsh
+  # Without the launch-time pane option, send would reach any pane on the
+  # tmux server, agent pane or not.
+  assert_send_refused "a pane peon-code did not launch" "is not a peon-code agent pane" \
+    FAKE_BOX="$empty_box" FAKE_CURSOR='2 1' FAKE_PEON_NAME=
+}
+
+# What send does once it has pasted: it polls the box and presses Enter only
+# for a box holding exactly the message.
+test_send_delivers() {
+  local empty_box sent_box extra_box payload keys
+  empty_box='output line
+❯
+────'
+  sent_box='output line
+❯ hello world
+────'
+  extra_box='output line
+❯ hello worldXY
+────'
+
+  # The box holds the pasted message only from the fourth poll on, so a send
+  # that stopped polling early would never see it.
+  reset_send_log
+  PATH="$SEND_BIN:$PATH" FAKE_TMUX_LOG="$SEND_LOG" FAKE_SETTLE=3 \
+    FAKE_BOX="$empty_box" FAKE_CURSOR='2 1' \
+    FAKE_BOX_AFTER="$sent_box" FAKE_CURSOR_AFTER='13 1' \
+    "$ROOT/peon-code.sh" send %2 'hello world' >"$TEST_DIR/send-ok.out"
+  assert_contains "$TEST_DIR/send-ok.out" "sent to %2"
+  assert_contains "$SEND_LOG" "buffer-content:hello world"
+  grep -Eq 'paste-buffer -b peon-code-[0-9]+-2 -dpt %2' "$SEND_LOG" ||
+    fail "send did not paste through a unique tmux buffer"
+  assert_contains "$SEND_LOG" "send-keys -t %2 Enter"
+  [ "$(send_captures)" = 5 ] || fail "send made $(send_captures) box reads, expected 5"
+
+  # A box holding more than the message never matches, so send polls to its
+  # cap, leaves the box alone, and says so.
+  reset_send_log
+  if PATH="$SEND_BIN:$PATH" FAKE_TMUX_LOG="$SEND_LOG" \
+    FAKE_BOX="$empty_box" FAKE_CURSOR='2 1' \
+    FAKE_BOX_AFTER="$extra_box" FAKE_CURSOR_AFTER='15 1' \
+    "$ROOT/peon-code.sh" send %2 'hello world' >"$TEST_DIR/send-extra.out" 2>"$TEST_DIR/send-extra.err"; then
+    fail "send submitted a box holding more than the message"
+  fi
+  assert_contains "$TEST_DIR/send-extra.err" "no Enter sent"
+  assert_contains "$SEND_LOG" "paste-buffer"
+  assert_not_contains "$SEND_LOG" "send-keys"
+  [ "$(send_captures)" = 11 ] || fail "send made $(send_captures) box reads, expected 11"
+
+  # A pane that enters copy mode after the paste keeps the message: Enter
+  # would go to the copy-mode key table instead of the agent.
+  reset_send_log
+  if PATH="$SEND_BIN:$PATH" FAKE_TMUX_LOG="$SEND_LOG" FAKE_IN_MODE_AFTER=1 \
+    FAKE_BOX="$empty_box" FAKE_CURSOR='2 1' \
+    FAKE_BOX_AFTER="$sent_box" FAKE_CURSOR_AFTER='13 1' \
+    "$ROOT/peon-code.sh" send %2 'hello world' >"$TEST_DIR/send-mode.out" 2>"$TEST_DIR/send-mode.err"; then
+    fail "send pressed Enter on a pane in copy mode"
+  fi
+  assert_contains "$TEST_DIR/send-mode.err" "went into copy mode"
+  assert_contains "$SEND_LOG" "paste-buffer"
+  assert_not_contains "$SEND_LOG" "send-keys"
+
+  # A bracketed-paste terminator in the message would end the paste early and
+  # hand the rest to the receiving agent as keystrokes; it never gets pasted.
+  reset_send_log
+  payload=$(printf 'hello \033[201~\rrm -rf /tmp/peon-x')
+  PATH="$SEND_BIN:$PATH" FAKE_TMUX_LOG="$SEND_LOG" \
+    FAKE_BOX="$empty_box" FAKE_CURSOR='2 1' \
+    FAKE_BOX_AFTER='output line
+❯ hello [201~rm -rf /tmp/peon-x
+────' FAKE_CURSOR_AFTER='31 1' \
+    "$ROOT/peon-code.sh" send %2 "$payload" >"$TEST_DIR/send-esc.out"
+  assert_contains "$TEST_DIR/send-esc.out" "sent to %2"
+  assert_contains "$SEND_LOG" "buffer-content:hello [201~rm -rf /tmp/peon-x"
+  if grep -Fq "$(printf '\033')" "$SEND_LOG"; then
+    fail "send pasted an escape character into the pane"
+  fi
+  keys=$(grep -c '^send-keys' "$SEND_LOG" || true)
+  [ "$keys" = 1 ] || fail "send made $keys send-keys calls, expected only the Enter"
+
+  # A message of - comes in on stdin, so quoting it is the shell's problem,
+  # not the sending agent's.
+  reset_send_log
+  PATH="$SEND_BIN:$PATH" FAKE_TMUX_LOG="$SEND_LOG" \
+    FAKE_BOX="$empty_box" FAKE_CURSOR='2 1' \
+    FAKE_BOX_AFTER="output line
+❯ it is the user's box
+────" FAKE_CURSOR_AFTER='21 1' \
+    "$ROOT/peon-code.sh" send %2 - >"$TEST_DIR/send-stdin.out" <<'PEON'
+it is the user's box
+PEON
+  assert_contains "$TEST_DIR/send-stdin.out" "sent to %2"
+  assert_contains "$SEND_LOG" "buffer-content:it is the user's box"
+  assert_contains "$SEND_LOG" "send-keys -t %2 Enter"
 }
 
 # Every agent must reopen its own thread: same-CLI panes share a directory,
@@ -356,6 +563,9 @@ test_install_guard
 test_session_ownership "$fake_bin"
 test_unique_buffers_and_launch_failure "$fake_bin"
 test_config_loading "$fake_bin"
+SEND_BIN=$(make_send_bin "$fake_bin")
+test_send_refuses
+test_send_delivers
 test_resume_picks_each_agent_thread "$fake_bin"
 test_resume_picker_answered "$fake_bin"
 test_rebrief "$fake_bin"

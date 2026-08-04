@@ -36,6 +36,7 @@ peon-code lab claude codex claude      # 3-agent example
 peon-code resume [<session>] [<cmd> ...]     # same, each agent reopening its last conversation
 peon-code dismiss [<session>]          # kill one session, default the current directory name
 peon-code msg <name|all> 'text' [<session>]  # send text to an agent pane of one session
+peon-code send <pane-id> 'text'|-            # agent to agent: paste into a pane and submit it (- reads stdin)
 peon-code rebrief <name|all> [<session>]     # send an agent its launch brief again
 peon-code list                         # agent panes of every session
 peon-code -h                           # help
@@ -131,7 +132,9 @@ A claude pane gets its brief only once its input line is drawn and the pane has 
 
 ### How messaging works
 
-Each agent reads another pane with `tmux capture-pane` and messages it with `tmux send-keys`. The message text is sent first, then after a 1-second sleep the `Enter` is sent as a separate `send-keys` call. The Enter must be separate: a same-call trailing Enter is treated by the receiver's TUI as pasted text and never submits.
+Each agent reads another pane with `tmux capture-pane` and messages it with `peon-code send <pane-id> -`, the message on stdin. One run of `send` makes the box check and the paste back to back, and it presses `Enter` only once the box holds exactly the message.
+
+`send` first measures the target's input box: everything from the prompt marker to the end of the cursor's row, so text the cursor was moved back over still counts. A box holding anything, a menu, a dialog, a pane in copy mode, a pane back at a shell, and a pane that is not a peon-code agent pane each make `send` exit non-zero without pasting. Into an empty box it pastes the message through its own tmux buffer, dropping every control byte but tab and newline, then polls the box for up to 2 seconds and presses `Enter` only once the box holds that message and nothing else. A box that never matches keeps the message and whatever else it holds, with no `Enter` sent, for you to sort out.
 
 ### Environment
 

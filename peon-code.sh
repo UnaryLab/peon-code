@@ -6,6 +6,7 @@
 #   ./peon-code.sh resume [<session>] [<cmd> ...]
 #   ./peon-code.sh dismiss [<session>]
 #   ./peon-code.sh msg <name|all> 'text' [<session>]
+#   ./peon-code.sh send <pane-id> 'text'|-
 #   ./peon-code.sh rebrief <name|all> [<session>]
 #   ./peon-code.sh list
 #   ./peon-code.sh uninstall [bin-dir]
@@ -45,6 +46,10 @@ peon-code.sh dismiss [<session>]                kill one session
                                                 (session defaults to the current directory name)
 peon-code.sh msg <name|all> 'text' [<session>]  send text to an agent pane
                                                 (session defaults to the current directory name)
+peon-code.sh send <pane-id> 'text'|-            agent to agent: paste into a pane and
+                                                submit it, refused while that pane's
+                                                input box holds typed text
+                                                (- reads the message from stdin)
 peon-code.sh rebrief <name|all> [<session>]     send an agent its launch brief again,
                                                 for after it compacts its conversation
                                                 (session defaults to the current directory name)
@@ -100,6 +105,7 @@ case "${1:-}" in
   resume) RESUME=1; shift ;;
   dismiss) shift; cmd_dismiss "$@"; exit 0 ;;
   msg)  shift; cmd_msg "$@"; exit 0 ;;
+  send) shift; cmd_send "$@"; exit 0 ;;
   rebrief) shift; cmd_rebrief "$@"; exit 0 ;;
   list) [ $# -eq 1 ] || die "list takes no arguments"; cmd_list; exit 0 ;;
   uninstall)
@@ -204,18 +210,21 @@ $(cat "${ROLES[$i]}")
 You are $WHO, agent ${NAMES[$i]} of peon-code session $SESSION, in pane $i of $N (this pane is ${PANE_IDS[$i]}), one of $N AI coding agents collaborating side-by-side in tmux. The panes are:
 $ROSTER
 $ROLE_SECTION
-To read another agent's latest output, run: tmux capture-pane -pt <other-pane-id> -S -100. To send another agent a message, run: tmux send-keys -t <other-pane-id> -l -- 'your message' && sleep 1 && tmux send-keys -t <other-pane-id> Enter. The Enter must be a separate send-keys after the sleep, or the receiver's TUI treats it as pasted text and never submits. Start every message you send with [from $MSG_FROM ${PANE_IDS[$i]}] so receivers know who sent it and can tell messages apart from scraped output. Avoid single quotes/apostrophes in messages, since the message is wrapped in single quotes in the send-keys command. Message another agent only when: (1) you start a task, to claim the files you will touch; (2) you finish a task, with a one-line summary; (3) you are blocked or detect a conflicting edit. Do not message for routine progress or individual file saves. Check the other panes at task start and task end only.
+To read another agent's latest output, run: tmux capture-pane -pt <other-pane-id> -S -100. To send another agent a message, run this, with the message on the lines between the markers:
+$SCRIPT_DIR/peon-code.sh send <other-pane-id> - <<'PEON'
+your message
+PEON
+The message is read from stdin, so quotes and apostrophes in it stay out of your shell. It pastes the message and presses Enter only once the target's input box holds it, and it exits non-zero without pasting when that box already holds typed text. Start every message you send with [from $MSG_FROM ${PANE_IDS[$i]}] so receivers know who sent it and can tell messages apart from scraped output. Message another agent only when: (1) you start a task, to claim the files you will touch; (2) you finish a task, with a one-line summary; (3) you are blocked or detect a conflicting edit. Do not message for routine progress or individual file saves. Check the other panes at task start and task end only.
 
 The task board is $TASK_BOARD in the working directory, a table of who | task | files | status; create it with that header row if it is not there. Record your task claims and finishes there, and read it before claiming files someone else already listed. Messages are alerts; the board is the record that lasts.
 
 Rules:
 1. Task intake: the user assigns work by typing into the ${NAMES[$MAIN]} pane (${PANE_IDS[$MAIN]}). That agent splits the work onto the task board and assigns it; every other agent waits for a board entry or a message instead of inventing work at launch. The agent that split the work posts the final summary to the user.
 2. Git discipline: never run git add -A, never commit, and never run destructive git commands unless the user asks. Stage only the files you claimed. Only one agent touches git at a time.
-3. Look before sending: capture the target pane first. If it shows a dialog or a menu (numbered choices, a yes/no question), wait and retry later; never type into it. On the input line, a plain capture makes the greyed hint look identical to typed text, so check with colors kept: tmux capture-pane -pet <id>. Judge only what follows the prompt marker on that line. Nothing after the marker, dim or gray hint text, or a single highlighted blank cell (the cursor some TUIs draw) all mean the box is empty: send as normal. Hold both the message and the Enter and retry later only when characters with no dim or gray styling follow the marker, because a pasted message appends to the box rather than replacing it.
+3. Held sends: send makes the box check and the paste back to back in one run, and presses Enter only when the box holds exactly your message. When it fails with a busy message, the target was mid-dialog, mid-menu, in copy mode, or holding typed text: wait, do something else, and retry later. Never paste into that pane by hand.
 4. Dead-pane guard: if tmux display -pt <id> '#{pane_current_command}' shows a shell, that agent is gone. Do not send, because your text would run as shell commands. Tell the user instead.
-5. Literal sends: use tmux send-keys -t <id> -l -- 'message' so key names and leading dashes are not read as keys. Enter still goes separately after a 1 second sleep.
-6. No idle deadlocks: if you are blocked, message once, work on something else, then re-check once. After that, proceed on your best judgment or tell the user.
-7. Rate limits: if you hit a usage limit, note it and the reset time on the task board so the others can reassign the work.
+5. No idle deadlocks: if you are blocked, message once, work on something else, then re-check once. After that, proceed on your best judgment or tell the user.
+6. Rate limits: if you hit a usage limit, note it and the reset time on the task board so the others can reassign the work.
 EOF
   BRIEF_FILE="$BRIEF_DIR/$i.md"  # by index: a CLI-team name is the command, which can hold / or repeat
   printf '%s' "$BRIEF" >"$BRIEF_FILE"
