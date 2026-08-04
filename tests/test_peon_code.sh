@@ -101,11 +101,15 @@ case ${1:-} in
   display)
     case "$*" in
       *cursor_y*) printf '1\n' ;;
-      *) printf 'zsh\n' ;;
+      *pane_in_mode*) printf '%s\n' "${FAKE_IN_MODE:-0}" ;;
+      *) printf '%s\n' "${FAKE_TMUX_CMD:-zsh}" ;;
     esac
     ;;
   capture-pane)
-    printf '%s\n' "${FAKE_TMUX_CAPTURE:-}"
+    cap=${FAKE_TMUX_CAPTURE:-}
+    # What the pane shows once a paste has reached it, when the test sets one.
+    grep -Fq paste-buffer "$FAKE_TMUX_LOG" && cap=${FAKE_TMUX_CAPTURE_AFTER:-$cap}
+    printf '%s\n' "$cap"
     ;;
   load-buffer)
     content=$(cat)
@@ -155,8 +159,10 @@ test_unique_buffers_and_launch_failure() {
   local fake_bin=$1 log="$TEST_DIR/tmux-buffer.log" home_dir="$TEST_DIR/home-buffer"
   mkdir -p "$home_dir" "$TEST_DIR/work"
 
+  # The pane here never shows the paste, so the run ends nonzero; what this
+  # case checks is the buffer name.
   PATH="$fake_bin:$PATH" HOME="$home_dir" FAKE_TMUX_LOG="$log" FAKE_TMUX_MODE=owned \
-    "$ROOT/peon-code.sh" msg all hello owned >"$TEST_DIR/msg.out"
+    "$ROOT/peon-code.sh" msg all hello owned >"$TEST_DIR/msg.out" 2>"$TEST_DIR/msg.err" || true
   grep -Eq 'load-buffer -b peon-code-[0-9]+-1 -' "$log" ||
     fail "msg did not use a unique tmux buffer"
 
@@ -181,6 +187,37 @@ test_unique_buffers_and_launch_failure() {
   if grep -Fq "/./missing-agent.md" "$TEST_DIR/launch.err"; then
     fail "a slash-containing command was used as a brief filename"
   fi
+}
+
+# A launch into panes whose shell prompt draws the same marker a CLI does:
+# the command line is submitted anyway, since the shell prompt is not a box
+# peon-code can check, and a brief the box never shows leaves the run going.
+test_launch_with_prompt_box() {
+  local fake_bin=$1 log="$TEST_DIR/tmux-prompt-box.log" home_dir="$TEST_DIR/home-prompt-box"
+  local work_dir="$TEST_DIR/prompt-box-work"
+  # A shell prompt ending in the marker, with a clock on the right, so the box
+  # reads back non-empty and never matches what was pasted.
+  local prompt_box='work on main
+❯ [12:34:56]'
+  mkdir -p "$home_dir" "$work_dir"
+  printf 'boss claude -\n' >"$work_dir/peon-code.conf"
+
+  : >"$log"
+  (
+    cd "$work_dir"
+    PATH="$fake_bin:$PATH" HOME="$home_dir" TMPDIR="$TEST_DIR" \
+      FAKE_TMUX_LOG="$log" FAKE_TMUX_MODE=launch FAKE_TMUX_CMD=node \
+      FAKE_TMUX_CAPTURE="$prompt_box" \
+      "$ROOT/peon-code.sh" prompt-box
+  ) >"$TEST_DIR/prompt-box.out" 2>"$TEST_DIR/prompt-box.err" </dev/null ||
+    fail "launch gave up on a pane whose shell prompt draws a box"
+  assert_contains "$TEST_DIR/prompt-box.out" "session prompt-box is ready"
+  assert_contains "$log" "buffer-content:claude"
+  assert_contains "$TEST_DIR/prompt-box.err" \
+    "no Enter sent to boss %1: the brief is in its box for you to submit"
+  # One Enter: the command line got it, the brief did not.
+  [ "$(grep -c -Fx -- 'send-keys -t %1 Enter' "$log")" = 1 ] ||
+    fail "launch pressed the wrong number of Enters into a pane with a prompt box"
 }
 
 test_config_loading() {
@@ -681,17 +718,82 @@ ${e}[2m❯ Try \"fix the bug\"${e}[0m$tail"
 # stored brief is skipped with a note, and sending none is an error.
 test_rebrief() {
   local fake_bin=$1 log="$TEST_DIR/tmux-rebrief.log" home_dir="$TEST_DIR/home-rebrief"
+  local paste_line enter_line
   local empty_box='output line
 ❯
+────'
+  local brief_box='output line
+❯ You are boss, follow the rules.
+────'
+  local placeholder_box='output line
+❯ [Pasted text #1 +15 lines]
 ────'
   mkdir -p "$home_dir"
   printf 'You are boss, follow the rules.\n' >"$TEST_DIR/rebrief-brief.md"
 
+  : >"$log"
   PATH="$fake_bin:$PATH" HOME="$home_dir" FAKE_TMUX_LOG="$log" FAKE_TMUX_MODE=owned \
     FAKE_TMUX_BRIEF="$TEST_DIR/rebrief-brief.md" FAKE_TMUX_CAPTURE="$empty_box" \
+    FAKE_TMUX_CAPTURE_AFTER="$brief_box" \
     "$ROOT/peon-code.sh" rebrief all owned >"$TEST_DIR/rebrief.out"
   assert_contains "$TEST_DIR/rebrief.out" "rebriefed 1 pane(s) in session owned"
   assert_contains "$log" "buffer-content:You are boss, follow the rules."
+  # The Enter follows the paste, and only after a box read showed the brief.
+  paste_line=$(grep -n -F -- "paste-buffer" "$log" | head -1 | cut -d: -f1)
+  enter_line=$(grep -n -Fx -- "send-keys -t %1 Enter" "$log" | head -1 | cut -d: -f1)
+  [ -n "$enter_line" ] || fail "rebrief pressed no Enter after the brief landed"
+  [ "$enter_line" -gt "$paste_line" ] || fail "rebrief pressed Enter before pasting the brief"
+  awk -v a="$paste_line" -v b="$enter_line" \
+    'NR > a && NR < b && /^capture-pane/ { n++ } END { exit !(n + 0) }' "$log" ||
+    fail "rebrief pressed Enter without reading the box after the paste"
+
+  # A CLI that draws the brief as one paste placeholder row instead of its
+  # text still gets its Enter.
+  : >"$log"
+  PATH="$fake_bin:$PATH" HOME="$home_dir" FAKE_TMUX_LOG="$log" FAKE_TMUX_MODE=owned \
+    FAKE_TMUX_BRIEF="$TEST_DIR/rebrief-brief.md" FAKE_TMUX_CAPTURE="$empty_box" \
+    FAKE_TMUX_CAPTURE_AFTER="$placeholder_box" \
+    "$ROOT/peon-code.sh" rebrief all owned >"$TEST_DIR/rebrief-placeholder.out"
+  assert_contains "$TEST_DIR/rebrief-placeholder.out" "rebriefed 1 pane(s) in session owned"
+  assert_contains "$log" "send-keys -t %1 Enter"
+
+  # A box that never shows the brief keeps the Enter back, so the pasted text
+  # is left for the user to submit.
+  : >"$log"
+  if PATH="$fake_bin:$PATH" HOME="$home_dir" FAKE_TMUX_LOG="$log" FAKE_TMUX_MODE=owned \
+    FAKE_TMUX_BRIEF="$TEST_DIR/rebrief-brief.md" FAKE_TMUX_CAPTURE="$empty_box" \
+    "$ROOT/peon-code.sh" rebrief all owned >"$TEST_DIR/rebrief-unseen.out" 2>"$TEST_DIR/rebrief-unseen.err"; then
+    fail "rebrief reported a brief its target never showed as sent"
+  fi
+  assert_contains "$TEST_DIR/rebrief-unseen.err" "no Enter sent to impl %1: the brief is in its box for the user to submit"
+  assert_contains "$TEST_DIR/rebrief-unseen.err" "no brief sent in session owned"
+  assert_contains "$log" "paste-buffer"
+  assert_not_contains "$log" "send-keys"
+
+  # An empty brief file paired with a dialog the paste opened: the dialog
+  # measures the box empty, which must not count as the brief showing up.
+  : >"$log"
+  : >"$TEST_DIR/rebrief-empty.md"
+  if PATH="$fake_bin:$PATH" HOME="$home_dir" FAKE_TMUX_LOG="$log" FAKE_TMUX_MODE=owned \
+    FAKE_TMUX_BRIEF="$TEST_DIR/rebrief-empty.md" FAKE_TMUX_CAPTURE="$empty_box" \
+    FAKE_TMUX_CAPTURE_AFTER='Do you trust this folder?
+❯ 1. Yes, I trust this folder' \
+    "$ROOT/peon-code.sh" rebrief all owned >"$TEST_DIR/rebrief-empty.out" 2>"$TEST_DIR/rebrief-empty.err"; then
+    fail "rebrief answered a dialog with an empty brief"
+  fi
+  assert_not_contains "$log" "send-keys"
+
+  # A pane in copy mode routes keys through the copy-mode table, so the Enter
+  # is held back there too, even though the box shows the brief.
+  : >"$log"
+  if PATH="$fake_bin:$PATH" HOME="$home_dir" FAKE_TMUX_LOG="$log" FAKE_TMUX_MODE=owned \
+    FAKE_TMUX_BRIEF="$TEST_DIR/rebrief-brief.md" FAKE_TMUX_CAPTURE="$empty_box" \
+    FAKE_TMUX_CAPTURE_AFTER="$brief_box" FAKE_IN_MODE=1 \
+    "$ROOT/peon-code.sh" rebrief all owned >"$TEST_DIR/rebrief-copy.out" 2>"$TEST_DIR/rebrief-copy.err"; then
+    fail "rebrief pressed Enter on a pane in copy mode"
+  fi
+  assert_contains "$TEST_DIR/rebrief-copy.err" "no Enter sent to impl %1: the brief is in its box for the user to submit"
+  assert_not_contains "$log" "send-keys"
 
   : >"$log"
   if PATH="$fake_bin:$PATH" HOME="$home_dir" FAKE_TMUX_LOG="$log" FAKE_TMUX_MODE=owned \
@@ -728,7 +830,7 @@ test_rebrief() {
 # into a pane whose input box is empty.
 test_compact() {
   local fake_bin=$1 log="$TEST_DIR/tmux-compact.log" bin_dir="$TEST_DIR/compact-bin"
-  local empty_box busy_box typed_box menu_box brief="$TEST_DIR/compact-brief.md"
+  local empty_box busy_box menu_box brief="$TEST_DIR/compact-brief.md"
   local enter_line brief_line settle_reads
   mkdir -p "$bin_dir"
   cp "$fake_bin/sleep" "$bin_dir/sleep"
@@ -739,10 +841,15 @@ pane=%1
 case "$*" in *%2*) pane=%2 ;; esac
 box=$FAKE_BOX
 [ "$pane" = %2 ] && box=$FAKE_BOX2
-# A pane shows the pasted command in its box once the paste has reached it,
-# and empties the box again once the Enter submits it.
-grep -Fq -- "-dpt $pane" "$FAKE_TMUX_LOG" && box=$FAKE_BOX_AFTER
-grep -Fqx -- "send-keys -t $pane Enter" "$FAKE_TMUX_LOG" && box=$FAKE_BOX
+# A pane shows what was pasted into it once the paste has reached it, and
+# empties the box again once an Enter submits it.
+pastes=$(grep -c -- "-dpt $pane" "$FAKE_TMUX_LOG")
+enters=$(grep -c -Fx -- "send-keys -t $pane Enter" "$FAKE_TMUX_LOG")
+if [ "$pastes" -gt "$enters" ]; then
+  box="output line
+❯ $(grep -F 'buffer-content:' "$FAKE_TMUX_LOG" | tail -1 | cut -d: -f2-)
+────"
+fi
 case ${1:-} in
   has-session) ;;
   show-options)
@@ -774,9 +881,6 @@ FAKE_TMUX
   busy_box='output line
 ❯ half a question
 ────'
-  typed_box='output line
-❯ /compact
-────'
   menu_box='Do you trust this folder?
 ❯ 1. Yes, I trust this folder
   2. No, exit'
@@ -784,7 +888,7 @@ FAKE_TMUX
 
   : >"$log"
   PATH="$bin_dir:$PATH" FAKE_TMUX_LOG="$log" FAKE_BOX="$empty_box" \
-    FAKE_BOX_AFTER="$typed_box" FAKE_TMUX_BRIEF="$brief" \
+    FAKE_TMUX_BRIEF="$brief" \
     "$ROOT/peon-code.sh" compact all owned >"$TEST_DIR/compact.out"
   # No [from user] prefix and nothing else: a prefix stops the CLI from
   # reading the line as a slash command.
@@ -804,6 +908,9 @@ FAKE_TMUX
     'NR > a && NR < b && /^capture-pane/ { n++ } END { print n + 0 }' "$log")
   [ "$settle_reads" -ge 2 ] ||
     fail "compact made $settle_reads box reads between /compact and the brief, expected a settle wait"
+  # One Enter submits /compact, the second submits the brief the pane shows.
+  [ "$(grep -c -Fx -- 'send-keys -t %1 Enter' "$log")" = 2 ] ||
+    fail "compact left the brief in the box instead of submitting it"
 
   : >"$log"
   if PATH="$bin_dir:$PATH" FAKE_TMUX_LOG="$log" FAKE_BOX="$busy_box" \
@@ -827,7 +934,7 @@ FAKE_TMUX
   # and the busy one is left as the user typed it.
   : >"$log"
   PATH="$bin_dir:$PATH" FAKE_TMUX_LOG="$log" FAKE_BOX="$empty_box" \
-    FAKE_BOX_AFTER="$typed_box" FAKE_BOX2="$busy_box" FAKE_TMUX_BRIEF="$brief" \
+    FAKE_BOX2="$busy_box" FAKE_TMUX_BRIEF="$brief" \
     FAKE_PANES='%1 node impl
 %2 node boss' \
     "$ROOT/peon-code.sh" compact all owned \
@@ -848,7 +955,7 @@ FAKE_TMUX
   # held back rather than pasted over whatever is on screen.
   : >"$log"
   PATH="$bin_dir:$PATH" FAKE_TMUX_LOG="$log" FAKE_BOX="$empty_box" \
-    FAKE_BOX_AFTER="$typed_box" FAKE_TMUX_BRIEF="$brief" FAKE_UNSETTLED=1 \
+    FAKE_TMUX_BRIEF="$brief" FAKE_UNSETTLED=1 \
     "$ROOT/peon-code.sh" compact all owned \
     >"$TEST_DIR/compact-busy-after.out" 2>"$TEST_DIR/compact-busy-after.err"
   assert_contains "$TEST_DIR/compact-busy-after.out" "sent /compact to 1 pane(s) in session owned"
@@ -885,12 +992,127 @@ FAKE_TMUX
   assert_not_contains "$log" "send-keys"
 }
 
+# msg presses Enter into a pane only once that pane's box shows the message,
+# and one pane that never shows it does not hold up the others.
+test_msg() {
+  local fake_bin=$1 log="$TEST_DIR/tmux-msg.log" bin_dir="$TEST_DIR/msg-bin"
+  local paste_line enter_line
+  mkdir -p "$bin_dir"
+  cp "$fake_bin/sleep" "$bin_dir/sleep"
+  cat >"$bin_dir/tmux" <<'FAKE_TMUX'
+#!/usr/bin/env bash
+set -u
+printf '%s\n' "$*" >>"$FAKE_TMUX_LOG"
+pane=%1
+case "$*" in *%2*) pane=%2 ;; esac
+# tmux refuses the paste for a pane named in FAKE_REFUSE.
+case " ${FAKE_REFUSE:-} " in
+  *" $pane "*) case ${1:-} in paste-buffer) exit 1 ;; esac ;;
+esac
+box='output line
+❯
+────'
+# A pane shows what was pasted into it once the paste has reached it, except a
+# pane named in FAKE_BLIND, whose box never shows the paste.
+case " ${FAKE_BLIND:-} " in
+  *" $pane "*) ;;
+  *)
+    if grep -Fq -- "-dpt $pane" "$FAKE_TMUX_LOG"; then
+      box="output line
+❯ $(grep -F 'buffer-content:' "$FAKE_TMUX_LOG" | tail -1 | cut -d: -f2-)
+────"
+    fi
+    ;;
+esac
+case ${1:-} in
+  has-session) ;;
+  show-options) printf '1\n' ;;
+  list-panes) printf '%s\n' "${FAKE_PANES:-%1 node impl}" ;;
+  display)
+    case "$*" in
+      *pane_in_mode*) printf '%s\n' "${FAKE_IN_MODE:-0}" ;;
+      *cursor_y*) printf '1\n' ;;
+    esac
+    ;;
+  capture-pane) printf '%s\n' "$box" ;;
+  load-buffer) printf 'buffer-content:%s\n' "$(cat)" >>"$FAKE_TMUX_LOG" ;;
+esac
+exit 0
+FAKE_TMUX
+  chmod +x "$bin_dir/tmux"
+
+  : >"$log"
+  PATH="$bin_dir:$PATH" FAKE_TMUX_LOG="$log" \
+    FAKE_PANES='%1 node impl
+%2 node boss' \
+    "$ROOT/peon-code.sh" msg all hello owned >"$TEST_DIR/msg-all.out" 2>"$TEST_DIR/msg-all.err"
+  assert_contains "$TEST_DIR/msg-all.out" "sent to 2 pane(s) in session owned"
+  assert_contains "$log" "buffer-content:[from user] hello"
+  assert_contains "$log" "send-keys -t %2 Enter"
+  # The Enter follows the paste, and only after a box read showed the message.
+  paste_line=$(grep -n -F -- "-dpt %1" "$log" | head -1 | cut -d: -f1)
+  enter_line=$(grep -n -Fx -- "send-keys -t %1 Enter" "$log" | head -1 | cut -d: -f1)
+  [ -n "$enter_line" ] || fail "msg pressed no Enter after the message landed"
+  [ "$enter_line" -gt "$paste_line" ] || fail "msg pressed Enter before pasting the message"
+  awk -v a="$paste_line" -v b="$enter_line" \
+    'NR > a && NR < b && /^capture-pane/ { n++ } END { exit !(n + 0) }' "$log" ||
+    fail "msg pressed Enter without reading the box after the paste"
+
+  # One pane whose box never shows the message: it keeps its Enter back and is
+  # reported, and the other pane still gets its message submitted.
+  : >"$log"
+  if PATH="$bin_dir:$PATH" FAKE_TMUX_LOG="$log" FAKE_BLIND=%2 \
+    FAKE_PANES='%1 node impl
+%2 node boss' \
+    "$ROOT/peon-code.sh" msg all hello owned \
+    >"$TEST_DIR/msg-blind.out" 2>"$TEST_DIR/msg-blind.err"; then
+    fail "msg reported a message its target never showed as delivered"
+  fi
+  assert_contains "$TEST_DIR/msg-blind.out" "sent to 1 pane(s) in session owned"
+  assert_contains "$TEST_DIR/msg-blind.err" \
+    "no Enter sent to boss %2: the message is in its box for you to submit"
+  assert_contains "$TEST_DIR/msg-blind.err" "1 message(s) were not delivered in session owned"
+  assert_contains "$log" "send-keys -t %1 Enter"
+  assert_not_contains "$log" "send-keys -t %2"
+
+  # A pane tmux refuses the paste for takes no message and is reported, and the
+  # other pane still gets its own.
+  : >"$log"
+  if PATH="$bin_dir:$PATH" FAKE_TMUX_LOG="$log" FAKE_REFUSE=%2 \
+    FAKE_PANES='%1 node impl
+%2 node boss' \
+    "$ROOT/peon-code.sh" msg all hello owned \
+    >"$TEST_DIR/msg-refused.out" 2>"$TEST_DIR/msg-refused.err"; then
+    fail "msg reported a message tmux refused as delivered"
+  fi
+  assert_contains "$TEST_DIR/msg-refused.out" "sent to 1 pane(s) in session owned"
+  assert_contains "$TEST_DIR/msg-refused.err" \
+    "no message sent to boss %2: tmux refused the paste"
+  assert_contains "$log" "send-keys -t %1 Enter"
+  assert_not_contains "$log" "send-keys -t %2"
+
+  # A pane in copy mode routes an Enter through the copy-mode key table, so the
+  # message is left in its box instead.
+  : >"$log"
+  if PATH="$bin_dir:$PATH" FAKE_TMUX_LOG="$log" FAKE_IN_MODE=1 \
+    "$ROOT/peon-code.sh" msg all hello owned \
+    >"$TEST_DIR/msg-copy.out" 2>"$TEST_DIR/msg-copy.err"; then
+    fail "msg reported a message its target never showed as delivered"
+  fi
+  assert_contains "$TEST_DIR/msg-copy.out" "sent to 0 pane(s) in session owned"
+  assert_contains "$TEST_DIR/msg-copy.err" \
+    "no Enter sent to impl %1: the message is in its box for you to submit"
+  assert_contains "$TEST_DIR/msg-copy.err" "no message sent in session owned"
+  assert_not_contains "$log" "send-keys"
+}
+
 bash -n "$ROOT/peon-code.sh" "$ROOT/lib/config.sh" "$ROOT/lib/tmux.sh" \
   "$ROOT/install.sh"
 fake_bin=$(make_fake_commands)
 test_install_guard
 test_session_ownership "$fake_bin"
 test_unique_buffers_and_launch_failure "$fake_bin"
+test_launch_with_prompt_box "$fake_bin"
 test_config_loading "$fake_bin"
 SEND_BIN=$(make_send_bin "$fake_bin")
 test_send_refuses
@@ -900,4 +1122,5 @@ test_resume_picker_answered "$fake_bin"
 test_box_hint_text
 test_rebrief "$fake_bin"
 test_compact "$fake_bin"
+test_msg "$fake_bin"
 echo "tests: PASS"

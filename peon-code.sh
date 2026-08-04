@@ -260,7 +260,14 @@ EOF
     gemini|qwen) LAUNCH="$BIN${RID:+ --resume $RID}$ARGS -i $Q" ;;  # unverified on this machine
     *)           LAUNCH="${CMDS[$i]} $Q" ;;     # anything else: positional prompt
   esac
-  printf '%s' "$LAUNCH" | paste_to_pane "${PANE_IDS[$i]}"
+  # The pane is still at its shell, whose prompt peon-code cannot predict, so
+  # the box holds no text to check against: Enter follows the paste directly.
+  if printf '%s' "$LAUNCH" | paste_only "${PANE_IDS[$i]}"; then
+    sleep 1
+    tmux send-keys -t "${PANE_IDS[$i]}" Enter
+  else
+    echo "peon-code: tmux refused the command line for ${NAMES[$i]} ${PANE_IDS[$i]}" >&2
+  fi
   if ! wait_agent_ready "${PANE_IDS[$i]}"; then
     FAILED_AGENTS+=("${NAMES[$i]}")
     continue
@@ -273,7 +280,12 @@ EOF
     # An unsettled pane is showing a dialog or still starting; pasting there
     # would answer the dialog blindly, which the brief tells agents never to do.
     if wait_pane_settled "${PANE_IDS[$i]}" "${RID:+400}"; then
-      printf '%s' "$BRIEF" | paste_to_pane "${PANE_IDS[$i]}"
+      PASTE_RC=0
+      printf '%s' "$BRIEF" | paste_to_pane "${PANE_IDS[$i]}" || PASTE_RC=$?
+      case $PASTE_RC in
+        1) echo "peon-code: tmux refused the brief for ${NAMES[$i]} ${PANE_IDS[$i]}. Paste it by hand: $BRIEF_FILE" >&2 ;;
+        2) echo "peon-code: no Enter sent to ${NAMES[$i]} ${PANE_IDS[$i]}: the brief is in its box for you to submit" >&2 ;;
+      esac
     else
       echo "peon-code: ${NAMES[$i]} is still on a dialog or starting up. Answer it, then paste the brief: $BRIEF_FILE" >&2
     fi

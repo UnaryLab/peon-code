@@ -41,13 +41,34 @@ paste_only() {
   return 0
 }
 
-# Paste stdin into a pane, then press Enter as a separate call. A failed paste
-# returns 1 and presses no Enter, so a pane that took no text keeps whatever
-# the user had typed in its box.
+# Paste stdin into a pane, then press Enter once the pane shows the paste: its
+# input box holds the pasted text, either as itself or as the CLI's paste
+# placeholder, and it takes keys. The box is read again on each of 15 tries,
+# 0.2s apart, so a box still redrawing or an autocomplete list the paste
+# opened gets time to show the text. Only a box that reads back non-empty is
+# matched, so a pane on a dialog or a menu, one drawing no prompt marker
+# peon-code knows, and an empty paste all press no Enter.
+# A pane in copy mode routes an Enter through the copy-mode key table, so the
+# tries run out there rather than pressing one; the user leaves copy mode and
+# submits the text.
+# A failed paste returns 1 and presses no Enter, so a pane that took no text
+# keeps whatever the user had typed in its box. A paste the box never showed
+# returns 2, with the text left in the box for the user to submit.
 paste_to_pane() {
-  paste_only "$1" || return 1
-  sleep 1
-  tmux send-keys -t "$1" Enter
+  local pane=$1 text want box i
+  text=$(cat)
+  want=$(printf '%s' "$text" | plain_text)
+  printf '%s' "$text" | paste_only "$pane" || return 1
+  for ((i = 0; i < 15; i++)); do
+    sleep 0.2
+    box=$(pane_box_text "$pane") || box=""
+    [ -n "$box" ] || continue
+    [ "$box" = "$want" ] || box_is_paste_placeholder "$box" || continue
+    pane_takes_keys "$pane" || continue
+    tmux send-keys -t "$pane" Enter || return 2
+    return 0
+  done
+  return 2
 }
 
 # Printable ASCII only, runs of blanks squeezed to one space, ends trimmed:
@@ -300,35 +321,50 @@ cmd_dismiss() {
   tmux kill-session -t "=$session"
 }
 
+# Paste text into agent panes, one at a time, with the Enter after each paste
+# held back until that pane's box shows the message. A pane that refuses the
+# paste, never shows it, or sits in copy mode is reported and the rest still
+# get theirs; the count is of panes that took an Enter. A run where any pane
+# took no message ends nonzero.
 cmd_msg() {
-  local target=${1:-} text=${2:-} session panes id name
+  local target=${1:-} text=${2:-} session panes id name pair sent=0 unsent=0
   [ -n "$target" ] && [ -n "$text" ] || die "usage: peon-code.sh msg <name|all> 'text' [<session>]"
   session=$(session_name "${3:-}")
   tmux has-session -t "=$session" 2>/dev/null || die "no session $session"
   is_peon_session "$session" || die "session $session was not created by peon-code"
   panes=$(list_agent_panes "$session") || true
   [ -n "$panes" ] || die "no agent panes in session $session"
-  local ids=()
+  local pairs=()
   while read -r id name; do
     if [ "$target" = all ] || [ "$target" = "$name" ]; then
-      ids+=("$id")
+      pairs+=("$id $name")
     fi
   done <<<"$panes"
-  if [ ${#ids[@]} -eq 0 ]; then
+  if [ ${#pairs[@]} -eq 0 ]; then
     echo "peon-code: no pane named $target in session $session. Agent panes found:" >&2
     while read -r id name; do
       echo "  $name $id" >&2
     done <<<"$panes"
     exit 1
   fi
-  for id in "${ids[@]}"; do
-    printf '%s' "[from user] $text" | paste_only "$id"
+  # Panes are taken one after another: a pane whose box never shows the paste
+  # holds the run for about 3 seconds before the next pane is tried.
+  for pair in "${pairs[@]}"; do
+    id=${pair%% *}
+    name=${pair#* }
+    printf '%s' "[from user] $text" | paste_to_pane "$id" || case $? in
+      1) echo "peon-code: no message sent to $name $id: tmux refused the paste" >&2
+         unsent=$((unsent + 1)); continue ;;
+      2) echo "peon-code: no Enter sent to $name $id: the message is in its box for you to submit" >&2
+         unsent=$((unsent + 1)); continue ;;
+      *) echo "peon-code: no message sent to $name $id: unexpected status from the paste" >&2
+         unsent=$((unsent + 1)); continue ;;
+    esac
+    sent=$((sent + 1))
   done
-  sleep 1
-  for id in "${ids[@]}"; do
-    tmux send-keys -t "$id" Enter
-  done
-  echo "peon-code: sent to ${#ids[@]} pane(s) in session $session"
+  echo "peon-code: sent to $sent pane(s) in session $session"
+  [ "$sent" -gt 0 ] || die "no message sent in session $session"
+  [ "$unsent" -eq 0 ] || die "$unsent message(s) were not delivered in session $session"
 }
 
 # Send /compact to agent panes, so each CLI compacts its own context, then
@@ -407,6 +443,7 @@ cmd_compact() {
     rebrief_pane "$id" "$name" || case $? in
       2) echo "peon-code: no brief sent to $name $id: tmux refused the paste" >&2 ;;
       3) echo "peon-code: no brief sent to $name $id: its input box holds typed text, or it is on a dialog or a menu" >&2 ;;
+      4) echo "peon-code: no Enter sent to $name $id: the brief is in its box for the user to submit" >&2 ;;
     esac
   done
 }
@@ -488,7 +525,8 @@ cmd_send() {
 # and reported, which returns 1, as does a pane drawing no prompt marker. A
 # paste tmux refused returns 2. A pane whose input box holds typed text, or
 # that sits on a dialog or a menu, takes nothing and returns 3, so the box
-# keeps what the user typed and no Enter answers the dialog.
+# keeps what the user typed and no Enter answers the dialog. A brief the box
+# never showed, so no Enter followed it, returns 4.
 rebrief_pane() {
   local id=$1 name=$2 brief box
   brief=$(tmux show-options -pqv -t "$id" @peon_brief 2>/dev/null) || brief=""
@@ -501,14 +539,17 @@ rebrief_pane() {
     *) return 3 ;;
   esac
   [ -z "$box" ] || return 3
-  paste_to_pane "$id" <"$brief" || return 2
+  paste_to_pane "$id" <"$brief" || case $? in
+    2) return 4 ;;
+    *) return 2 ;;
+  esac
   return 0
 }
 
 # Paste the launch brief again into every named pane, so an agent that
 # compacted its conversation gets its standing instructions back.
 cmd_rebrief() {
-  local target=${1:-} session panes id name found=0 sent=0 refused=0
+  local target=${1:-} session panes id name found=0 sent=0 unsent=0
   [ -n "$target" ] || die "usage: peon-code.sh rebrief <name|all> [<session>]"
   session=$(session_name "${2:-}")
   tmux has-session -t "=$session" 2>/dev/null || die "no session $session"
@@ -520,9 +561,11 @@ cmd_rebrief() {
     found=1
     rebrief_pane "$id" "$name" || case $? in
       2) echo "peon-code: no brief sent to $name $id: tmux refused the paste" >&2
-         refused=$((refused + 1)); continue ;;
+         unsent=$((unsent + 1)); continue ;;
       3) echo "peon-code: no brief sent to $name $id: its input box holds typed text, or it is on a dialog or a menu" >&2
          continue ;;
+      4) echo "peon-code: no Enter sent to $name $id: the brief is in its box for the user to submit" >&2
+         unsent=$((unsent + 1)); continue ;;
       *) continue ;;
     esac
     sent=$((sent + 1))
@@ -530,7 +573,7 @@ cmd_rebrief() {
   [ "$found" -eq 1 ] || die "no pane named $target in session $session"
   [ "$sent" -gt 0 ] || die "no brief sent in session $session"
   echo "peon-code: rebriefed $sent pane(s) in session $session"
-  [ "$refused" -eq 0 ] || die "$refused pane(s) took no brief in session $session"
+  [ "$unsent" -eq 0 ] || die "$unsent brief(s) were not delivered in session $session"
 }
 
 # Every agent pane on the server, so a session can be found without
