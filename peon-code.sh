@@ -8,6 +8,7 @@
 #   ./peon-code.sh msg <name|all> 'text' [<session>]
 #   ./peon-code.sh send <pane-id> 'text'|-
 #   ./peon-code.sh rebrief <name|all> [<session>]
+#   ./peon-code.sh compact [<name|all>] [<session>]
 #   ./peon-code.sh list
 #   ./peon-code.sh uninstall [bin-dir]
 #   ./peon-code.sh -h
@@ -53,6 +54,12 @@ peon-code.sh send <pane-id> 'text'|-            agent to agent: paste into a pan
 peon-code.sh rebrief <name|all> [<session>]     send an agent its launch brief again,
                                                 for after it compacts its conversation
                                                 (session defaults to the current directory name)
+peon-code.sh compact [<name|all>] [<session>]   send /compact to an agent pane, then send
+                                                its brief again once compaction ends,
+                                                skipping any pane whose input box holds
+                                                typed text
+                                                (name and session default to all and the
+                                                current directory name)
 peon-code.sh list                               agent panes of every session
 peon-code.sh uninstall [bin-dir]                remove the install.sh symlink
 peon-code.sh -h                                 this help
@@ -107,6 +114,7 @@ case "${1:-}" in
   msg)  shift; cmd_msg "$@"; exit 0 ;;
   send) shift; cmd_send "$@"; exit 0 ;;
   rebrief) shift; cmd_rebrief "$@"; exit 0 ;;
+  compact) shift; cmd_compact "$@"; exit 0 ;;
   list) [ $# -eq 1 ] || die "list takes no arguments"; cmd_list; exit 0 ;;
   uninstall)
     LINK="${2:-$HOME/.local/bin}/peon-code"
@@ -183,7 +191,7 @@ done
 
 # Briefs go to files: pasting one on a shell command line would fill the
 # pane with thousands of escaped characters before the agent even starts.
-# ponytail: the directory is left for the OS to clear, since the launcher
+# The directory is left for the OS to clear, since the launcher
 # ends in exec and the panes read the files after it is gone.
 BRIEF_DIR=$(mktemp -d "${TMPDIR:-/tmp}/peon-code.XXXXXX")
 

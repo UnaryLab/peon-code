@@ -23,7 +23,7 @@ role_label() {
 # the phrase names the agent and the session, and the CLIs record the prompt
 # in their transcript, so no launch-time bookkeeping is needed. Newest match
 # wins; empty output means there is nothing to resume and the pane starts new.
-# ponytail: the search is capped at 30 days of transcripts, the age past which
+# The search is capped at 30 days of transcripts, the age past which
 # a thread is not worth reviving.
 last_thread_id() {
   local marker=$1 bin=$2 dir cwd="" hash found file id

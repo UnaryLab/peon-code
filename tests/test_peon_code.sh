@@ -99,13 +99,18 @@ case ${1:-} in
     esac
     ;;
   display)
-    printf 'zsh\n'
+    case "$*" in
+      *cursor_y*) printf '1\n' ;;
+      *) printf 'zsh\n' ;;
+    esac
     ;;
   capture-pane)
+    printf '%s\n' "${FAKE_TMUX_CAPTURE:-}"
     ;;
   load-buffer)
     content=$(cat)
     printf 'buffer-content:%s\n' "$content" >>"$FAKE_TMUX_LOG"
+    exit "${FAKE_LOAD_BUFFER_EXIT:-0}"
     ;;
 esac
 FAKE_TMUX
@@ -535,15 +540,100 @@ FAKE_TMUX
   assert_not_contains "$log" "send-keys"
 }
 
+# One box measured from a synthetic capture: the capture's second row holds
+# the box, the cursor sits on it, and the wanted text is what pane_box_text
+# returns for it.
+assert_box() {
+  local what=$1 want=$2 cap=$3 got
+  got=$(FAKE_TMUX_CAPTURE="$cap" PATH="$BOX_BIN:$PATH" \
+    bash -c 'source "$1/lib/tmux.sh"; pane_box_text %9' _ "$ROOT") ||
+    fail "pane_box_text failed on $what"
+  [ "$got" = "$want" ] || fail "box for $what is '$got', expected '$want'"
+}
+
+# Text a TUI draws dim or in a gray foreground is a hint, not typed text, so
+# a box holding only hints measures empty.
+test_box_hint_text() {
+  local bin_dir="$TEST_DIR/box-bin" e tail
+  mkdir -p "$bin_dir"
+  cat >"$bin_dir/tmux" <<'FAKE_TMUX'
+#!/usr/bin/env bash
+case ${1:-} in
+  display) printf '1\n' ;;
+  capture-pane) printf '%s\n' "$FAKE_TMUX_CAPTURE" ;;
+esac
+FAKE_TMUX
+  chmod +x "$bin_dir/tmux"
+  BOX_BIN=$bin_dir
+  e=$(printf '\033')
+  tail='
+────'
+
+  assert_box "a dim hint" "" "output line
+❯ ${e}[2mTry \"fix the bug\"${e}[0m$tail"
+  assert_box "a 256-color gray hint" "" "output line
+❯ ${e}[38;5;242mTry \"fix the bug\"${e}[0m$tail"
+  assert_box "a bright-black hint" "" "output line
+❯ ${e}[90mTry \"fix the bug\"${e}[39m$tail"
+  assert_box "dim combined with a gray foreground, reset bare" "" "output line
+❯ ${e}[2;38;5;245mTry \"fix the bug\"${e}[m$tail"
+  # The marker itself carries the hint style, and is still found.
+  assert_box "a hint drawn over the marker" "" "output line
+${e}[2m❯ Try \"fix the bug\"${e}[0m$tail"
+  assert_box "styled but not hinted text" "hello world" "output line
+❯ ${e}[1;38;5;39mhello world${e}[0m$tail"
+  # The gray range ends at 249: 250 and above are near-white, which a theme
+  # can use for ordinary text.
+  assert_box "the last gray index" "" "output line
+❯ ${e}[38;5;249mTry \"fix the bug\"${e}[0m$tail"
+  assert_box "a near-white foreground" "hello world" "output line
+❯ ${e}[38;5;250mhello world${e}[0m$tail"
+  # A truecolor foreground is gray when its channels are near-equal, and
+  # near-white or colored otherwise.
+  assert_box "a truecolor gray hint" "" "output line
+❯ ${e}[38;2;136;136;136mTry \"fix the bug\"${e}[0m$tail"
+  assert_box "a truecolor near-white foreground" "hello world" "output line
+❯ ${e}[38;2;250;250;250mhello world${e}[0m$tail"
+  assert_box "a truecolor colored foreground" "hello world" "output line
+❯ ${e}[38;2;200;120;40mhello world${e}[0m$tail"
+  # Italic alone is not a hint style: CLIs draw ordinary text in it too.
+  assert_box "an italic hint" "Try \"fix the bug\"" "output line
+❯ ${e}[3mTry \"fix the bug\"${e}[0m$tail"
+  assert_box "a white foreground" "hello world" "output line
+❯ ${e}[38;5;255mhello world${e}[0m$tail"
+  assert_box "typed text with a hint after it" "hello world" "output line
+❯ hello world ${e}[2m(esc to clear)${e}[0m$tail"
+  assert_box "plain typed text" "hello world" "output line
+❯ hello world$tail"
+  # A background or underline color carries sub-parameters of its own, which
+  # are not attributes: reading them as attributes blanks real typed text.
+  assert_box "a 256-color background" "hello world" "output line
+❯ ${e}[48;5;90mhello world${e}[0m$tail"
+  assert_box "a background whose index reads as dim" "hello world" "output line
+❯ ${e}[48;5;2mhello world${e}[0m$tail"
+  assert_box "a truecolor background" "hello world" "output line
+❯ ${e}[48;2;38;5;242mhello world${e}[0m$tail"
+  assert_box "an underline color" "hello world" "output line
+❯ ${e}[58;5;2mhello world${e}[0m$tail"
+  # An OSC 8 hyperlink: the URL is not text the box holds.
+  assert_box "a hyperlink" "see docs" "output line
+❯ ${e}]8;;https://ex.com${e}\\see${e}]8;;${e}\\ docs$tail"
+  assert_box "a hyperlink ended with BEL" "see docs" "output line
+❯ ${e}]8;;https://ex.com$(printf '\007')see${e}]8;;$(printf '\007') docs$tail"
+}
+
 # rebrief re-pastes the brief file stored in @peon_brief; a pane with no
 # stored brief is skipped with a note, and sending none is an error.
 test_rebrief() {
   local fake_bin=$1 log="$TEST_DIR/tmux-rebrief.log" home_dir="$TEST_DIR/home-rebrief"
+  local empty_box='output line
+❯
+────'
   mkdir -p "$home_dir"
   printf 'You are boss, follow the rules.\n' >"$TEST_DIR/rebrief-brief.md"
 
   PATH="$fake_bin:$PATH" HOME="$home_dir" FAKE_TMUX_LOG="$log" FAKE_TMUX_MODE=owned \
-    FAKE_TMUX_BRIEF="$TEST_DIR/rebrief-brief.md" \
+    FAKE_TMUX_BRIEF="$TEST_DIR/rebrief-brief.md" FAKE_TMUX_CAPTURE="$empty_box" \
     "$ROOT/peon-code.sh" rebrief all owned >"$TEST_DIR/rebrief.out"
   assert_contains "$TEST_DIR/rebrief.out" "rebriefed 1 pane(s) in session owned"
   assert_contains "$log" "buffer-content:You are boss, follow the rules."
@@ -554,6 +644,189 @@ test_rebrief() {
     fail "rebrief succeeded with no stored brief"
   fi
   assert_contains "$TEST_DIR/rebrief-none.err" "no stored brief for impl"
+
+  : >"$log"
+  if PATH="$fake_bin:$PATH" HOME="$home_dir" FAKE_TMUX_LOG="$log" FAKE_TMUX_MODE=owned \
+    FAKE_TMUX_BRIEF="$TEST_DIR/rebrief-brief.md" FAKE_TMUX_CAPTURE="$empty_box" \
+    FAKE_LOAD_BUFFER_EXIT=3 \
+    "$ROOT/peon-code.sh" rebrief all owned >"$TEST_DIR/rebrief-fail.out" 2>"$TEST_DIR/rebrief-fail.err"; then
+    fail "rebrief succeeded with a refused paste"
+  fi
+  assert_contains "$TEST_DIR/rebrief-fail.err" "no brief sent to impl %1: tmux refused the paste"
+  assert_not_contains "$TEST_DIR/rebrief-fail.out" "rebriefed 1 pane(s)"
+  assert_not_contains "$log" "paste-buffer"
+  assert_not_contains "$log" "send-keys"
+
+  : >"$log"
+  if PATH="$fake_bin:$PATH" HOME="$home_dir" FAKE_TMUX_LOG="$log" FAKE_TMUX_MODE=owned \
+    FAKE_TMUX_BRIEF="$TEST_DIR/rebrief-brief.md" FAKE_TMUX_CAPTURE='some other CLI
+> ready' \
+    "$ROOT/peon-code.sh" rebrief all owned >"$TEST_DIR/rebrief-bare.out" 2>"$TEST_DIR/rebrief-bare.err"; then
+    fail "rebrief succeeded on a pane drawing no prompt marker"
+  fi
+  assert_contains "$TEST_DIR/rebrief-bare.err" "no brief sent to impl %1: it draws no prompt marker peon-code knows"
+  assert_not_contains "$log" "load-buffer"
+  assert_not_contains "$log" "paste-buffer"
+}
+
+# compact pastes the /compact slash command with nothing around it, and only
+# into a pane whose input box is empty.
+test_compact() {
+  local fake_bin=$1 log="$TEST_DIR/tmux-compact.log" bin_dir="$TEST_DIR/compact-bin"
+  local empty_box busy_box typed_box menu_box brief="$TEST_DIR/compact-brief.md"
+  local enter_line brief_line settle_reads
+  mkdir -p "$bin_dir"
+  cp "$fake_bin/sleep" "$bin_dir/sleep"
+  cat >"$bin_dir/tmux" <<'FAKE_TMUX'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$FAKE_TMUX_LOG"
+pane=%1
+case "$*" in *%2*) pane=%2 ;; esac
+box=$FAKE_BOX
+[ "$pane" = %2 ] && box=$FAKE_BOX2
+# A pane shows the pasted command in its box once the paste has reached it,
+# and empties the box again once the Enter submits it.
+grep -Fq -- "-dpt $pane" "$FAKE_TMUX_LOG" && box=$FAKE_BOX_AFTER
+grep -Fqx -- "send-keys -t $pane Enter" "$FAKE_TMUX_LOG" && box=$FAKE_BOX
+case ${1:-} in
+  has-session) ;;
+  show-options)
+    case "$*" in
+      *@peon_brief*) printf '%s\n' "${FAKE_TMUX_BRIEF:-}" ;;
+      *) printf '1\n' ;;
+    esac
+    ;;
+  list-panes) printf '%s\n' "${FAKE_PANES:-%1 node impl}" ;;
+  display)
+    case "$*" in
+      *pane_in_mode*) printf '0\n' ;;
+      *cursor_y*) printf '1\n' ;;
+    esac
+    ;;
+  capture-pane)
+    printf '%s\n' "$box"
+    # A pane that keeps redrawing: every capture differs, so it never settles.
+    [ -n "${FAKE_UNSETTLED:-}" ] && printf 'redrawing %s\n' "$(wc -l <"$FAKE_TMUX_LOG")"
+    ;;
+  load-buffer) printf 'buffer-content:%s\n' "$(cat)" >>"$FAKE_TMUX_LOG" ;;
+esac
+exit 0
+FAKE_TMUX
+  chmod +x "$bin_dir/tmux"
+  empty_box='output line
+❯
+────'
+  busy_box='output line
+❯ half a question
+────'
+  typed_box='output line
+❯ /compact
+────'
+  menu_box='Do you trust this folder?
+❯ 1. Yes, I trust this folder
+  2. No, exit'
+  printf 'You are impl, follow the rules.\n' >"$brief"
+
+  : >"$log"
+  PATH="$bin_dir:$PATH" FAKE_TMUX_LOG="$log" FAKE_BOX="$empty_box" \
+    FAKE_BOX_AFTER="$typed_box" FAKE_TMUX_BRIEF="$brief" \
+    "$ROOT/peon-code.sh" compact all owned >"$TEST_DIR/compact.out"
+  # No [from user] prefix and nothing else: a prefix stops the CLI from
+  # reading the line as a slash command.
+  grep -Fqx -- 'buffer-content:/compact' "$log" ||
+    fail "compact pasted something other than /compact alone"
+  assert_contains "$log" "send-keys -t %1 Enter"
+  assert_contains "$TEST_DIR/compact.out" "sent /compact to 1 pane(s) in session owned"
+  # The brief goes back in once the pane has settled, so the agent gets its
+  # standing instructions after the compaction dropped them.
+  assert_contains "$log" "buffer-content:You are impl, follow the rules."
+  enter_line=$(grep -n -Fx -- 'send-keys -t %1 Enter' "$log" | head -1 | cut -d: -f1)
+  brief_line=$(grep -n -F -- 'buffer-content:You are impl' "$log" | head -1 | cut -d: -f1)
+  [ -n "$enter_line" ] && [ "$brief_line" -gt "$enter_line" ] ||
+    fail "compact pasted the brief before submitting /compact"
+  settle_reads=$(awk -v a="$enter_line" -v b="$brief_line" \
+    'NR > a && NR < b && /^capture-pane/ { n++ } END { print n + 0 }' "$log")
+  [ "$settle_reads" -ge 2 ] ||
+    fail "compact made $settle_reads box reads between /compact and the brief, expected a settle wait"
+
+  : >"$log"
+  if PATH="$bin_dir:$PATH" FAKE_TMUX_LOG="$log" FAKE_BOX="$busy_box" \
+    "$ROOT/peon-code.sh" compact >"$TEST_DIR/compact-busy.out" 2>"$TEST_DIR/compact-busy.err"; then
+    fail "compact pasted into a box holding typed text"
+  fi
+  assert_contains "$TEST_DIR/compact-busy.err" "its input box holds typed text"
+  assert_not_contains "$log" "paste-buffer"
+  assert_not_contains "$log" "send-keys"
+
+  : >"$log"
+  if PATH="$bin_dir:$PATH" FAKE_TMUX_LOG="$log" FAKE_BOX="$empty_box" \
+    "$ROOT/peon-code.sh" compact nobody owned >"$TEST_DIR/compact-name.out" 2>"$TEST_DIR/compact-name.err"; then
+    fail "compact accepted an unknown pane name"
+  fi
+  assert_contains "$TEST_DIR/compact-name.err" "no pane named nobody in session owned"
+  assert_contains "$TEST_DIR/compact-name.err" "impl %1"
+  assert_not_contains "$log" "paste-buffer"
+
+  # Two panes, one free and one holding typed text: the free one is compacted
+  # and the busy one is left as the user typed it.
+  : >"$log"
+  PATH="$bin_dir:$PATH" FAKE_TMUX_LOG="$log" FAKE_BOX="$empty_box" \
+    FAKE_BOX_AFTER="$typed_box" FAKE_BOX2="$busy_box" FAKE_TMUX_BRIEF="$brief" \
+    FAKE_PANES='%1 node impl
+%2 node boss' \
+    "$ROOT/peon-code.sh" compact all owned \
+    >"$TEST_DIR/compact-partial.out" 2>"$TEST_DIR/compact-partial.err"
+  assert_contains "$TEST_DIR/compact-partial.out" "sent /compact to 1 pane(s) in session owned"
+  [ "$(grep -c -Fx -- 'buffer-content:/compact' "$log")" = 1 ] ||
+    fail "compact pasted /compact more than once"
+  assert_contains "$log" "send-keys -t %1 Enter"
+  assert_not_contains "$log" "send-keys -t %2"
+  assert_not_contains "$log" "-dpt %2"
+  assert_contains "$TEST_DIR/compact-partial.err" "skipped %2: its input box holds typed text"
+  # Only the compacted pane is rebriefed; the busy one is left as the user
+  # typed it.
+  [ "$(grep -c -F -- 'buffer-content:You are impl' "$log")" = 1 ] ||
+    fail "compact pasted the brief into a pane it skipped"
+
+  # A pane that keeps redrawing after /compact never settles, so its brief is
+  # held back rather than pasted over whatever is on screen.
+  : >"$log"
+  PATH="$bin_dir:$PATH" FAKE_TMUX_LOG="$log" FAKE_BOX="$empty_box" \
+    FAKE_BOX_AFTER="$typed_box" FAKE_TMUX_BRIEF="$brief" FAKE_UNSETTLED=1 \
+    "$ROOT/peon-code.sh" compact all owned \
+    >"$TEST_DIR/compact-busy-after.out" 2>"$TEST_DIR/compact-busy-after.err"
+  assert_contains "$TEST_DIR/compact-busy-after.out" "sent /compact to 1 pane(s) in session owned"
+  assert_contains "$TEST_DIR/compact-busy-after.err" "no brief sent to impl %1: it is still busy after compacting"
+  assert_not_contains "$log" "buffer-content:You are impl"
+
+  # A brief is held back from a box holding typed text, so text typed while a
+  # pane compacted is left as the user typed it.
+  : >"$log"
+  if PATH="$bin_dir:$PATH" FAKE_TMUX_LOG="$log" FAKE_BOX="$busy_box" \
+    FAKE_TMUX_BRIEF="$brief" \
+    "$ROOT/peon-code.sh" rebrief all owned \
+    >"$TEST_DIR/rebrief-typed.out" 2>"$TEST_DIR/rebrief-typed.err"; then
+    fail "rebrief pasted into a box holding typed text"
+  fi
+  assert_contains "$TEST_DIR/rebrief-typed.err" "no brief sent to impl %1: its input box holds typed text"
+  assert_not_contains "$log" "load-buffer"
+  assert_not_contains "$log" "paste-buffer"
+  assert_not_contains "$log" "send-keys"
+
+  # A pane sitting on a menu measures an empty box, so only the menu itself
+  # keeps the brief out; the Enter after a paste would answer the menu.
+  : >"$log"
+  if PATH="$bin_dir:$PATH" FAKE_TMUX_LOG="$log" FAKE_BOX="$menu_box" \
+    FAKE_TMUX_BRIEF="$brief" \
+    "$ROOT/peon-code.sh" rebrief all owned \
+    >"$TEST_DIR/rebrief-menu.out" 2>"$TEST_DIR/rebrief-menu.err"; then
+    fail "rebrief pasted into a pane on a menu"
+  fi
+  assert_contains "$TEST_DIR/rebrief-menu.err" \
+    "no brief sent to impl %1: its input box holds typed text, or it is on a dialog or a menu"
+  assert_not_contains "$log" "load-buffer"
+  assert_not_contains "$log" "paste-buffer"
+  assert_not_contains "$log" "send-keys"
 }
 
 bash -n "$ROOT/peon-code.sh" "$ROOT/lib/config.sh" "$ROOT/lib/tmux.sh" \
@@ -568,5 +841,7 @@ test_send_refuses
 test_send_delivers
 test_resume_picks_each_agent_thread "$fake_bin"
 test_resume_picker_answered "$fake_bin"
+test_box_hint_text
 test_rebrief "$fake_bin"
+test_compact "$fake_bin"
 echo "tests: PASS"

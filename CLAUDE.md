@@ -27,3 +27,4 @@ Bash launcher that builds a tmux session of side-by-side AI coding agent CLIs (c
 
 - Keep everything in bash; no new languages or dependencies.
 - `shellcheck` clean.
+- Comments and docs are tool-independent: never reference an assistant skill, mode, or persona (no `ponytail:` or similar prefixes). Mark a deliberate simplification with a plain comment stating the limit and the upgrade path.

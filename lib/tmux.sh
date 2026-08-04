@@ -34,13 +34,18 @@ list_agent_panes() {
 # itself to the receiving app as live keystrokes.
 paste_only() {
   local pane=$1 buffer="peon-code-$$-${1#%}"
-  LC_ALL=C tr -d '\000-\010\013-\037\177' | tmux load-buffer -b "$buffer" -
-  tmux paste-buffer -b "$buffer" -dpt "$pane"
+  # Each step is checked here rather than left to errexit: a caller that runs
+  # this on the left of || turns errexit off for the whole call.
+  LC_ALL=C tr -d '\000-\010\013-\037\177' | tmux load-buffer -b "$buffer" - || return 1
+  tmux paste-buffer -b "$buffer" -dpt "$pane" || return 1
+  return 0
 }
 
-# Paste stdin into a pane, then press Enter as a separate call.
+# Paste stdin into a pane, then press Enter as a separate call. A failed paste
+# returns 1 and presses no Enter, so a pane that took no text keeps whatever
+# the user had typed in its box.
 paste_to_pane() {
-  paste_only "$1"
+  paste_only "$1" || return 1
   sleep 1
   tmux send-keys -t "$1" Enter
 }
@@ -74,24 +79,107 @@ pane_takes_keys() {
   [ "$(tmux display -pt "$1" '#{pane_in_mode}' 2>/dev/null || echo 1)" = 0 ]
 }
 
+# Drop the SGR and other CSI escape codes from a capture read with -e, one
+# line in, one line out. With a first argument of 1, the text of every span
+# drawn dim or in a gray foreground becomes spaces first: that is how a TUI
+# draws hint text, which is not typed text. The prompt marker is kept even
+# inside such a span, so a marker drawn in a hint style is still found.
+strip_styles() {
+  LC_ALL=C awk -v hint="$1" '
+    BEGIN { m = "\342\235\257"; csi = "\033["; osc = "\033]"; st = "\033\\" }
+    {
+      line = drop_osc($0); out = ""; dim = 0; gray = 0
+      while ((p = index(line, csi)) > 0) {
+        out = out span(substr(line, 1, p - 1), dim || gray)
+        line = substr(line, p + 2)
+        i = 1
+        while (i <= length(line) && substr(line, i, 1) ~ /[0-9;:<=>?]/) i++
+        if (substr(line, i, 1) == "m") sgr(substr(line, 1, i - 1))
+        line = substr(line, i + 1)
+      }
+      print out span(line, dim || gray)
+    }
+    # An OSC string carries no style, only a payload such as a hyperlink URL,
+    # which is not text the pane shows. It ends at a BEL or a string
+    # terminator; an unterminated one runs to the end of the line.
+    function drop_osc(s,   r, p, b, e) {
+      r = ""
+      while ((p = index(s, osc)) > 0) {
+        r = r substr(s, 1, p - 1)
+        s = substr(s, p + 2)
+        b = index(s, "\007"); e = index(s, st)
+        if (b > 0 && (e == 0 || b < e)) s = substr(s, b + 1)
+        else if (e > 0) s = substr(s, e + 2)
+        else return r
+      }
+      return r s
+    }
+    function span(s, styled) { return (hint && styled) ? blank(s) : s }
+    function blank(s,   r, p) {
+      r = ""
+      while ((p = index(s, m)) > 0) {
+        r = r spaces(p - 1) m
+        s = substr(s, p + length(m))
+      }
+      return r spaces(length(s))
+    }
+    function spaces(n,   r) { r = ""; while (n-- > 0) r = r " "; return r }
+    # 0 and an empty parameter list reset every attribute; 22 clears dim; a
+    # 256-color index from 232 to 249 is one of the darker grays, and a
+    # truecolor foreground is gray when its three channels sit within 16 of
+    # each other. 250 and above are near-white, which some themes use for
+    # ordinary text.
+    # Italic is not a hint style here: CLIs draw ordinary text in it too, and
+    # blanking it would erase what the user typed. Add it once a CLI is known
+    # to reserve italic for hints.
+    function sgr(params,   n, j, a, c, r, g, b, hi, lo) {
+      n = split(params, f, ";")
+      if (n == 0) { dim = 0; gray = 0 }
+      for (j = 1; j <= n; j++) {
+        a = f[j] + 0
+        if (a == 0) { dim = 0; gray = 0 }
+        else if (a == 2) dim = 1
+        else if (a == 22) dim = 0
+        else if (a == 38 || a == 48 || a == 58) {
+          if (f[j + 1] + 0 == 5) { c = f[j + 2] + 0; if (a == 38) gray = (c >= 232 && c <= 249); j += 2 }
+          else if (f[j + 1] + 0 == 2) {
+            if (a == 38) {
+              r = f[j + 2] + 0; g = f[j + 3] + 0; b = f[j + 4] + 0
+              hi = r; if (g > hi) hi = g; if (b > hi) hi = b
+              lo = r; if (g < lo) lo = g; if (b < lo) lo = b
+              gray = (hi - lo <= 16 && hi <= 249)
+            }
+            j += 4
+          }
+        }
+        else if (a == 39) gray = 0
+        else if (a == 90) gray = 1
+        else if ((a >= 30 && a <= 37) || (a >= 91 && a <= 97)) gray = 0
+      }
+    }'
+}
+
 # What a pane's input box holds: everything from the prompt marker to the end
-# of the cursor's row. Text after the cursor counts too, so a box whose cursor
-# was moved back to the start still measures busy. Empty output means an empty
-# box. A pane sitting on a menu returns 1; a pane drawing no prompt marker at
-# or above the cursor returns 2, which no wait can change.
-# ponytail: one column per glyph, so a box holding wide characters measures
-# short; count widths here if agents start sending CJK or emoji.
-# ponytail: whatever a TUI draws after the cursor on that row (hint text, a
-# right border) reads as typed text and holds the send; read the colors of the
-# region with capture-pane -e if a TUI that draws one has to be supported.
+# of the cursor's row, with hint text left out. Text after the cursor counts
+# too, so a box whose cursor was moved back to the start still measures busy.
+# Empty output means an empty box. A pane sitting on a menu returns 1; a pane
+# drawing no prompt marker at or above the cursor returns 2, which no wait can
+# change. The menu check reads the capture with its hint text in place: a
+# dialog draws its "Enter to confirm" footer dim.
+# One column per glyph, so a box holding wide characters measures short;
+# count widths here if agents start sending CJK or emoji.
+# Dim and gray are the only hint styles modeled. A style the parser does not
+# model can blank text the user typed, so a busy box measures empty and
+# peon-code pastes over it; model that style in strip_styles if a TUI draws
+# hints another way.
 pane_box_text() {
   local pane=$1 cy cap box
   cy=$(tmux display -pt "$pane" '#{cursor_y}' 2>/dev/null) || return 1
-  cap=$(tmux capture-pane -pt "$pane" 2>/dev/null) || return 1
-  if pane_has_menu "$cap"; then
+  cap=$(tmux capture-pane -ept "$pane" 2>/dev/null) || return 1
+  if pane_has_menu "$(printf '%s\n' "$cap" | strip_styles 0)"; then
     return 1
   fi
-  box=$(printf '%s\n' "$cap" | LC_ALL=C awk -v cy="$cy" '
+  box=$(printf '%s\n' "$cap" | strip_styles 1 | LC_ALL=C awk -v cy="$cy" '
     BEGIN { m = "\342\235\257" }
     { rows[NR] = $0; if (NR <= cy + 1 && index($0, m) > 0) mr = NR }
     END {
@@ -162,7 +250,7 @@ answer_resume_picker() {
 # matches the capture 0.3s before. A menu such as the folder-trust dialog
 # draws the same marker on its selected row, so a capture holding a menu
 # is never settled: the wait continues until the user answers it.
-# ponytail: the 30s ceiling ends the wait when a spinner keeps redrawing,
+# The tries cap, 30s by default, ends the wait when a spinner keeps redrawing,
 # the prompt never shows, or the dialog goes unanswered; the caller then
 # skips the paste rather than typing into whatever is on screen.
 wait_pane_settled() {
@@ -229,6 +317,86 @@ cmd_msg() {
   echo "peon-code: sent to ${#ids[@]} pane(s) in session $session"
 }
 
+# Send /compact to agent panes, so each CLI compacts its own context, then
+# paste each compacted pane's brief back once its compaction has finished. The
+# slash command is pasted on its own: any text before it stops the CLI from
+# reading it as a command. A pane whose input box cannot be read or holds
+# typed text is skipped, and the rest still get the command. Enter follows
+# only once the box holds the command alone, so a dialog or an autocomplete
+# list that opened after the paste does not take the Enter as its answer.
+cmd_compact() {
+  local target=${1:-all} session panes id name pair box i submitted sent=0
+  local pairs=() compacted=()
+  session=$(session_name "${2:-}")
+  tmux has-session -t "=$session" 2>/dev/null || die "no session $session"
+  is_peon_session "$session" || die "session $session was not created by peon-code"
+  panes=$(list_agent_panes "$session") || true
+  [ -n "$panes" ] || die "no agent panes in session $session"
+  while read -r id name; do
+    if [ "$target" = all ] || [ "$target" = "$name" ]; then
+      pairs+=("$id $name")
+    fi
+  done <<<"$panes"
+  if [ ${#pairs[@]} -eq 0 ]; then
+    echo "peon-code: no pane named $target in session $session. Agent panes found:" >&2
+    while read -r id name; do
+      echo "  $name $id" >&2
+    done <<<"$panes"
+    exit 1
+  fi
+  for pair in "${pairs[@]}"; do
+    id=${pair%% *}
+    name=${pair#* }
+    if ! pane_takes_keys "$id"; then
+      echo "peon-code: skipped $id: it is in copy mode" >&2
+      continue
+    fi
+    box=$(pane_box_text "$id") || case $? in
+      2) echo "peon-code: skipped $id: it draws no prompt marker peon-code knows" >&2; continue ;;
+      *) echo "peon-code: skipped $id: it is on a dialog or a menu" >&2; continue ;;
+    esac
+    if [ -n "$box" ]; then
+      echo "peon-code: skipped $id: its input box holds typed text" >&2
+      continue
+    fi
+    printf '%s' /compact | paste_only "$id"
+    submitted=0
+    for ((i = 0; i < 10; i++)); do
+      sleep 0.2
+      box=$(pane_box_text "$id") || box=""
+      [ "$box" = /compact ] || continue
+      pane_takes_keys "$id" || break
+      tmux send-keys -t "$id" Enter
+      submitted=1
+      break
+    done
+    if [ "$submitted" -eq 1 ]; then
+      sent=$((sent + 1))
+      compacted+=("$pair")
+    else
+      echo "peon-code: no Enter sent to $id: it holds something other than /compact, which is in its box for the user to submit" >&2
+    fi
+  done
+  [ "$sent" -gt 0 ] || die "no pane took /compact in session $session"
+  echo "peon-code: sent /compact to $sent pane(s) in session $session"
+  # Compaction runs for as long as the context takes, well past the settle
+  # wait's default ceiling, so the wait is given 120s here. A pane still
+  # drawing after that keeps its brief unsent rather than taking a paste
+  # into whatever is on screen.
+  for pair in ${compacted[@]+"${compacted[@]}"}; do
+    id=${pair%% *}
+    name=${pair#* }
+    if ! wait_pane_settled "$id" 400; then
+      echo "peon-code: no brief sent to $name $id: it is still busy after compacting" >&2
+      continue
+    fi
+    rebrief_pane "$id" "$name" || case $? in
+      2) echo "peon-code: no brief sent to $name $id: tmux refused the paste" >&2 ;;
+      3) echo "peon-code: no brief sent to $name $id: its input box holds typed text, or it is on a dialog or a menu" >&2 ;;
+    esac
+  done
+}
+
 # Send one agent's message to another agent's pane. A message of - is read
 # from stdin, which keeps quotes in it off the sender's command line. One run
 # makes the box check and the paste back to back, and Enter follows only once
@@ -271,11 +439,32 @@ cmd_send() {
   die "no Enter sent: pane $pane holds something other than the message, which is still in its box for the user to sort out"
 }
 
-# Paste a pane's launch brief again, so an agent that compacted its
-# conversation gets its standing instructions back. The brief file path
-# is stored on each pane as the @peon_brief option at launch.
+# Paste one pane's launch brief again. The brief file path is stored on each
+# pane as the @peon_brief option at launch; a pane without one is left alone
+# and reported, which returns 1, as does a pane drawing no prompt marker. A
+# paste tmux refused returns 2. A pane whose input box holds typed text, or
+# that sits on a dialog or a menu, takes nothing and returns 3, so the box
+# keeps what the user typed and no Enter answers the dialog.
+rebrief_pane() {
+  local id=$1 name=$2 brief box
+  brief=$(tmux show-options -pqv -t "$id" @peon_brief 2>/dev/null) || brief=""
+  if [ -z "$brief" ] || [ ! -f "$brief" ]; then
+    echo "peon-code: no stored brief for $name $id: pane from an older launch, or its brief file is gone" >&2
+    return 1
+  fi
+  box=$(pane_box_text "$id") || case $? in
+    2) echo "peon-code: no brief sent to $name $id: it draws no prompt marker peon-code knows" >&2; return 1 ;;
+    *) return 3 ;;
+  esac
+  [ -z "$box" ] || return 3
+  paste_to_pane "$id" <"$brief" || return 2
+  return 0
+}
+
+# Paste the launch brief again into every named pane, so an agent that
+# compacted its conversation gets its standing instructions back.
 cmd_rebrief() {
-  local target=${1:-} session panes id name brief found=0 sent=0
+  local target=${1:-} session panes id name found=0 sent=0 refused=0
   [ -n "$target" ] || die "usage: peon-code.sh rebrief <name|all> [<session>]"
   session=$(session_name "${2:-}")
   tmux has-session -t "=$session" 2>/dev/null || die "no session $session"
@@ -285,17 +474,19 @@ cmd_rebrief() {
   while read -r id name; do
     [ "$target" = all ] || [ "$target" = "$name" ] || continue
     found=1
-    brief=$(tmux show-options -pqv -t "$id" @peon_brief 2>/dev/null) || brief=""
-    if [ -z "$brief" ] || [ ! -f "$brief" ]; then
-      echo "peon-code: no stored brief for $name $id: pane from an older launch, or its brief file is gone" >&2
-      continue
-    fi
-    paste_to_pane "$id" <"$brief"
+    rebrief_pane "$id" "$name" || case $? in
+      2) echo "peon-code: no brief sent to $name $id: tmux refused the paste" >&2
+         refused=$((refused + 1)); continue ;;
+      3) echo "peon-code: no brief sent to $name $id: its input box holds typed text, or it is on a dialog or a menu" >&2
+         continue ;;
+      *) continue ;;
+    esac
     sent=$((sent + 1))
   done <<<"$panes"
   [ "$found" -eq 1 ] || die "no pane named $target in session $session"
   [ "$sent" -gt 0 ] || die "no brief sent in session $session"
   echo "peon-code: rebriefed $sent pane(s) in session $session"
+  [ "$refused" -eq 0 ] || die "$refused pane(s) took no brief in session $session"
 }
 
 # Every agent pane on the server, so a session can be found without
