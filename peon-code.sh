@@ -6,6 +6,7 @@
 #   ./peon-code.sh resume [<session>] [<cmd> ...]
 #   ./peon-code.sh dismiss [<session>]
 #   ./peon-code.sh msg <name|all> 'text' [<session>]
+#   ./peon-code.sh rebrief <name|all> [<session>]
 #   ./peon-code.sh list
 #   ./peon-code.sh uninstall [bin-dir]
 #   ./peon-code.sh -h
@@ -43,6 +44,9 @@ peon-code.sh resume [<session>] [<cmd> ...]     same, each agent reopening its l
 peon-code.sh dismiss [<session>]                kill one session
                                                 (session defaults to the current directory name)
 peon-code.sh msg <name|all> 'text' [<session>]  send text to an agent pane
+                                                (session defaults to the current directory name)
+peon-code.sh rebrief <name|all> [<session>]     send an agent its launch brief again,
+                                                for after it compacts its conversation
                                                 (session defaults to the current directory name)
 peon-code.sh list                               agent panes of every session
 peon-code.sh uninstall [bin-dir]                remove the install.sh symlink
@@ -96,6 +100,7 @@ case "${1:-}" in
   resume) RESUME=1; shift ;;
   dismiss) shift; cmd_dismiss "$@"; exit 0 ;;
   msg)  shift; cmd_msg "$@"; exit 0 ;;
+  rebrief) shift; cmd_rebrief "$@"; exit 0 ;;
   list) [ $# -eq 1 ] || die "list takes no arguments"; cmd_list; exit 0 ;;
   uninstall)
     LINK="${2:-$HOME/.local/bin}/peon-code"
@@ -210,6 +215,8 @@ Rules:
 EOF
   BRIEF_FILE="$BRIEF_DIR/$i.md"  # by index: a CLI-team name is the command, which can hold / or repeat
   printf '%s' "$BRIEF" >"$BRIEF_FILE"
+  # rebrief finds the brief through this pane option.
+  tmux set -pt "${PANE_IDS[$i]}" @peon_brief "$BRIEF_FILE"
   # The pane reads the brief from the file, so the command line stays one line.
   Q="\"\$(cat $(printf %q "$BRIEF_FILE"))\""
   # Map known CLIs to their interactive-session-with-initial-prompt syntax.

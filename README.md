@@ -36,6 +36,7 @@ peon-code lab claude codex claude      # 3-agent example
 peon-code resume [<session>] [<cmd> ...]     # same, each agent reopening its last conversation
 peon-code dismiss [<session>]          # kill one session, default the current directory name
 peon-code msg <name|all> 'text' [<session>]  # send text to an agent pane of one session
+peon-code rebrief <name|all> [<session>]     # send an agent its launch brief again
 peon-code list                         # agent panes of every session
 peon-code -h                           # help
 ```
@@ -73,6 +74,8 @@ Each resumed pane still gets the full brief, since pane ids change with every se
 peon-code marks each session it creates and refuses to attach, message, or dismiss an unmarked session with the same name.
 
 `msg` sends text to the named agent's pane, or to every agent pane with `all`, prefixed `[from user]`. It reaches one session: the name given as the third argument, else the current directory name. Teams share agent names, so this keeps `msg boss` from interrupting every team on the tmux server. Names live in the `@peon_name` pane option, which apps cannot overwrite; the pane title only labels the border. An unknown name aborts and prints the panes that session has.
+
+`rebrief` pastes the launch brief back into the named agent's pane, or every agent pane with `all`. An agent that compacts its conversation loses the brief's rules; rebrief restores them. The brief file path lives in the `@peon_brief` pane option, set at launch; a pane from an older launch has none and is skipped with a note.
 
 `list` prints every agent pane on the server as `SESSION AGENT PANE STATUS`, so a session can be found without remembering the directory it was launched from. A pane back at a shell is reported as `gone`: its agent exited.
 

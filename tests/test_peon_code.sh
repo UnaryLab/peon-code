@@ -78,6 +78,7 @@ case ${1:-} in
   show-options)
     case " $* " in
       *" -t ="*) exit 2 ;;
+      *" @peon_brief "*) printf '%s\n' "${FAKE_TMUX_BRIEF:-}"; exit 0 ;;
     esac
     [ "${FAKE_TMUX_MODE:-}" = owned ] && printf '1\n'
     exit 0
@@ -325,6 +326,27 @@ FAKE_TMUX
   assert_not_contains "$log" "send-keys"
 }
 
+# rebrief re-pastes the brief file stored in @peon_brief; a pane with no
+# stored brief is skipped with a note, and sending none is an error.
+test_rebrief() {
+  local fake_bin=$1 log="$TEST_DIR/tmux-rebrief.log" home_dir="$TEST_DIR/home-rebrief"
+  mkdir -p "$home_dir"
+  printf 'You are boss, follow the rules.\n' >"$TEST_DIR/rebrief-brief.md"
+
+  PATH="$fake_bin:$PATH" HOME="$home_dir" FAKE_TMUX_LOG="$log" FAKE_TMUX_MODE=owned \
+    FAKE_TMUX_BRIEF="$TEST_DIR/rebrief-brief.md" \
+    "$ROOT/peon-code.sh" rebrief all owned >"$TEST_DIR/rebrief.out"
+  assert_contains "$TEST_DIR/rebrief.out" "rebriefed 1 pane(s) in session owned"
+  assert_contains "$log" "buffer-content:You are boss, follow the rules."
+
+  : >"$log"
+  if PATH="$fake_bin:$PATH" HOME="$home_dir" FAKE_TMUX_LOG="$log" FAKE_TMUX_MODE=owned \
+    "$ROOT/peon-code.sh" rebrief all owned >"$TEST_DIR/rebrief-none.out" 2>"$TEST_DIR/rebrief-none.err"; then
+    fail "rebrief succeeded with no stored brief"
+  fi
+  assert_contains "$TEST_DIR/rebrief-none.err" "no stored brief for impl"
+}
+
 bash -n "$ROOT/peon-code.sh" "$ROOT/lib/config.sh" "$ROOT/lib/tmux.sh" \
   "$ROOT/install.sh"
 fake_bin=$(make_fake_commands)
@@ -334,4 +356,5 @@ test_unique_buffers_and_launch_failure "$fake_bin"
 test_config_loading "$fake_bin"
 test_resume_picks_each_agent_thread "$fake_bin"
 test_resume_picker_answered "$fake_bin"
+test_rebrief "$fake_bin"
 echo "tests: PASS"

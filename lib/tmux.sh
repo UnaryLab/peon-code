@@ -163,6 +163,33 @@ cmd_msg() {
   echo "peon-code: sent to ${#ids[@]} pane(s) in session $session"
 }
 
+# Paste a pane's launch brief again, so an agent that compacted its
+# conversation gets its standing instructions back. The brief file path
+# is stored on each pane as the @peon_brief option at launch.
+cmd_rebrief() {
+  local target=${1:-} session panes id name brief found=0 sent=0
+  [ -n "$target" ] || die "usage: peon-code.sh rebrief <name|all> [<session>]"
+  session=$(session_name "${2:-}")
+  tmux has-session -t "=$session" 2>/dev/null || die "no session $session"
+  is_peon_session "$session" || die "session $session was not created by peon-code"
+  panes=$(list_agent_panes "$session") || true
+  [ -n "$panes" ] || die "no agent panes in session $session"
+  while read -r id name; do
+    [ "$target" = all ] || [ "$target" = "$name" ] || continue
+    found=1
+    brief=$(tmux show-options -pqv -t "$id" @peon_brief 2>/dev/null) || brief=""
+    if [ -z "$brief" ] || [ ! -f "$brief" ]; then
+      echo "peon-code: no stored brief for $name $id: pane from an older launch, or its brief file is gone" >&2
+      continue
+    fi
+    paste_to_pane "$id" <"$brief"
+    sent=$((sent + 1))
+  done <<<"$panes"
+  [ "$found" -eq 1 ] || die "no pane named $target in session $session"
+  [ "$sent" -gt 0 ] || die "no brief sent in session $session"
+  echo "peon-code: rebriefed $sent pane(s) in session $session"
+}
+
 # Every agent pane on the server, so a session can be found without
 # remembering the directory it was launched from. A pane back at a shell
 # is reported as gone: its agent exited.
