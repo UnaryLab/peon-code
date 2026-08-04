@@ -309,23 +309,27 @@ test_send_refuses() {
 > ready
 ────'
 
-  assert_send_refused "a box that already had typed text" "target box busy, retry later" \
+  assert_send_refused "a box that already had typed text" "target box busy after 10 tries, giving up" \
     FAKE_BOX="$busy_box" FAKE_CURSOR='11 1'
+  # A box that stays busy is read once per try, so ten reads show send
+  # retried to its cap before giving up.
+  [ "$(send_captures)" = 10 ] || fail "send made $(send_captures) box reads, expected 10"
   # The user typed, then moved the cursor back to the start of the line: the
   # text sits after the cursor, and the box is busy all the same.
-  assert_send_refused "a box holding text the cursor had moved back over" "target box busy, retry later" \
+  assert_send_refused "a box holding text the cursor had moved back over" "target box busy after 10 tries, giving up" \
     FAKE_BOX="$busy_box" FAKE_CURSOR='2 1'
   # In copy mode a paste lands but Enter goes to the copy-mode key table.
-  assert_send_refused "a pane in copy mode" "is in copy mode, retry later" \
+  assert_send_refused "a pane in copy mode" "is in copy mode after 10 tries, giving up" \
     FAKE_BOX="$empty_box" FAKE_CURSOR='2 1' FAKE_IN_MODE=1
-  assert_send_refused "a pane sitting on a menu" "is on a dialog or a menu, retry later" \
+  assert_send_refused "a pane sitting on a menu" "is on a dialog or a menu after 10 tries, giving up" \
     FAKE_BOX="$menu_box" FAKE_CURSOR='1 1'
-  assert_send_refused "a codex pane sitting on a menu" "is on a dialog or a menu, retry later" \
+  assert_send_refused "a codex pane sitting on a menu" "is on a dialog or a menu after 10 tries, giving up" \
     FAKE_BOX="$codex_menu_box" FAKE_CURSOR='1 1'
   # No marker means no box peon-code can measure, which no waiting fixes, so
-  # the message says to send it by hand instead of to retry.
+  # send dies on the first read and says to send it by hand.
   assert_send_refused "a pane drawing no prompt marker" "draws no prompt marker peon-code knows" \
     FAKE_BOX="$bare_box" FAKE_CURSOR='7 1'
+  [ "$(send_captures)" = 1 ] || fail "send made $(send_captures) box reads, expected 1"
   assert_send_refused "a pane back at a shell" "back at a shell" \
     FAKE_BOX="$empty_box" FAKE_CURSOR='2 1' FAKE_CMD=zsh
   # Without the launch-time pane option, send would reach any pane on the

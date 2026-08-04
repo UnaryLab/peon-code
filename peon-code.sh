@@ -48,9 +48,10 @@ peon-code.sh dismiss [<session>]                kill one session
 peon-code.sh msg <name|all> 'text' [<session>]  send text to an agent pane
                                                 (session defaults to the current directory name)
 peon-code.sh send <pane-id> 'text'|-            agent to agent: paste into a pane and
-                                                submit it, refused while that pane's
-                                                input box holds typed text
-                                                (- reads the message from stdin)
+                                                submit it; a blocked pane (typed text,
+                                                dialog, menu, copy mode) is retried up
+                                                to 10 times over ~10s before exiting
+                                                non-zero (- reads the message from stdin)
 peon-code.sh rebrief <name|all> [<session>]     send an agent its launch brief again,
                                                 for after it compacts its conversation
                                                 (session defaults to the current directory name)
@@ -229,7 +230,7 @@ The task board is $TASK_BOARD in the working directory, a table of who | task | 
 Rules:
 1. Task intake: the user assigns work by typing into the ${NAMES[$MAIN]} pane (${PANE_IDS[$MAIN]}). That agent splits the work onto the task board and assigns it; every other agent waits for a board entry or a message instead of inventing work at launch. The agent that split the work posts the final summary to the user.
 2. Git discipline: never run git add -A, never commit, and never run destructive git commands unless the user asks. Stage only the files you claimed. Only one agent touches git at a time.
-3. Held sends: send makes the box check and the paste back to back in one run, and presses Enter only when the box holds exactly your message. When it fails with a busy message, the target was mid-dialog, mid-menu, in copy mode, or holding typed text: wait, do something else, and retry later. Never paste into that pane by hand.
+3. Held sends: send makes the box check and the paste back to back in one run, and presses Enter only when the box holds exactly your message. A blocked target (mid-dialog, mid-menu, in copy mode, or holding typed text) is retried up to 10 times over about 10 seconds; when send still fails with a busy message, do something else and retry later. Never paste into that pane by hand.
 4. Dead-pane guard: if tmux display -pt <id> '#{pane_current_command}' shows a shell, that agent is gone. Do not send, because your text would run as shell commands. Tell the user instead.
 5. No idle deadlocks: if you are blocked, message once, work on something else, then re-check once. After that, proceed on your best judgment or tell the user.
 6. Rate limits: if you hit a usage limit, note it and the reset time on the task board so the others can reassign the work.

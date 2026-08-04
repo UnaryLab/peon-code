@@ -430,7 +430,7 @@ box_is_paste_placeholder() {
 # placeholder; a box holding anything else keeps both the message and
 # whatever the user typed.
 cmd_send() {
-  local pane=${1:-} text=${2:-} want box i
+  local pane=${1:-} text=${2:-} want box i rc reason
   [ -n "$pane" ] && [ -n "$text" ] || die "usage: peon-code.sh send <pane-id> 'text'|-"
   if [ "$text" = - ]; then
     text=$(cat)
@@ -444,12 +444,29 @@ cmd_send() {
   # anywhere else, rather than reaching any pane on the tmux server.
   [ -n "$(tmux show-options -pqv -t "$pane" @peon_name 2>/dev/null || true)" ] ||
     die "pane $pane is not a peon-code agent pane"
-  pane_takes_keys "$pane" || die "pane $pane is in copy mode, retry later"
-  box=$(pane_box_text "$pane") || case $? in
-    2) die "pane $pane draws no prompt marker peon-code knows; message it by hand" ;;
-    *) die "pane $pane is on a dialog or a menu, retry later" ;;
-  esac
-  [ -z "$box" ] || die "target box busy, retry later"
+  # Copy mode, a dialog or a menu, and a box holding typed text all clear on
+  # their own, so these checks retry: 10 tries, one second apart. A pane
+  # drawing no prompt marker never clears, so that one dies at once.
+  reason=""
+  for ((i = 0; i < 10; i++)); do
+    reason=""
+    if ! pane_takes_keys "$pane"; then
+      reason="pane $pane is in copy mode"
+    else
+      rc=0
+      box=$(pane_box_text "$pane") || rc=$?
+      if [ "$rc" -eq 2 ]; then
+        die "pane $pane draws no prompt marker peon-code knows; message it by hand"
+      elif [ "$rc" -ne 0 ]; then
+        reason="pane $pane is on a dialog or a menu"
+      elif [ -n "$box" ]; then
+        reason="target box busy"
+      fi
+    fi
+    [ -n "$reason" ] || break
+    if [ "$i" -lt 9 ]; then sleep 1; fi
+  done
+  [ -z "$reason" ] || die "$reason after 10 tries, giving up"
   want=$(printf '%s' "$text" | plain_text)
   printf '%s' "$text" | paste_only "$pane"
   for ((i = 0; i < 10; i++)); do
