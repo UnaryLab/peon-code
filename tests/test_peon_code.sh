@@ -797,8 +797,9 @@ FAKE_TMUX
   assert_contains "$log" "buffer-content:You are impl, follow the rules."
   enter_line=$(grep -n -Fx -- 'send-keys -t %1 Enter' "$log" | head -1 | cut -d: -f1)
   brief_line=$(grep -n -F -- 'buffer-content:You are impl' "$log" | head -1 | cut -d: -f1)
-  [ -n "$enter_line" ] && [ "$brief_line" -gt "$enter_line" ] ||
+  if [ -z "$enter_line" ] || [ "$brief_line" -le "$enter_line" ]; then
     fail "compact pasted the brief before submitting /compact"
+  fi
   settle_reads=$(awk -v a="$enter_line" -v b="$brief_line" \
     'NR > a && NR < b && /^capture-pane/ { n++ } END { print n + 0 }' "$log")
   [ "$settle_reads" -ge 2 ] ||
