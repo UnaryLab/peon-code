@@ -198,6 +198,9 @@ test_config_loading() {
   brief_file=${brief_file%%')"'*}
   [ -n "$brief_file" ] || fail "the config launch did not record a brief file"
   assert_contains "$brief_file" "Keep changes focused."
+  # An empty focused box shows no hint, only the marker (and in some TUIs a
+  # drawn cursor cell); the brief must call that empty so sends are not held.
+  assert_contains "$brief_file" "Nothing after the marker, dim or gray hint text, or a single highlighted blank cell (the cursor some TUIs draw) all mean the box is empty"
 }
 
 # Every agent must reopen its own thread: same-CLI panes share a directory,
