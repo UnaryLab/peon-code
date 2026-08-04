@@ -290,7 +290,7 @@ assert_send_refused() {
 
 # Every state that must stop a send before anything is pasted.
 test_send_refuses() {
-  local empty_box busy_box menu_box bare_box
+  local empty_box busy_box menu_box codex_menu_box bare_box
   empty_box='output line
 ❯
 ────'
@@ -302,6 +302,9 @@ test_send_refuses() {
   menu_box='Do you trust this folder?
 ❯ 1. Yes, I trust this folder
   2. No, exit'
+  codex_menu_box='Do you trust the contents of this directory?
+› 1. Yes, continue
+  2. No, quit'
   bare_box='some other CLI
 > ready
 ────'
@@ -317,6 +320,8 @@ test_send_refuses() {
     FAKE_BOX="$empty_box" FAKE_CURSOR='2 1' FAKE_IN_MODE=1
   assert_send_refused "a pane sitting on a menu" "is on a dialog or a menu, retry later" \
     FAKE_BOX="$menu_box" FAKE_CURSOR='1 1'
+  assert_send_refused "a codex pane sitting on a menu" "is on a dialog or a menu, retry later" \
+    FAKE_BOX="$codex_menu_box" FAKE_CURSOR='1 1'
   # No marker means no box peon-code can measure, which no waiting fixes, so
   # the message says to send it by hand instead of to retry.
   assert_send_refused "a pane drawing no prompt marker" "draws no prompt marker peon-code knows" \
@@ -370,6 +375,52 @@ test_send_delivers() {
   assert_contains "$SEND_LOG" "paste-buffer"
   assert_not_contains "$SEND_LOG" "send-keys"
   [ "$(send_captures)" = 11 ] || fail "send made $(send_captures) box reads, expected 11"
+
+  # A CLI that collapses a multi-line paste into a placeholder row still gets
+  # the Enter: the box was empty before the paste, so one placeholder is the
+  # message. One form per supported CLI.
+  local placeholder
+  for placeholder in '[Pasted text #2 +15 lines]' '[Pasted Content 1234 chars]' '[Paste #2 - 15 lines]'; do
+    reset_send_log
+    PATH="$SEND_BIN:$PATH" FAKE_TMUX_LOG="$SEND_LOG" \
+      FAKE_BOX="$empty_box" FAKE_CURSOR='2 1' \
+      FAKE_BOX_AFTER="output line
+❯ $placeholder
+────" FAKE_CURSOR_AFTER='28 1' \
+      "$ROOT/peon-code.sh" send %2 - >"$TEST_DIR/send-collapsed.out" <<'PEON'
+line one
+line two
+PEON
+    assert_contains "$TEST_DIR/send-collapsed.out" "sent to %2"
+    assert_contains "$SEND_LOG" "send-keys -t %2 Enter"
+  done
+
+  # codex draws › as its prompt marker; its box reads and delivers all the
+  # same, whether the paste shows literally or as its collapsed placeholder.
+  reset_send_log
+  PATH="$SEND_BIN:$PATH" FAKE_TMUX_LOG="$SEND_LOG" \
+    FAKE_BOX='output line
+›
+────' FAKE_CURSOR='2 1' \
+    FAKE_BOX_AFTER='output line
+› hello world
+────' FAKE_CURSOR_AFTER='13 1' \
+    "$ROOT/peon-code.sh" send %2 'hello world' >"$TEST_DIR/send-codex.out"
+  assert_contains "$TEST_DIR/send-codex.out" "sent to %2"
+  assert_contains "$SEND_LOG" "send-keys -t %2 Enter"
+
+  # A placeholder with trailing typed text is not the message alone.
+  reset_send_log
+  if PATH="$SEND_BIN:$PATH" FAKE_TMUX_LOG="$SEND_LOG" \
+    FAKE_BOX="$empty_box" FAKE_CURSOR='2 1' \
+    FAKE_BOX_AFTER='output line
+❯ [Pasted text #2 +15 lines] and more
+────' FAKE_CURSOR_AFTER='37 1' \
+    "$ROOT/peon-code.sh" send %2 'hello world' >/dev/null 2>"$TEST_DIR/send-collapsed-extra.err"; then
+    fail "send submitted a placeholder box holding extra text"
+  fi
+  assert_contains "$TEST_DIR/send-collapsed-extra.err" "no Enter sent"
+  assert_not_contains "$SEND_LOG" "send-keys"
 
   # A pane that enters copy mode after the paste keeps the message: Enter
   # would go to the copy-mode key table instead of the agent.

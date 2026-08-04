@@ -68,7 +68,7 @@ plain_text() {
 # pane is waiting on an answer.
 pane_has_menu() {
   case $1 in
-    *"Enter to confirm"*|*"❯ "[0-9]"."*) return 0 ;;
+    *"Enter to confirm"*|*"❯ "[0-9]"."*|*"› "[0-9]"."*) return 0 ;;
   esac
   return 1
 }
@@ -86,7 +86,8 @@ pane_takes_keys() {
 # inside such a span, so a marker drawn in a hint style is still found.
 strip_styles() {
   LC_ALL=C awk -v hint="$1" '
-    BEGIN { m = "\342\235\257"; csi = "\033["; osc = "\033]"; st = "\033\\" }
+    # Prompt markers: claude draws U+276F, codex U+203A; both are 3 bytes.
+    BEGIN { m = "\342\235\257"; m2 = "\342\200\272"; csi = "\033["; osc = "\033]"; st = "\033\\" }
     {
       line = drop_osc($0); out = ""; dim = 0; gray = 0
       while ((p = index(line, csi)) > 0) {
@@ -115,11 +116,17 @@ strip_styles() {
       return r s
     }
     function span(s, styled) { return (hint && styled) ? blank(s) : s }
+    function markpos(s,   p, q) {
+      p = index(s, m); q = index(s, m2)
+      if (p == 0) return q
+      if (q == 0 || p < q) return p
+      return q
+    }
     function blank(s,   r, p) {
       r = ""
-      while ((p = index(s, m)) > 0) {
-        r = r spaces(p - 1) m
-        s = substr(s, p + length(m))
+      while ((p = markpos(s)) > 0) {
+        r = r spaces(p - 1) substr(s, p, 3)
+        s = substr(s, p + 3)
       }
       return r spaces(length(s))
     }
@@ -180,13 +187,20 @@ pane_box_text() {
     return 1
   fi
   box=$(printf '%s\n' "$cap" | strip_styles 1 | LC_ALL=C awk -v cy="$cy" '
-    BEGIN { m = "\342\235\257" }
-    { rows[NR] = $0; if (NR <= cy + 1 && index($0, m) > 0) mr = NR }
+    # Prompt markers: claude draws U+276F, codex U+203A; both are 3 bytes.
+    BEGIN { m = "\342\235\257"; m2 = "\342\200\272" }
+    function markpos(s,   p, q) {
+      p = index(s, m); q = index(s, m2)
+      if (p == 0) return q
+      if (q == 0 || p < q) return p
+      return q
+    }
+    { rows[NR] = $0; if (NR <= cy + 1 && markpos($0) > 0) mr = NR }
     END {
       if (!mr) exit 2
       for (r = mr; r <= cy + 1; r++) {
         s = rows[r]
-        if (r == mr) s = substr(s, index(s, m) + length(m))
+        if (r == mr) s = substr(s, markpos(s) + 3)
         out = out " " s
       }
       print out
@@ -237,7 +251,7 @@ answer_resume_picker() {
       return 0
     fi
     # Input line drawn and no menu on screen: the pane never showed a picker.
-    if ! pane_has_menu "$cur" && [[ $cur == *❯* ]]; then
+    if ! pane_has_menu "$cur" && [[ $cur == *❯* || $cur == *›* ]]; then
       return 0
     fi
     sleep 0.3
@@ -260,7 +274,7 @@ wait_pane_settled() {
     if pane_has_menu "$cur"; then
       cur=""  # a menu, not the input line
     fi
-    if [[ $cur == *❯* ]] && [ "$cur" = "$prev" ]; then
+    if [[ $cur == *❯* || $cur == *›* ]] && [ "$cur" = "$prev" ]; then
       return 0
     fi
     prev=$cur
@@ -397,11 +411,24 @@ cmd_compact() {
   done
 }
 
+# A CLI can draw a multi-line paste as one placeholder row instead of its
+# text: claude draws "[Pasted text #2 +15 lines]", codex "[Pasted Content
+# 1234 chars]", copilot "[Paste #2 - 15 lines]". The box is checked empty
+# right before the paste, so a box holding exactly one placeholder holds the
+# pasted message. Add other CLIs' placeholder forms here as they show up.
+box_is_paste_placeholder() {
+  local claude='^\[Pasted text #[0-9]+( \+[0-9]+ lines)?\]$'
+  local codex='^\[Pasted Content [0-9]+ chars\]$'
+  local copilot='^\[Paste #[0-9]+( - [0-9]+ lines)?\]$'
+  [[ $1 =~ $claude ]] || [[ $1 =~ $codex ]] || [[ $1 =~ $copilot ]]
+}
+
 # Send one agent's message to another agent's pane. A message of - is read
 # from stdin, which keeps quotes in it off the sender's command line. One run
 # makes the box check and the paste back to back, and Enter follows only once
-# the box holds the message; a box holding anything else keeps both the
-# message and whatever the user typed.
+# the box holds the message, either as its text or as the CLI's paste
+# placeholder; a box holding anything else keeps both the message and
+# whatever the user typed.
 cmd_send() {
   local pane=${1:-} text=${2:-} want box i
   [ -n "$pane" ] && [ -n "$text" ] || die "usage: peon-code.sh send <pane-id> 'text'|-"
@@ -428,7 +455,7 @@ cmd_send() {
   for ((i = 0; i < 10; i++)); do
     sleep 0.2
     box=$(pane_box_text "$pane") || box=""
-    if [ "$box" = "$want" ]; then
+    if [ "$box" = "$want" ] || box_is_paste_placeholder "$box"; then
       pane_takes_keys "$pane" ||
         die "no Enter sent: pane $pane went into copy mode, and the message is in its box for the user to submit"
       tmux send-keys -t "$pane" Enter
