@@ -4,7 +4,7 @@ A tmux session of side-by-side AI coding agent CLIs that watch and message each 
 
 ## Overview
 
-Each pane runs one agent CLI, launched with a brief that names the pane's own id, the roster of the other panes, and the agent's role. An agent reads another's latest output with `tmux capture-pane -pt <pane-id> -S -100` and messages it with `peon-code send <pane-id>`, which pastes the text into that pane's input box and submits it. The team coordinates through a task board file, `.peon-code-task.md`, a table of `who | task | files | status`.
+Each pane runs one agent CLI, launched with a brief that names the pane's own id, the roster of the other panes, and the agent's role. An agent reads another's latest output with `tmux capture-pane -pt <pane-id> -S -100` and messages it with `peon-code send <pane-id>`, which pastes the text into that pane's input box and submits it. The team coordinates through a task board file, see [Task board](#task-board).
 
 ## Requirements
 
@@ -42,7 +42,7 @@ peon-code uninstall [bin-dir]                # remove the install.sh symlink
 peon-code -h                                 # help
 ```
 
-peon-code marks each session it creates and refuses to attach to, message, or dismiss an unmarked session with the same name.
+Every `[<session>]` argument defaults to the current directory name. peon-code marks each session it creates and refuses to attach to, message, or dismiss an unmarked session with the same name.
 
 ### Supported providers
 
@@ -56,7 +56,7 @@ peon-code marks each session it creates and refuses to attach to, message, or di
 
 ### Start and attach
 
-`peon-code [-c file] [<session>] [<cmd> ...]` builds the session, or attaches it if it already exists. The session name defaults to the current directory name, and the team resolves as described under [Config file](#config-file).
+`peon-code [-c file] [<session>] [<cmd> ...]` builds the session, or attaches it if it already exists. The team resolves as described under [Config file](#config-file).
 
 The window uses tmux's `main-vertical` layout: the main agent's pane takes the left 60% of the width, the other agents stack to its right. Main is the agent marked with a leading `*` in the config, else the first agent with the `manager` role, else pane 0.
 
@@ -80,31 +80,31 @@ Only claude, codex, copilot, gemini, and qwen have a resume handle; any other pr
 
 ### Dismiss
 
-`peon-code dismiss [<session>]` kills one session: the name given, else the current directory name, matched exactly. Other sessions and the tmux server keep running.
+`peon-code dismiss [<session>]` kills one session, matched exactly. Other sessions and the tmux server keep running.
 
 With no such session it says so and exits 0. A session peon-code did not create is left alone and exits 1.
 
 ### Msg
 
-`peon-code msg <name|all> 'text' [<session>]` sends text to the named agent's pane, or to every agent pane with `all`, prefixed `[from user]`. The session defaults to the current directory name. Teams share agent names, so reaching one session keeps `msg boss` from interrupting every team on the tmux server.
+`peon-code msg <name|all> 'text' [<session>]` sends text to the named agent's pane, or to every agent pane with `all`, prefixed `[from user]`. Teams share agent names, so reaching one session keeps `msg boss` from interrupting every team on the tmux server.
 
 Panes are taken one at a time, each getting up to about 3 seconds for its input box to show the text before `Enter` follows. A pane that refuses the paste, never shows it, or sits in copy mode is named on stderr and the rest still get theirs; the text is left in that pane's box for you to submit. An unknown agent name prints the session's panes and exits 1, and a run where any pane took no message exits nonzero.
 
 ### Send
 
-`peon-code send <pane-id> 'text'|-` is the agent-to-agent path: it pastes a message into another agent's pane and submits it. A message of `-` is read from stdin, which keeps quotes and apostrophes out of the sending agent's shell. Agents read each other with `tmux capture-pane -pt <pane-id> -S -100` and message each other with this command.
+`peon-code send <pane-id> 'text'|-` is the agent-to-agent path: it pastes a message into another agent's pane and submits it. A message of `-` is read from stdin, which keeps quotes and apostrophes out of the sending agent's shell.
 
 A busy target takes nothing: a pane holding typed text, on a dialog or a menu, or in copy mode is retried up to 10 times over about 10 seconds, then exits nonzero having pasted nothing, so that pane keeps whatever it had. A pane back at a shell, a pane peon-code did not launch, and a pane drawing no prompt marker peon-code knows exit nonzero at once. After a paste, `Enter` follows only once the box holds that message alone; a box that never matches keeps the message with no `Enter` sent, and the run exits nonzero. On a busy target, retry later rather than pasting by hand.
 
 ### Rebrief
 
-`peon-code rebrief <name|all> [<session>]` pastes the launch brief back into the named agent's pane, or every agent pane with `all`. The session defaults to the current directory name. An agent that compacts or clears its conversation loses the brief's rules, and this puts them back.
+`peon-code rebrief <name|all> [<session>]` pastes the launch brief back into the named agent's pane, or every agent pane with `all`. An agent that compacts or clears its conversation loses the brief's rules, and this puts them back.
 
-A pane whose input box holds typed text, one on a dialog or a menu, and one from an older launch with no stored brief are each skipped with a note on stderr, and on their own do not change the exit code. The run exits nonzero when no pane took a brief at all, or when a paste was refused or left unsubmitted.
+A pane whose input box holds typed text, one on a dialog or a menu, one drawing no prompt marker peon-code knows, and one from an older launch with no stored brief are each skipped with a note on stderr, and on their own do not change the exit code. The run exits nonzero when no pane took a brief at all, or when a paste was refused or left unsubmitted.
 
 ### Compact and clear
 
-`peon-code compact [<name|all>] [<session>]` and `peon-code clear [<name|all>] [<session>]` send `/compact` or `/clear` to the named agent's pane, or to every agent pane, then paste that pane's brief back once the command has finished, since both commands drop the standing instructions. Name and session default to `all` and the current directory name.
+`peon-code compact [<name|all>] [<session>]` and `peon-code clear [<name|all>] [<session>]` send `/compact` or `/clear` to the named agent's pane, or to every agent pane, then paste that pane's brief back once the command has finished, since both commands drop the standing instructions. The name defaults to `all`.
 
 A pane in copy mode, one drawing no prompt marker peon-code knows, one on a dialog or a menu, one whose input box holds typed text, or one that tmux refused the paste for is skipped with a note on stderr, and the rest still get the command. If the box holds anything other than the slash command after the paste, no `Enter` is sent and the command is left there for you to submit. Each pane that took the command then has up to 2 minutes to finish; one still busy after that keeps its brief unsent and is named on stderr, so run `rebrief` on it later. The run exits nonzero only when no pane took the command.
 
@@ -112,15 +112,15 @@ A pane in copy mode, one drawing no prompt marker peon-code knows, one on a dial
 
 `peon-code list` prints every agent pane on the tmux server as `SESSION AGENT PANE STATUS`, so a session can be found without remembering the directory it was launched from. It takes no arguments and covers every session, not one.
 
-A pane back at a shell is reported as `gone`: its agent exited. With no agent panes anywhere it says so. Either way it exits 0; an argument exits 1.
+A pane back at a shell is reported as `gone (<shell>)`: its agent exited. With no agent panes anywhere it says so. Either way it exits 0; an argument exits 1.
 
 ### How it works
 
 - **Pane identity.** Each agent pane carries its name in the `@peon_name` tmux pane option and its brief file path in `@peon_brief`, both set at launch; an app cannot overwrite a pane option, unlike the pane title, which only labels the border. Every subcommand acts only on panes carrying `@peon_name`, and the session-scoped ones only on sessions marked `@peon_code`.
 - **Pasting.** Text goes in through a tmux buffer as a bracketed paste, so a multi-line message stays in the input line instead of submitting early.
 - **The busy check.** A pane's input box is read as everything from the prompt marker (claude draws `❯`, codex `›`) to the end of the cursor's row, with the CLI's hint text left out, so text the cursor was moved back over still counts. `Enter` follows a paste only once the box reads back the pasted text or the CLI's placeholder row for a long paste, such as `[Pasted text #2 +15 lines]`.
-- **Briefs.** Every brief is written to a file under `$TMPDIR`. A CLI that takes its prompt on the command line launches as `<cmd> "$(cat <file>)"`, so the command line stays one line instead of thousands of escaped characters. A claude pane gets that file pasted in once its input line is drawn and the pane has stopped changing: a menu such as the folder-trust dialog counts as unsettled, so the launcher waits up to 30 seconds (2 minutes when resuming) and then prints the brief file path for you to paste yourself.
-- **Resume lookup.** Each brief carries the phrase `agent <name> of peon-code session <session>,`, trailing comma included, so one session name that is a prefix of another never matches the other's transcripts. `resume` searches each CLI's own transcript store for that phrase, newest first, over the last 30 days: every `*.jsonl` file under `~/.claude/projects/<directory>/`, under `~/.codex/sessions/` and under `~/.copilot/session-state/` (the last two must also record the current working directory), under `~/.gemini/tmp/<sha256 of the directory>/chats/`, and under `~/.qwen/projects/<directory>/chats/`. The marker is unique per agent and session, so every pane reopens its own conversation rather than same-CLI panes landing in the newest one.
+- **Briefs.** Every brief is written to a file under `$TMPDIR`. A CLI that takes its prompt on the command line launches as `<cmd> "$(cat <file>)"`, so the command line stays one line instead of thousands of escaped characters. A claude pane gets its brief pasted in once its input line is drawn and the pane has stopped changing: a menu such as the folder-trust dialog counts as unsettled, so the launcher waits up to 30 seconds (2 minutes when resuming) and then prints the brief file path for you to paste yourself.
+- **Resume lookup.** Each brief carries the phrase `agent <name> of peon-code session <session>,`, trailing comma included, so one session name that is a prefix of another never matches the other's transcripts. `resume` searches each CLI's own transcript store for that phrase, newest first, over the last 30 days: every `*.jsonl` file under `~/.claude/projects/<path>/`, under `~/.codex/sessions/` and under `~/.copilot/session-state/` (the last two must also record the current working directory), under `~/.gemini/tmp/<sha256 of the working-directory path>/chats/`, and under `~/.qwen/projects/<path>/chats/`, where `<path>` is the full working-directory path with every character other than letters and digits replaced by `-`. The marker is unique per agent and session, so every pane reopens its own conversation rather than same-CLI panes landing in the newest one.
 
 ## Reproducing results
 
@@ -146,7 +146,7 @@ fast     codex                                        -
 weird    claude                                       ./my-roles/chaos.md
 ```
 
-- Names must match `[A-Za-z0-9_-]+` and be unique. A leading `*` marks the main agent; at most one line may carry it.
+- Names must match `[A-Za-z0-9_-]+` and be unique. A leading `*` marks the main agent (see [Start and attach](#start-and-attach)); at most one line may carry it.
 - The role field is required. `-` means no role.
 - A bare role name reads `roles/<name>.md` next to `peon-code.sh`. A role token with a `/` is a file path, relative paths resolving against the config file's directory.
 - Full-line `#` comments and blank lines are skipped. Inline comments are not.
