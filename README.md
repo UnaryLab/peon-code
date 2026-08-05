@@ -19,11 +19,7 @@ After installation, run `peon-code` from any directory.
 
 `install.sh` seeds `~/.config/peon-code/peon-code.conf` from the example if it is missing.
 
-To uninstall:
-
-```sh
-peon-code uninstall [bin-dir]   # remove the install.sh symlink
-```
+To remove the symlink, see [Uninstall](#uninstall).
 
 ## Quick start
 
@@ -40,13 +36,14 @@ peon-code -h                           # help
 
 ```sh
 peon-code resume [<session>] [<cmd> ...]     # same, each agent reopening its last conversation
-peon-code dismiss [<session>]          # kill one session, default the current directory name
-peon-code msg <name|all> 'text' [<session>]  # send text to an agent pane of one session
-peon-code send <pane-id> 'text'|-            # agent to agent: paste into a pane and submit it (- reads stdin)
+peon-code dismiss [<session>]                # kill one session
+peon-code msg <name|all> 'text' [<session>]  # send text to an agent pane
+peon-code send <pane-id> 'text'|-            # agent to agent: paste into a pane and submit it
 peon-code rebrief <name|all> [<session>]     # send an agent its launch brief again
 peon-code compact [<name|all>] [<session>]   # send /compact, then the brief again once it ends
 peon-code clear [<name|all>] [<session>]     # send /clear, then the brief again
-peon-code list                         # agent panes of every session
+peon-code list                               # agent panes of every session
+peon-code uninstall [bin-dir]                # remove the install.sh symlink
 ```
 
 peon-code marks each session it creates and refuses to attach, message, or dismiss an unmarked session with the same name.
@@ -61,11 +58,9 @@ peon-code marks each session it creates and refuses to attach, message, or dismi
 | gemini, qwen | `-i <prompt>` (unverified on this machine) | `--resume <id>` |
 | anything else | passed through as-is | not supported |
 
-Every brief is written to a file under `$TMPDIR`. A CLI that takes its prompt on the command line launches as `<cmd> "$(cat <file>)"`, so the command line stays one line instead of thousands of escaped characters; a claude pane gets that same file pasted in once its TUI is up.
-
-A claude pane gets its brief only once its input line is drawn and the pane has stopped changing. A menu such as the folder-trust dialog counts as unsettled, so the launcher never types into it: it waits up to 30 seconds for the dialog to be answered, then prints the pane's brief file for you to paste yourself.
-
 ### Start and attach
+
+`peon-code [-c file] [<session>] [<cmd> ...]` builds the session, or attaches it if it already exists. The session name defaults to the current directory name, and the team resolves as described under [Config file](#config-file).
 
 The window uses tmux's `main-vertical` layout: the main agent's pane takes the left 60% of the width, the other agents stack to its right. Main is the agent marked with a leading `*` in the config, else the first agent with the `manager` role, else pane 0.
 
@@ -85,43 +80,63 @@ Detaching leaves the session alive. Use `dismiss` to actually stop it.
 
 ### Resume
 
-`resume` builds the session the same way as a plain start, except each agent reopens the conversation it had in that session and directory before, so the team keeps its memory across a `dismiss` or a reboot. The team, session name, and roles resolve exactly as they do for a start.
+`peon-code resume [<session>] [<cmd> ...]` builds the session the same way as a plain start, except each agent reopens the conversation it had in that session and directory before, so the team keeps its memory across a `dismiss` or a reboot. Session name, team, and roles resolve exactly as they do for a start, and the exit codes are the same.
 
-Each brief carries the phrase `agent <name> of peon-code session <session>,` (trailing comma included, so one session name that is a prefix of another never matches the other's transcripts), and that phrase is what `resume` looks for in the CLIs' own transcripts, newest first: `~/.claude/projects/<directory>/*.jsonl` for claude, `~/.codex/sessions/**/rollout-*.jsonl` for codex (the rollout must also record the current working directory), `~/.copilot/session-state/<id>/events.jsonl` for copilot (the events log must also record the current working directory), `~/.gemini/tmp/<sha256 of the directory>/chats/*.jsonl` for gemini, and `~/.qwen/projects/<directory>/chats/<id>.jsonl` for qwen. The marker is unique per agent, so a team of any size reopens one conversation per pane rather than every same-CLI pane landing in the newest one. Transcripts older than 30 days are not searched.
-
-claude panes launch as `claude --resume <id>`; when claude opens a large or old session on its "Resume from summary" picker, the pane answers it with the summary default and waits out the compaction that follows before pasting the brief. codex panes launch as `codex resume <id>`, copilot panes as `copilot --resume=<id>`, gemini and qwen panes as `<cli> --resume <id>`, all keeping the config's own arguments; copilot, gemini, and qwen still get the brief through `-i`. Any other provider has no resume handle here and starts fresh. An agent with no earlier thread is named on stderr and starts fresh too.
-
-Each resumed pane still gets the full brief, since pane ids change with every session.
+Only claude, codex, copilot, gemini, and qwen have a resume handle; any other provider starts fresh. An agent with no earlier conversation in the last 30 days is named on stderr and starts fresh too. A resumed claude pane that opens on claude's "Resume from summary" picker takes the summary default and waits out the compaction that follows before its brief is pasted. Every resumed pane still gets its full brief, since pane ids change with each session.
 
 ### Dismiss
 
-`dismiss` kills one session: the name given, else the current directory name, matched exactly. Other sessions and the tmux server keep running. With no such session it says so and exits 0.
+`peon-code dismiss [<session>]` kills one session: the name given, else the current directory name, matched exactly. Other sessions and the tmux server keep running.
+
+With no such session it says so and exits 0. A session peon-code did not create is left alone and exits 1.
 
 ### Msg
 
-`msg` sends text to the named agent's pane, or to every agent pane with `all`, prefixed `[from user]`. It reaches one session: the name given as the third argument, else the current directory name. Teams share agent names, so this keeps `msg boss` from interrupting every team on the tmux server. Names live in the `@peon_name` pane option, which apps cannot overwrite; the pane title only labels the border. An unknown name aborts and prints the panes that session has.
+`peon-code msg <name|all> 'text' [<session>]` sends text to the named agent's pane, or to every agent pane with `all`, prefixed `[from user]`. The session defaults to the current directory name. Teams share agent names, so reaching one session keeps `msg boss` from interrupting every team on the tmux server.
+
+Panes are taken one at a time, each getting up to about 3 seconds for its input box to show the text before `Enter` follows. A pane that refuses the paste, never shows it, or sits in copy mode is named on stderr and the rest still get theirs; the text is left in that pane's box for you to submit. An unknown agent name prints the session's panes and exits 1, and a run where any pane took no message exits nonzero.
 
 ### Send
 
-Each agent reads another pane with `tmux capture-pane` and messages it with `peon-code send <pane-id> -`, the message on stdin. One run of `send` makes the box check and the paste back to back, and it presses `Enter` only once the box holds exactly the message.
+`peon-code send <pane-id> 'text'|-` is the agent-to-agent path: it pastes a message into another agent's pane and submits it. A message of `-` is read from stdin, which keeps quotes and apostrophes out of the sending agent's shell. Agents read each other with `tmux capture-pane -pt <pane-id> -S -100` and message each other with this command.
 
-`send` first measures the target's input box: everything from the prompt marker to the end of the cursor's row, so text the cursor was moved back over still counts. A box holding text, a menu, a dialog, and a pane in copy mode all clear on their own, so `send` retries those up to 10 times over about 10 seconds before exiting non-zero without pasting; a pane back at a shell, a pane that is not a peon-code agent pane, and a pane drawing no prompt marker peon-code knows exit non-zero at once. Into an empty box it pastes the message through its own tmux buffer, dropping every control byte but tab and newline, then polls the box for up to 2 seconds and presses `Enter` only once the box holds that message alone, either as its text or as the CLI's paste placeholder row. A box that never matches keeps the message and whatever else it holds, with no `Enter` sent, for you to sort out.
+A busy target takes nothing: a pane holding typed text, on a dialog or a menu, or in copy mode is retried up to 10 times over about 10 seconds, then exits nonzero having pasted nothing, so that pane keeps whatever it had. A pane back at a shell, a pane peon-code did not launch, and a pane drawing no prompt marker peon-code knows exit nonzero at once. After a paste, `Enter` follows only once the box holds that message alone; a box that never matches keeps the message with no `Enter` sent, and the run exits nonzero. On a busy target, retry later rather than pasting by hand.
 
 ### Rebrief
 
-`rebrief` pastes the launch brief back into the named agent's pane, or every agent pane with `all`. An agent that compacts its conversation loses the brief's rules; rebrief restores them. The brief file path lives in the `@peon_brief` pane option, set at launch; a pane from an older launch has none and is skipped with a note.
+`peon-code rebrief <name|all> [<session>]` pastes the launch brief back into the named agent's pane, or every agent pane with `all`. The session defaults to the current directory name. An agent that compacts or clears its conversation loses the brief's rules, and this puts them back.
+
+A pane whose input box holds typed text, one on a dialog or a menu, and one from an older launch with no stored brief are each skipped with a note on stderr, and on their own do not change the exit code. The run exits nonzero when no pane took a brief at all, or when a paste was refused or left unsubmitted.
 
 ### Compact
 
-`compact` sends `/compact` to the named agent's pane, or every agent pane by default, then pastes each pane's brief back once compaction ends, since compacting drops the standing instructions. The slash command is pasted on its own with nothing before it, and Enter follows only once the box holds the command alone, so a dialog or autocomplete list that opened after the paste does not take the Enter as its answer. A pane in copy mode, on a dialog or menu, or whose input box holds typed text is skipped with a note; the rest still get the command. Name and session default to `all` and the current directory name.
+`peon-code compact [<name|all>] [<session>]` sends `/compact` to the named agent's pane, or to every agent pane, then pastes that pane's brief back once compaction ends, since compacting drops the standing instructions. Name and session default to `all` and the current directory name.
+
+A pane in copy mode, on a dialog or a menu, or whose input box holds typed text is skipped with a note on stderr, and the rest still get the command. If the box holds anything other than `/compact` after the paste, no `Enter` is sent and the command is left there for you to submit. Each pane that took the command then has up to 2 minutes to finish; one still busy after that keeps its brief unsent and is named on stderr, so run `rebrief` on it later. The run exits nonzero only when no pane took the command.
 
 ### Clear
 
-`clear` works the same way but sends `/clear`: the conversation is wiped and the brief is pasted back right after, so the agent starts fresh with its rules intact.
+`peon-code clear [<name|all>] [<session>]` works the same way but sends `/clear`: the conversation is wiped and the brief pasted back right after, so the agent starts fresh with its rules intact. Arguments, defaults, skips, and exit codes match `compact`.
 
 ### List
 
-`list` prints every agent pane on the server as `SESSION AGENT PANE STATUS`, so a session can be found without remembering the directory it was launched from. A pane back at a shell is reported as `gone`: its agent exited.
+`peon-code list` prints every agent pane on the tmux server as `SESSION AGENT PANE STATUS`, so a session can be found without remembering the directory it was launched from. It takes no arguments and covers every session, not one.
+
+A pane back at a shell is reported as `gone`: its agent exited. With no agent panes anywhere it says so. Either way it exits 0; an argument exits 1.
+
+### Uninstall
+
+`peon-code uninstall [bin-dir]` removes the symlink `install.sh` made, `<bin-dir>/peon-code`, with `bin-dir` defaulting to `~/.local/bin`. The repository itself is left in place.
+
+A path that exists but does not point at this `peon-code.sh` is left alone and exits 1. Nothing there at all is reported and exits 0.
+
+### How it works
+
+- **Pane identity.** Each agent pane carries its name in the `@peon_name` tmux pane option and its brief file path in `@peon_brief`, both set at launch; an app cannot overwrite a pane option, unlike the pane title, which only labels the border. Every subcommand acts only on panes carrying `@peon_name`, and the session-scoped ones only on sessions marked `@peon_code`.
+- **Pasting.** Text goes in through a tmux buffer as a bracketed paste, so a multi-line message stays in the input line instead of submitting early.
+- **The busy check.** A pane's input box is read as everything from the prompt marker (claude draws `❯`, codex `›`) to the end of the cursor's row, with the CLI's hint text left out, so text the cursor was moved back over still counts. `Enter` follows a paste only once the box reads back the pasted text or the CLI's placeholder row for a long paste, such as `[Pasted text #2 +15 lines]`.
+- **Briefs.** Every brief is written to a file under `$TMPDIR`. A CLI that takes its prompt on the command line launches as `<cmd> "$(cat <file>)"`, so the command line stays one line instead of thousands of escaped characters. A claude pane gets that file pasted in once its input line is drawn and the pane has stopped changing: a menu such as the folder-trust dialog counts as unsettled, so the launcher waits up to 30 seconds (2 minutes when resuming) and then prints the brief file path for you to paste yourself.
+- **Resume lookup.** Each brief carries the phrase `agent <name> of peon-code session <session>,`, trailing comma included, so one session name that is a prefix of another never matches the other's transcripts. `resume` searches each CLI's own transcript store for that phrase, newest first, over the last 30 days: `~/.claude/projects/<directory>/*.jsonl`, `~/.codex/sessions/**/rollout-*.jsonl` and `~/.copilot/session-state/<id>/events.jsonl` (both must also record the current working directory), `~/.gemini/tmp/<sha256 of the directory>/chats/*.jsonl`, and `~/.qwen/projects/<directory>/chats/<id>.jsonl`. The marker is unique per agent and session, so every pane reopens its own conversation rather than same-CLI panes landing in the newest one.
 
 ## Reproducing results
 
