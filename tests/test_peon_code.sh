@@ -264,6 +264,8 @@ make_send_bin() {
   cat >"$bin_dir/tmux" <<'FAKE_TMUX'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"$FAKE_TMUX_LOG"
+pane=%1
+case "$*" in *%2*) pane=%2 ;; esac
 state=before
 grep -Fq paste-buffer "$FAKE_TMUX_LOG" && state=after
 reads=0
@@ -293,6 +295,10 @@ case ${1:-} in
     ;;
   show-options) printf '%s\n' "${FAKE_PEON_NAME-impl}" ;;
   load-buffer) printf 'buffer-content:%s\n' "$(cat)" >>"$FAKE_TMUX_LOG" ;;
+  paste-buffer)
+    # A pane named in FAKE_PASTE_FAIL refuses the paste.
+    [ "$pane" = "${FAKE_PASTE_FAIL:-}" ] && exit 1
+    ;;
 esac
 exit 0
 FAKE_TMUX
@@ -416,6 +422,18 @@ test_send_delivers() {
   assert_contains "$SEND_LOG" "paste-buffer"
   assert_not_contains "$SEND_LOG" "send-keys"
   [ "$(send_captures)" = 11 ] || fail "send made $(send_captures) box reads, expected 11"
+
+  # A paste tmux refused leaves the pane untouched, so the run says nothing
+  # was sent instead of stopping without a word.
+  reset_send_log
+  if PATH="$SEND_BIN:$PATH" FAKE_TMUX_LOG="$SEND_LOG" FAKE_PASTE_FAIL=%2 \
+    FAKE_BOX="$empty_box" FAKE_CURSOR='2 1' \
+    "$ROOT/peon-code.sh" send %2 'hello world' \
+    >"$TEST_DIR/send-refused.out" 2>"$TEST_DIR/send-refused.err"; then
+    fail "send reported success after tmux refused the paste"
+  fi
+  assert_contains "$TEST_DIR/send-refused.err" "no message sent: tmux refused the paste"
+  assert_not_contains "$SEND_LOG" "send-keys"
 
   # A CLI that collapses a multi-line paste into a placeholder row still gets
   # the Enter: the box was empty before the paste, so one placeholder is the

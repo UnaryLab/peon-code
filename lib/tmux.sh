@@ -512,7 +512,8 @@ cmd_send() {
   done
   [ -z "$reason" ] || die "$reason after 10 tries, giving up"
   want=$(printf '%s' "$text" | plain_text)
-  printf '%s' "$text" | paste_only "$pane"
+  printf '%s' "$text" | paste_only "$pane" ||
+    die "no message sent: tmux refused the paste"
   for ((i = 0; i < 10; i++)); do
     sleep 0.2
     box=$(pane_box_text "$pane") || box=""
