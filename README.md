@@ -38,6 +38,8 @@ peon-code dismiss [<session>]          # kill one session, default the current d
 peon-code msg <name|all> 'text' [<session>]  # send text to an agent pane of one session
 peon-code send <pane-id> 'text'|-            # agent to agent: paste into a pane and submit it (- reads stdin)
 peon-code rebrief <name|all> [<session>]     # send an agent its launch brief again
+peon-code compact [<name|all>] [<session>]   # send /compact, then the brief again once it ends
+peon-code clear [<name|all>] [<session>]     # send /clear, then the brief again
 peon-code list                         # agent panes of every session
 peon-code -h                           # help
 ```
@@ -78,6 +80,10 @@ peon-code marks each session it creates and refuses to attach, message, or dismi
 
 `rebrief` pastes the launch brief back into the named agent's pane, or every agent pane with `all`. An agent that compacts its conversation loses the brief's rules; rebrief restores them. The brief file path lives in the `@peon_brief` pane option, set at launch; a pane from an older launch has none and is skipped with a note.
 
+`compact` sends `/compact` to the named agent's pane, or every agent pane by default, then pastes each pane's brief back once compaction ends, since compacting drops the standing instructions. The slash command is pasted on its own with nothing before it, and Enter follows only once the box holds the command alone, so a dialog or autocomplete list that opened after the paste does not take the Enter as its answer. A pane in copy mode, on a dialog or menu, or whose input box holds typed text is skipped with a note; the rest still get the command. Name and session default to `all` and the current directory name.
+
+`clear` works the same way but sends `/clear`: the conversation is wiped and the brief is pasted back right after, so the agent starts fresh with its rules intact.
+
 `list` prints every agent pane on the server as `SESSION AGENT PANE STATUS`, so a session can be found without remembering the directory it was launched from. A pane back at a shell is reported as `gone`: its agent exited.
 
 ## Reproducing results
@@ -97,7 +103,7 @@ One agent per line: `name command... role`. The first token is the name, the las
 # name   command                                                     role
 *boss    claude --model claude-fable-5 --effort high                 manager
 archie   claude --model claude-opus-5 --effort medium                reviewer
-impl     codex --model gpt-5.6-sol -c model_reasoning_effort=high    implementer
+impl     codex --model gpt-5.6-luna -c model_reasoning_effort=max    implementer
 scout    codex --model gpt-5.6-sol -c model_reasoning_effort=medium  explorer
 weird    claude                                                      ./my-roles/chaos.md
 ```
@@ -126,7 +132,7 @@ A team without roles (agent commands on the command line, or a config of all `-`
 | gemini, qwen | `-i <prompt>` (unverified on this machine) | `--resume <id>` |
 | anything else | passed through as-is | not supported |
 
-Every brief is written to a file under `$TMPDIR`, and the pane launches with `<cmd> "$(cat <file>)"`, so the command line stays one line instead of thousands of escaped characters.
+Every brief is written to a file under `$TMPDIR`. A CLI that takes its prompt on the command line launches as `<cmd> "$(cat <file>)"`, so the command line stays one line instead of thousands of escaped characters; a claude pane gets that same file pasted in once its TUI is up.
 
 A claude pane gets its brief only once its input line is drawn and the pane has stopped changing. A menu such as the folder-trust dialog counts as unsettled, so the launcher never types into it: it waits up to 30 seconds for the dialog to be answered, then prints the pane's brief file for you to paste yourself.
 
@@ -134,7 +140,7 @@ A claude pane gets its brief only once its input line is drawn and the pane has 
 
 Each agent reads another pane with `tmux capture-pane` and messages it with `peon-code send <pane-id> -`, the message on stdin. One run of `send` makes the box check and the paste back to back, and it presses `Enter` only once the box holds exactly the message.
 
-`send` first measures the target's input box: everything from the prompt marker to the end of the cursor's row, so text the cursor was moved back over still counts. A box holding anything, a menu, a dialog, a pane in copy mode, a pane back at a shell, and a pane that is not a peon-code agent pane each make `send` exit non-zero without pasting. Into an empty box it pastes the message through its own tmux buffer, dropping every control byte but tab and newline, then polls the box for up to 2 seconds and presses `Enter` only once the box holds that message and nothing else. A box that never matches keeps the message and whatever else it holds, with no `Enter` sent, for you to sort out.
+`send` first measures the target's input box: everything from the prompt marker to the end of the cursor's row, so text the cursor was moved back over still counts. A box holding text, a menu, a dialog, and a pane in copy mode all clear on their own, so `send` retries those up to 10 times over about 10 seconds before exiting non-zero without pasting; a pane back at a shell, a pane that is not a peon-code agent pane, and a pane drawing no prompt marker peon-code knows exit non-zero at once. Into an empty box it pastes the message through its own tmux buffer, dropping every control byte but tab and newline, then polls the box for up to 2 seconds and presses `Enter` only once the box holds that message alone, either as its text or as the CLI's paste placeholder row. A box that never matches keeps the message and whatever else it holds, with no `Enter` sent, for you to sort out.
 
 ### Environment
 

@@ -869,6 +869,10 @@ case ${1:-} in
     [ -n "${FAKE_UNSETTLED:-}" ] && printf 'redrawing %s\n' "$(wc -l <"$FAKE_TMUX_LOG")"
     ;;
   load-buffer) printf 'buffer-content:%s\n' "$(cat)" >>"$FAKE_TMUX_LOG" ;;
+  paste-buffer)
+    # A pane named in FAKE_PASTE_FAIL refuses the paste.
+    [ "$pane" = "${FAKE_PASTE_FAIL:-}" ] && exit 1
+    ;;
 esac
 exit 0
 FAKE_TMUX
@@ -957,6 +961,23 @@ test_compact() {
   # typed it.
   [ "$(grep -c -F -- 'buffer-content:You are impl' "$log")" = 1 ] ||
     fail "compact pasted the brief into a pane it skipped"
+
+  # Two panes, one taking the paste and one refusing it: the refusing pane is
+  # reported and the run carries on through the rest.
+  : >"$log"
+  PATH="$bin_dir:$PATH" FAKE_TMUX_LOG="$log" FAKE_BOX="$empty_box" \
+    FAKE_BOX2="$empty_box" FAKE_TMUX_BRIEF="$brief" FAKE_PASTE_FAIL=%2 \
+    FAKE_PANES='%1 node impl
+%2 node boss' \
+    "$ROOT/peon-code.sh" compact all owned \
+    >"$TEST_DIR/compact-refused.out" 2>"$TEST_DIR/compact-refused.err"
+  assert_contains "$TEST_DIR/compact-refused.err" "skipped %2: tmux refused the paste"
+  assert_contains "$TEST_DIR/compact-refused.out" "sent /compact to 1 pane(s) in session owned"
+  assert_contains "$log" "send-keys -t %1 Enter"
+  assert_not_contains "$log" "send-keys -t %2"
+  # The pane that took /compact still gets its brief back.
+  [ "$(grep -c -F -- 'buffer-content:You are impl' "$log")" = 1 ] ||
+    fail "compact stopped before rebriefing the pane that took /compact"
 
   # A pane that keeps redrawing after /compact never settles, so its brief is
   # held back rather than pasted over whatever is on screen.

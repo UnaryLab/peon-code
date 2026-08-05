@@ -4,10 +4,11 @@ Bash launcher that builds a tmux session of side-by-side AI coding agent CLIs (c
 
 ## Layout
 
-- `peon-code.sh`: entry point and all subcommands
-- `lib/config.sh`, `lib/tmux.sh`: config parsing and tmux helpers
+- `peon-code.sh`: entry point, option and subcommand dispatch, and the session build
+- `lib/config.sh`: config file and team parsing, resume-id lookup
+- `lib/tmux.sh`: tmux helpers and the subcommand implementations
 - `roles/*.md`: per-role prompt files
-- `install.sh`: symlinks the script into a bin dir
+- `install.sh`: symlinks the script into a bin dir and seeds `~/.config/peon-code/peon-code.conf`
 - `tests/test_peon_code.sh`: the test suite
 
 ## Cross-platform: every feature must work on both macOS and Linux

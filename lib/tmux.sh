@@ -413,7 +413,10 @@ slash_then_rebrief() {
       echo "peon-code: skipped $id: its input box holds typed text" >&2
       continue
     fi
-    printf '%s' "$slash" | paste_only "$id"
+    if ! printf '%s' "$slash" | paste_only "$id"; then
+      echo "peon-code: skipped $id: tmux refused the paste" >&2
+      continue
+    fi
     submitted=0
     for ((i = 0; i < 10; i++)); do
       sleep 0.2

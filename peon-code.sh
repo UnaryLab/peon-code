@@ -58,13 +58,13 @@ peon-code.sh rebrief <name|all> [<session>]     send an agent its launch brief a
                                                 (session defaults to the current directory name)
 peon-code.sh compact [<name|all>] [<session>]   send /compact to an agent pane, then send
                                                 its brief again once compaction ends,
-                                                skipping any pane whose input box holds
-                                                typed text
+                                                skipping any blocked pane (typed text,
+                                                dialog, menu, copy mode)
                                                 (name and session default to all and the
                                                 current directory name)
 peon-code.sh clear [<name|all>] [<session>]     send /clear to an agent pane, then send
-                                                its brief again, skipping any pane whose
-                                                input box holds typed text
+                                                its brief again, skipping any blocked
+                                                pane (typed text, dialog, menu, copy mode)
                                                 (name and session default to all and the
                                                 current directory name)
 peon-code.sh list                               agent panes of every session
