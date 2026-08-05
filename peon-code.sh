@@ -9,6 +9,7 @@
 #   ./peon-code.sh send <pane-id> 'text'|-
 #   ./peon-code.sh rebrief <name|all> [<session>]
 #   ./peon-code.sh compact [<name|all>] [<session>]
+#   ./peon-code.sh clear [<name|all>] [<session>]
 #   ./peon-code.sh list
 #   ./peon-code.sh uninstall [bin-dir]
 #   ./peon-code.sh -h
@@ -59,6 +60,11 @@ peon-code.sh compact [<name|all>] [<session>]   send /compact to an agent pane, 
                                                 its brief again once compaction ends,
                                                 skipping any pane whose input box holds
                                                 typed text
+                                                (name and session default to all and the
+                                                current directory name)
+peon-code.sh clear [<name|all>] [<session>]     send /clear to an agent pane, then send
+                                                its brief again, skipping any pane whose
+                                                input box holds typed text
                                                 (name and session default to all and the
                                                 current directory name)
 peon-code.sh list                               agent panes of every session
@@ -116,6 +122,7 @@ case "${1:-}" in
   send) shift; cmd_send "$@"; exit 0 ;;
   rebrief) shift; cmd_rebrief "$@"; exit 0 ;;
   compact) shift; cmd_compact "$@"; exit 0 ;;
+  clear) shift; cmd_clear "$@"; exit 0 ;;
   list) [ $# -eq 1 ] || die "list takes no arguments"; cmd_list; exit 0 ;;
   uninstall)
     LINK="${2:-$HOME/.local/bin}/peon-code"

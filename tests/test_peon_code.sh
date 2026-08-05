@@ -826,12 +826,10 @@ test_rebrief() {
   assert_not_contains "$log" "paste-buffer"
 }
 
-# compact pastes the /compact slash command with nothing around it, and only
-# into a pane whose input box is empty.
-test_compact() {
-  local fake_bin=$1 log="$TEST_DIR/tmux-compact.log" bin_dir="$TEST_DIR/compact-bin"
-  local empty_box busy_box menu_box brief="$TEST_DIR/compact-brief.md"
-  local enter_line brief_line settle_reads
+# A fake tmux for the slash-command subcommands: it echoes back whatever was
+# pasted into a pane until an Enter submits it.
+write_slash_fake_tmux() {
+  local bin_dir=$1 fake_bin=$2
   mkdir -p "$bin_dir"
   cp "$fake_bin/sleep" "$bin_dir/sleep"
   cat >"$bin_dir/tmux" <<'FAKE_TMUX'
@@ -875,6 +873,15 @@ esac
 exit 0
 FAKE_TMUX
   chmod +x "$bin_dir/tmux"
+}
+
+# compact pastes the /compact slash command with nothing around it, and only
+# into a pane whose input box is empty.
+test_compact() {
+  local fake_bin=$1 log="$TEST_DIR/tmux-compact.log" bin_dir="$TEST_DIR/compact-bin"
+  local empty_box busy_box menu_box brief="$TEST_DIR/compact-brief.md"
+  local enter_line brief_line settle_reads
+  write_slash_fake_tmux "$bin_dir" "$fake_bin"
   empty_box='output line
 ❯
 ────'
@@ -959,7 +966,7 @@ FAKE_TMUX
     "$ROOT/peon-code.sh" compact all owned \
     >"$TEST_DIR/compact-busy-after.out" 2>"$TEST_DIR/compact-busy-after.err"
   assert_contains "$TEST_DIR/compact-busy-after.out" "sent /compact to 1 pane(s) in session owned"
-  assert_contains "$TEST_DIR/compact-busy-after.err" "no brief sent to impl %1: it is still busy after compacting"
+  assert_contains "$TEST_DIR/compact-busy-after.err" "no brief sent to impl %1: it is still busy after /compact"
   assert_not_contains "$log" "buffer-content:You are impl"
 
   # A brief is held back from a box holding typed text, so text typed while a
@@ -990,6 +997,71 @@ FAKE_TMUX
   assert_not_contains "$log" "load-buffer"
   assert_not_contains "$log" "paste-buffer"
   assert_not_contains "$log" "send-keys"
+}
+
+# clear pastes the /clear slash command with nothing around it, and only into a
+# pane whose input box is empty, then puts the brief back.
+test_clear() {
+  local fake_bin=$1 log="$TEST_DIR/tmux-clear.log" bin_dir="$TEST_DIR/clear-bin"
+  local empty_box busy_box brief="$TEST_DIR/clear-brief.md"
+  local enter_line brief_line
+  write_slash_fake_tmux "$bin_dir" "$fake_bin"
+  empty_box='output line
+❯
+────'
+  busy_box='output line
+❯ half a question
+────'
+  printf 'You are impl, follow the rules.\n' >"$brief"
+
+  : >"$log"
+  PATH="$bin_dir:$PATH" FAKE_TMUX_LOG="$log" FAKE_BOX="$empty_box" \
+    FAKE_TMUX_BRIEF="$brief" \
+    "$ROOT/peon-code.sh" clear all owned >"$TEST_DIR/clear.out"
+  grep -Fqx -- 'buffer-content:/clear' "$log" ||
+    fail "clear pasted something other than /clear alone"
+  assert_not_contains "$log" "buffer-content:/compact"
+  assert_contains "$log" "send-keys -t %1 Enter"
+  assert_contains "$TEST_DIR/clear.out" "sent /clear to 1 pane(s) in session owned"
+  # A cleared conversation has no brief left, so the brief goes back in once
+  # the pane has settled.
+  assert_contains "$log" "buffer-content:You are impl, follow the rules."
+  enter_line=$(grep -n -Fx -- 'send-keys -t %1 Enter' "$log" | head -1 | cut -d: -f1)
+  brief_line=$(grep -n -F -- 'buffer-content:You are impl' "$log" | head -1 | cut -d: -f1)
+  if [ -z "$enter_line" ] || [ "$brief_line" -le "$enter_line" ]; then
+    fail "clear pasted the brief before submitting /clear"
+  fi
+  # One Enter submits /clear, the second submits the brief the pane shows.
+  [ "$(grep -c -Fx -- 'send-keys -t %1 Enter' "$log")" = 2 ] ||
+    fail "clear left the brief in the box instead of submitting it"
+
+  : >"$log"
+  if PATH="$bin_dir:$PATH" FAKE_TMUX_LOG="$log" FAKE_BOX="$busy_box" \
+    "$ROOT/peon-code.sh" clear >"$TEST_DIR/clear-busy.out" 2>"$TEST_DIR/clear-busy.err"; then
+    fail "clear pasted into a box holding typed text"
+  fi
+  assert_contains "$TEST_DIR/clear-busy.err" "its input box holds typed text"
+  assert_not_contains "$log" "paste-buffer"
+  assert_not_contains "$log" "send-keys"
+
+  : >"$log"
+  if PATH="$bin_dir:$PATH" FAKE_TMUX_LOG="$log" FAKE_BOX="$empty_box" \
+    "$ROOT/peon-code.sh" clear nobody owned >"$TEST_DIR/clear-name.out" 2>"$TEST_DIR/clear-name.err"; then
+    fail "clear accepted an unknown pane name"
+  fi
+  assert_contains "$TEST_DIR/clear-name.err" "no pane named nobody in session owned"
+  assert_not_contains "$log" "paste-buffer"
+
+  # A pane that keeps redrawing after /clear never settles, so its brief is
+  # held back rather than pasted over whatever is on screen.
+  : >"$log"
+  PATH="$bin_dir:$PATH" FAKE_TMUX_LOG="$log" FAKE_BOX="$empty_box" \
+    FAKE_TMUX_BRIEF="$brief" FAKE_UNSETTLED=1 \
+    "$ROOT/peon-code.sh" clear all owned \
+    >"$TEST_DIR/clear-busy-after.out" 2>"$TEST_DIR/clear-busy-after.err"
+  assert_contains "$TEST_DIR/clear-busy-after.out" "sent /clear to 1 pane(s) in session owned"
+  assert_contains "$TEST_DIR/clear-busy-after.err" "no brief sent to impl %1: it is still busy after /clear"
+  assert_not_contains "$log" "buffer-content:You are impl"
 }
 
 # msg presses Enter into a pane only once that pane's box shows the message,
@@ -1122,5 +1194,6 @@ test_resume_picker_answered "$fake_bin"
 test_box_hint_text
 test_rebrief "$fake_bin"
 test_compact "$fake_bin"
+test_clear "$fake_bin"
 test_msg "$fake_bin"
 echo "tests: PASS"

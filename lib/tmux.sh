@@ -367,17 +367,21 @@ cmd_msg() {
   [ "$unsent" -eq 0 ] || die "$unsent message(s) were not delivered in session $session"
 }
 
-# Send /compact to agent panes, so each CLI compacts its own context, then
-# paste each compacted pane's brief back once its compaction has finished. The
-# slash command is pasted on its own: any text before it stops the CLI from
-# reading it as a command. A pane whose input box cannot be read or holds
-# typed text is skipped, and the rest still get the command. Enter follows
-# only once the box holds the command alone, so a dialog or an autocomplete
-# list that opened after the paste does not take the Enter as its answer.
-cmd_compact() {
-  local target=${1:-all} session panes id name pair box i submitted sent=0
-  local pairs=() compacted=()
-  session=$(session_name "${2:-}")
+# Send a context slash command (/compact, /clear) to agent panes, then paste
+# each pane's brief back once the command has finished, since both commands
+# drop the standing instructions. The slash command is pasted on its own: any
+# text before it stops the CLI from reading it as a command. A pane whose
+# input box cannot be read or holds typed text is skipped, and the rest still
+# get the command. Enter follows only once the box holds the command alone, so
+# a dialog or an autocomplete list that opened after the paste does not take
+# the Enter as its answer.
+cmd_compact() { slash_then_rebrief /compact "$@"; }
+cmd_clear() { slash_then_rebrief /clear "$@"; }
+
+slash_then_rebrief() {
+  local slash=$1 target=${2:-all} session panes id name pair box i submitted sent=0
+  local pairs=() done_panes=()
+  session=$(session_name "${3:-}")
   tmux has-session -t "=$session" 2>/dev/null || die "no session $session"
   is_peon_session "$session" || die "session $session was not created by peon-code"
   panes=$(list_agent_panes "$session") || true
@@ -409,12 +413,12 @@ cmd_compact() {
       echo "peon-code: skipped $id: its input box holds typed text" >&2
       continue
     fi
-    printf '%s' /compact | paste_only "$id"
+    printf '%s' "$slash" | paste_only "$id"
     submitted=0
     for ((i = 0; i < 10; i++)); do
       sleep 0.2
       box=$(pane_box_text "$id") || box=""
-      [ "$box" = /compact ] || continue
+      [ "$box" = "$slash" ] || continue
       pane_takes_keys "$id" || break
       tmux send-keys -t "$id" Enter
       submitted=1
@@ -422,22 +426,22 @@ cmd_compact() {
     done
     if [ "$submitted" -eq 1 ]; then
       sent=$((sent + 1))
-      compacted+=("$pair")
+      done_panes+=("$pair")
     else
-      echo "peon-code: no Enter sent to $id: it holds something other than /compact, which is in its box for the user to submit" >&2
+      echo "peon-code: no Enter sent to $id: it holds something other than $slash, which is in its box for the user to submit" >&2
     fi
   done
-  [ "$sent" -gt 0 ] || die "no pane took /compact in session $session"
-  echo "peon-code: sent /compact to $sent pane(s) in session $session"
-  # Compaction runs for as long as the context takes, well past the settle
+  [ "$sent" -gt 0 ] || die "no pane took $slash in session $session"
+  echo "peon-code: sent $slash to $sent pane(s) in session $session"
+  # The command runs for as long as the context takes, well past the settle
   # wait's default ceiling, so the wait is given 120s here. A pane still
   # drawing after that keeps its brief unsent rather than taking a paste
   # into whatever is on screen.
-  for pair in ${compacted[@]+"${compacted[@]}"}; do
+  for pair in ${done_panes[@]+"${done_panes[@]}"}; do
     id=${pair%% *}
     name=${pair#* }
     if ! wait_pane_settled "$id" 400; then
-      echo "peon-code: no brief sent to $name $id: it is still busy after compacting" >&2
+      echo "peon-code: no brief sent to $name $id: it is still busy after $slash" >&2
       continue
     fi
     rebrief_pane "$id" "$name" || case $? in
