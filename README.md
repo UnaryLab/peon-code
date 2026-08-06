@@ -9,7 +9,9 @@ Each pane runs one agent CLI, launched with a brief that names the pane's own id
 ## Requirements
 
 - tmux 3.2 or newer
+- bash 3.2 or newer, the macOS default
 - At least one agent CLI installed (claude, codex, copilot, ...)
+- macOS or Linux
 
 ## Installation
 
@@ -25,7 +27,7 @@ To uninstall, run `peon-code uninstall [bin-dir]`, which removes the symlink `<b
 ## Quick start
 
 ```sh
-peon-code                                    # session named after the current directory
+peon-code                                    # start or attach a team
 peon-code <session>                          # custom session name
 peon-code -c team.conf lab                   # session lab, team from team.conf
 peon-code <session> <cmd> [<cmd> ...]        # one pane per agent command, config ignored
@@ -42,7 +44,7 @@ peon-code uninstall [bin-dir]                # remove the install.sh symlink
 peon-code -h                                 # help
 ```
 
-Every `[<session>]` argument defaults to the current directory name. peon-code marks each session it creates and refuses to attach to, message, or dismiss an unmarked session with the same name.
+Every `[<session>]` argument defaults to the current directory's base name, with `.` and `:` replaced by `_`, since tmux rewrites those characters in session names. peon-code marks each session it creates; attaching and every session-scoped subcommand (`dismiss`, `msg`, `rebrief`, `compact`, `clear`) refuse a same-named session peon-code did not create.
 
 ### Supported providers
 
@@ -52,15 +54,15 @@ Every `[<session>]` argument defaults to the current directory name. peon-code m
 | codex | positional prompt, stays interactive | `resume <id>` |
 | copilot | `-i <prompt>` (verified) | `--resume=<id>` |
 | gemini, qwen | `-i <prompt>` (unverified on this machine) | `--resume <id>` |
-| anything else | passed through as-is | not supported |
+| anything else | command as given, brief appended as a positional prompt | not supported |
 
 ### Start and attach
 
 `peon-code [-c file] [<session>] [<cmd> ...]` builds the session, or attaches it if it already exists. The team resolves as described under [Config file](#config-file).
 
-The window uses tmux's `main-vertical` layout: the main agent's pane takes the left 60% of the width, the other agents stack to its right. Main is the agent marked with a leading `*` in the config, else the first agent with the `manager` role, else pane 0.
+The window uses tmux's `main-vertical` layout: the main agent's pane takes the left 60% of the width, the other agents stack to its right. Main is the agent marked with a leading `*` in the config, else the first agent with the `manager` role, else the first agent in the team.
 
-The session sets `set-titles` for itself, so the terminal tab caption is `<session> : <directory>`, the directory being the active pane's current one. Other tmux sessions keep their own title setting.
+The session sets `set-titles` for itself, so the terminal tab caption is `<session> : <directory>`, the directory being the base name of the active pane's current one. Other tmux sessions keep their own title setting.
 
 With no TTY on stdin (a headless caller such as a script or an agent running the launcher), the session is still built, but instead of attaching the launcher prints the session name and the `tmux attach -t <session>` command and exits 0.
 
@@ -120,7 +122,7 @@ A pane back at a shell is reported as `gone (<shell>)`: its agent exited. With n
 - **Pasting.** Text goes in through a tmux buffer as a bracketed paste, so a multi-line message stays in the input line instead of submitting early.
 - **The busy check.** A pane's input box is read as everything from the prompt marker (claude draws `❯`, codex `›`) to the end of the cursor's row, with the CLI's hint text left out, so text the cursor was moved back over still counts. `Enter` follows a paste only once the box reads back the pasted text or the CLI's placeholder row for a long paste, such as `[Pasted text #2 +15 lines]`.
 - **Briefs.** Every brief is written to a file under `$TMPDIR`. A CLI that takes its prompt on the command line launches as `<cmd> "$(cat <file>)"`, so the command line stays one line instead of thousands of escaped characters. A claude pane gets its brief pasted in once its input line is drawn and the pane has stopped changing: a menu such as the folder-trust dialog counts as unsettled, so the launcher waits up to 30 seconds (2 minutes when resuming) and then prints the brief file path for you to paste yourself.
-- **Resume lookup.** Each brief carries the phrase `agent <name> of peon-code session <session>,`, trailing comma included, so one session name that is a prefix of another never matches the other's transcripts. `resume` searches each CLI's own transcript store for that phrase, newest first, over the last 30 days: every `*.jsonl` file under `~/.claude/projects/<path>/`, under `~/.codex/sessions/` and under `~/.copilot/session-state/` (the last two must also record the current working directory), under `~/.gemini/tmp/<sha256 of the working-directory path>/chats/`, and under `~/.qwen/projects/<path>/chats/`, where `<path>` is the full working-directory path with every character other than letters and digits replaced by `-`. The marker is unique per agent and session, so every pane reopens its own conversation rather than same-CLI panes landing in the newest one.
+- **Resume lookup.** Each brief carries the phrase `agent <name> of peon-code session <session>,`, trailing comma included, so one session name that is a prefix of another never matches the other's transcripts. `resume` searches each CLI's own transcript store for that phrase, newest first, over the last 30 days: every `*.jsonl` file under `~/.claude/projects/<path>/`, `~/.codex/sessions/`, `~/.copilot/session-state/`, `~/.gemini/tmp/<sha256 of the working-directory path>/chats/`, and `~/.qwen/projects/<path>/chats/`, where `<path>` is the full working-directory path with every character other than letters and digits replaced by `-`. The codex and copilot stores hold every directory's transcripts, so a match there must also record the current working directory. The marker is unique per agent and session, so every pane reopens its own conversation rather than same-CLI panes landing in the newest one.
 
 ## Reproducing results
 
@@ -156,7 +158,7 @@ Shipped roles: `manager`, `implementer`, `reviewer`, `explorer`.
 
 ### Task board
 
-The launcher creates `.peon-code-task.md` in the working directory if it is missing and at least one agent has a role, a table of `who | task | files | status`. Agents record task claims and finishes there and read it before claiming files. Messages are alerts; the board is the record that lasts. An agent sets its own row to done before sending its completion message; a message never substitutes for the row edit. The main pane's brief carries that same rule plus a verification duty: on a completion message, it checks the sender's row and sets it to done itself if the sender did not, before acknowledging the work or dispatching new work; once the work is verified, it deletes the row from the board, but only after the reviewer records a verdict on it if the team has one, since the board lists only open work. After a clear, compact, or rebrief, an agent trusts a row only if its status matches reality, and confirms with the owner before redoing work a row shows as still open but that already looks done.
+The launcher creates `.peon-code-task.md` in the working directory if it is missing and at least one agent has a role, a table of `who | task | files | status`. Agents record task claims and finishes there and read it before claiming files. Messages are alerts; the board is the record that lasts. An agent sets its own row to done before sending its completion message; a message never substitutes for the row edit. The main pane's brief carries that same rule plus a verification duty: on a completion message it checks the sender's row and sets it to done itself if the sender did not, before acknowledging the work or dispatching new work. Once the work is verified it deletes the row, after the reviewer records a verdict on it if the team has one, so the board lists only open work. After a clear, compact, or rebrief, an agent trusts a row only if its status matches reality, and confirms with the owner before redoing work a row shows as still open but that already looks done.
 
 A team without roles (agent commands on the command line, or a config of all `-` roles) leaves no file behind; its agents create the board themselves if they need it.
 
