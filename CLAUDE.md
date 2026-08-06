@@ -29,3 +29,11 @@ Bash launcher that builds a tmux session of side-by-side AI coding agent CLIs (c
 - Keep everything in bash; no new languages or dependencies.
 - `shellcheck` clean.
 - Comments and docs are tool-independent: never reference an assistant skill, mode, or persona (no `ponytail:` or similar prefixes). Mark a deliberate simplification with a plain comment stating the limit and the upgrade path.
+
+## Creating a role
+
+Every role (`roles/*.md` plus the shared brief text in `peon-code.sh`) must encode the task-board completion rule; keep it intact when adding or editing a role:
+
+- The board row is the record of completion, not messages. A worker sets its own row to done first, then sends the completion message; a message never substitutes for the row edit.
+- A manager-type role, on receiving a completion message, verifies the sender's row is done and fixes it if not, before acknowledging or dispatching new work. Once it verifies the task, it deletes the row; the board lists only open work.
+- After a clear, compact, or rebrief, the role re-reads the board skeptically: if a row's deliverable already exists, confirm with the row's owner instead of re-executing the task.

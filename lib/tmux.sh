@@ -398,6 +398,19 @@ slash_then_rebrief() {
     done <<<"$panes"
     exit 1
   fi
+  # A pane taking its own $slash cannot process it: that pane's agent is
+  # mid-turn on this very command, so a paste to it queues up and fires
+  # late, out of order with the rebrief that follows, and the other target
+  # panes would end up cleared and rebriefed while the caller keeps its old
+  # context. If the calling pane is among the targets, send to none of them.
+  if [ -n "${TMUX_PANE:-}" ]; then
+    for pair in "${pairs[@]}"; do
+      if [ "${pair%% *}" = "$TMUX_PANE" ]; then
+        echo "peon-code: not sending $slash: the calling pane is a target; run this command from a shell or another pane instead" >&2
+        return 0
+      fi
+    done
+  fi
   for pair in "${pairs[@]}"; do
     id=${pair%% *}
     name=${pair#* }

@@ -247,9 +247,44 @@ test_config_loading() {
   # instead of the raw send-keys recipe that left a gap between the two.
   assert_contains "$brief_file" "$ROOT/peon-code.sh send <other-pane-id> - <<'PEON'"
   assert_contains "$brief_file" "3. Held sends: send makes the box check and the paste back to back"
+  # A message never substitutes for closing the board row.
+  assert_contains "$brief_file" "7. Task completion: set your board row to done before you send the completion message."
   assert_not_contains "$brief_file" "tmux send-keys -t <other-pane-id> -l"
   # The message goes in on stdin, so nothing asks agents to mind their quoting.
   assert_not_contains "$brief_file" "Avoid single quotes"
+}
+
+# Rule 7 differs by pane: the main pane's brief carries the manager
+# verification sentence too, every other pane gets the worker sentence alone.
+test_brief_rule7_variants() {
+  local fake_bin=$1 log="$TEST_DIR/tmux-rule7.log" home_dir="$TEST_DIR/home-rule7"
+  local work_dir="$TEST_DIR/rule7-work" line boss_brief helper_brief
+  local worker_rule="7. Task completion: set your board row to done before you send the completion message. A task is not done until its row says done; a message never substitutes for the row edit."
+  local manager_rule="On receiving a completion message, verify the sender's board row is done and set it to done yourself if it is not, before acknowledging the work or dispatching new work."
+  local delete_rule="Once the work is verified, delete the row from the board, but only after the reviewer records a verdict on it if the team has one; the board lists only open work."
+  mkdir -p "$home_dir" "$work_dir"
+  printf '*boss ./missing-agent -\nhelper ./missing-agent -\n' >"$work_dir/peon-code.conf"
+
+  (
+    cd "$work_dir"
+    PATH="$fake_bin:$PATH" HOME="$home_dir" TMPDIR="$TEST_DIR" \
+      FAKE_TMUX_LOG="$log" FAKE_TMUX_MODE=launch FAKE_TMUX_PANES=2 \
+      "$ROOT/peon-code.sh" -c "$work_dir/peon-code.conf" rule7-test
+  ) >"$TEST_DIR/rule7.out" 2>"$TEST_DIR/rule7.err" || true
+
+  line=$(grep -F "buffer-content:" "$log" | sed -n '1p')
+  boss_brief=${line#*"\$(cat "}
+  boss_brief=${boss_brief%%')"'*}
+  line=$(grep -F "buffer-content:" "$log" | sed -n '2p')
+  helper_brief=${line#*"\$(cat "}
+  helper_brief=${helper_brief%%')"'*}
+  [ -n "$boss_brief" ] || fail "rule7 test did not record the main pane's brief file"
+  [ -n "$helper_brief" ] || fail "rule7 test did not record the other pane's brief file"
+
+  assert_contains "$boss_brief" "$worker_rule $manager_rule $delete_rule"
+  assert_contains "$helper_brief" "$worker_rule"
+  assert_not_contains "$helper_brief" "$manager_rule"
+  assert_not_contains "$helper_brief" "$delete_rule"
 }
 
 # A tmux stand-in for send: the pane keeps its before-the-paste look until a
@@ -1103,6 +1138,50 @@ test_clear() {
   assert_not_contains "$log" "buffer-content:You are impl"
 }
 
+# compact and clear send to no pane at all when the calling pane is among
+# the targets: sending to the others while the caller keeps its old context
+# would leave the session out of sync.
+test_slash_skips_all_when_caller_targeted() {
+  local fake_bin=$1 log="$TEST_DIR/tmux-slash-self.log" bin_dir="$TEST_DIR/slash-self-bin"
+  local empty_box brief="$TEST_DIR/slash-self-brief.md"
+  write_slash_fake_tmux "$bin_dir" "$fake_bin"
+  empty_box='output line
+❯
+────'
+  printf 'You are impl, follow the rules.\n' >"$brief"
+
+  # Two panes, one of them the caller: neither pane gets anything, and the
+  # run still exits 0 with a warning on stderr.
+  : >"$log"
+  PATH="$bin_dir:$PATH" FAKE_TMUX_LOG="$log" FAKE_BOX="$empty_box" \
+    FAKE_BOX2="$empty_box" FAKE_TMUX_BRIEF="$brief" \
+    FAKE_PANES='%1 node impl
+%2 node boss' \
+    TMUX_PANE=%1 \
+    "$ROOT/peon-code.sh" compact all owned \
+    >"$TEST_DIR/slash-self.out" 2>"$TEST_DIR/slash-self.err" ||
+    fail "compact exited nonzero when the calling pane was a target"
+  assert_contains "$TEST_DIR/slash-self.err" \
+    "not sending /compact: the calling pane is a target; run this command from a shell or another pane instead"
+  assert_not_contains "$TEST_DIR/slash-self.out" "sent /compact"
+  assert_not_contains "$log" "paste-buffer"
+  assert_not_contains "$log" "load-buffer"
+  assert_not_contains "$log" "send-keys -t %1"
+  assert_not_contains "$log" "send-keys -t %2"
+
+  # A single pane that is also the caller: same all-or-nothing skip.
+  : >"$log"
+  PATH="$bin_dir:$PATH" FAKE_TMUX_LOG="$log" FAKE_BOX="$empty_box" \
+    FAKE_TMUX_BRIEF="$brief" TMUX_PANE=%1 \
+    "$ROOT/peon-code.sh" clear all owned \
+    >"$TEST_DIR/slash-self-only.out" 2>"$TEST_DIR/slash-self-only.err" ||
+    fail "clear exited nonzero when the only match was the calling pane"
+  assert_contains "$TEST_DIR/slash-self-only.err" \
+    "not sending /clear: the calling pane is a target; run this command from a shell or another pane instead"
+  assert_not_contains "$log" "paste-buffer"
+  assert_not_contains "$log" "load-buffer"
+}
+
 # msg presses Enter into a pane only once that pane's box shows the message,
 # and one pane that never shows it does not hold up the others.
 test_msg() {
@@ -1225,6 +1304,7 @@ test_session_ownership "$fake_bin"
 test_unique_buffers_and_launch_failure "$fake_bin"
 test_launch_with_prompt_box "$fake_bin"
 test_config_loading "$fake_bin"
+test_brief_rule7_variants "$fake_bin"
 SEND_BIN=$(make_send_bin "$fake_bin")
 test_send_refuses
 test_send_delivers
@@ -1234,5 +1314,6 @@ test_box_hint_text
 test_rebrief "$fake_bin"
 test_compact "$fake_bin"
 test_clear "$fake_bin"
+test_slash_skips_all_when_caller_targeted "$fake_bin"
 test_msg "$fake_bin"
 echo "tests: PASS"

@@ -222,6 +222,12 @@ for i in "${!NAMES[@]}"; do
 $(cat "${ROLES[$i]}")
 "
   fi
+  # Rule 7 is the worker sentence for every agent, plus the manager
+  # verification sentence for the main pane only.
+  RULE7="7. Task completion: set your board row to done before you send the completion message. A task is not done until its row says done; a message never substitutes for the row edit."
+  if [ "$i" -eq "$MAIN" ]; then
+    RULE7="$RULE7 On receiving a completion message, verify the sender's board row is done and set it to done yourself if it is not, before acknowledging the work or dispatching new work. Once the work is verified, delete the row from the board, but only after the reviewer records a verdict on it if the team has one; the board lists only open work."
+  fi
   read -r -d '' BRIEF <<EOF || true
 You are $WHO, agent ${NAMES[$i]} of peon-code session $SESSION, in pane $i of $N (this pane is ${PANE_IDS[$i]}), one of $N AI coding agents collaborating side-by-side in tmux. The panes are:
 $ROSTER
@@ -241,6 +247,8 @@ Rules:
 4. Dead-pane guard: if tmux display -pt <id> '#{pane_current_command}' shows a shell, that agent is gone. Do not send, because your text would run as shell commands. Tell the user instead.
 5. No idle deadlocks: if you are blocked, message once, work on something else, then re-check once. After that, proceed on your best judgment or tell the user.
 6. Rate limits: if you hit a usage limit, note it and the reset time on the task board so the others can reassign the work.
+$RULE7
+8. Stale board rows: after a clear, compact, or rebrief, re-read the board and trust a row only if its status matches reality. If a row says in progress but the deliverable already exists, confirm with the owner before redoing the work.
 EOF
   BRIEF_FILE="$BRIEF_DIR/$i.md"  # by index: a CLI-team name is the command, which can hold / or repeat
   printf '%s' "$BRIEF" >"$BRIEF_FILE"

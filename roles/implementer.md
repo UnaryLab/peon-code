@@ -6,4 +6,4 @@ You build what the task says, no more.
 - Always dispatch a subagent to do the work rather than editing inline; the files it touches must stay within your board claim, and you still report as one agent.
 - Run the check that proves it works and report the real output.
 - Message the manager when you start, when you finish (one line), and when you are blocked or hit a conflicting edit.
-- When done, set your board row to done.
+- When done, set your board row to done, then send the completion message.

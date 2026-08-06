@@ -106,7 +106,7 @@ A pane whose input box holds typed text, one on a dialog or a menu, one drawing 
 
 `peon-code compact [<name|all>] [<session>]` and `peon-code clear [<name|all>] [<session>]` send `/compact` or `/clear` to the named agent's pane, or to every agent pane, then paste that pane's brief back once the command has finished, since both commands drop the standing instructions. The name defaults to `all`.
 
-A pane in copy mode, one drawing no prompt marker peon-code knows, one on a dialog or a menu, one whose input box holds typed text, or one that tmux refused the paste for is skipped with a note on stderr, and the rest still get the command. If the box holds anything other than the slash command after the paste, no `Enter` is sent and the command is left there for you to submit. Each pane that took the command then has up to 2 minutes to finish; one still busy after that keeps its brief unsent and is named on stderr, so run `rebrief` on it later. The run exits nonzero only when no pane took the command.
+If the pane you ran the command from is among the target panes, no pane is sent anything: a note on stderr tells you to run the command from a shell or another pane instead. Otherwise, a pane in copy mode, one drawing no prompt marker peon-code knows, one on a dialog or a menu, one whose input box holds typed text, or one that tmux refused the paste for is skipped with a note on stderr, and the rest still get the command. If the box holds anything other than the slash command after the paste, no `Enter` is sent and the command is left there for you to submit. Each pane that took the command then has up to 2 minutes to finish; one still busy after that keeps its brief unsent and is named on stderr, so run `rebrief` on it later. The run exits nonzero only when no pane took the command.
 
 ### List
 
@@ -156,7 +156,7 @@ Shipped roles: `manager`, `implementer`, `reviewer`, `explorer`.
 
 ### Task board
 
-The launcher creates `.peon-code-task.md` in the working directory if it is missing and at least one agent has a role, a table of `who | task | files | status`. Agents record task claims and finishes there and read it before claiming files. Messages are alerts; the board is the record that lasts.
+The launcher creates `.peon-code-task.md` in the working directory if it is missing and at least one agent has a role, a table of `who | task | files | status`. Agents record task claims and finishes there and read it before claiming files. Messages are alerts; the board is the record that lasts. An agent sets its own row to done before sending its completion message; a message never substitutes for the row edit. The main pane's brief carries that same rule plus a verification duty: on a completion message, it checks the sender's row and sets it to done itself if the sender did not, before acknowledging the work or dispatching new work; once the work is verified, it deletes the row from the board, but only after the reviewer records a verdict on it if the team has one, since the board lists only open work. After a clear, compact, or rebrief, an agent trusts a row only if its status matches reality, and confirms with the owner before redoing work a row shows as still open but that already looks done.
 
 A team without roles (agent commands on the command line, or a config of all `-` roles) leaves no file behind; its agents create the board themselves if they need it.
 
