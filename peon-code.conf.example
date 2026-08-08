@@ -5,6 +5,12 @@
 # Full-line # comments and blank lines are skipped. No inline comments.
 # A leading * on a name marks the main agent: its pane gets the big left
 # slot. Without a mark, the first manager is main, else the first agent.
+# Only the main agent gets full git: every other agent launches with
+# commit and the destructive git commands denied (claude via a --settings
+# deny file that also binds its subagents; other CLIs via a hard line in
+# their brief).
+# A claude line that already passes --settings keeps its own file: that
+# agent gets no deny file.
 
 # name   command                                                     role
 *boss    claude --model claude-fable-5 --effort high                 manager

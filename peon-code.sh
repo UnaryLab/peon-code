@@ -203,6 +203,39 @@ done
 # ends in exec and the panes read the files after it is gone.
 BRIEF_DIR=$(mktemp -d "${TMPDIR:-/tmp}/peon-code.XXXXXX")
 
+# The destructive git commands denied to every agent that is not main. This
+# list is the one source: the deny file below and the brief prohibition
+# sentence are both built from it.
+# The deny rules match a literal command prefix, so they do not block git
+# invoked through a global flag (git -C dir reset, git --work-tree=... clean).
+# Closing that needs a permission hook, not a deny list.
+GIT_DENY=(
+  "git reset" "git checkout" "git restore" "git switch" "git clean"
+  "git stash" "git rm" "git commit" "git branch -D" "git branch -M"
+  "git branch --delete" "git branch -f" "git push" "git rebase"
+  "git reflog expire" "git update-ref" "git filter-branch" "git gc"
+)
+
+# Only the main agent launches with full git. Every other claude pane
+# launches with --settings pointing at this deny file; the deny rules bind
+# the pane and every subagent it spawns, which role prose does not.
+DENY_SETTINGS="$BRIEF_DIR/deny-git.json"
+{
+  printf '{\n  "permissions": {\n    "deny": [\n'
+  DENY_SEP=""
+  for CMD in "${GIT_DENY[@]}"; do
+    printf '%s      "Bash(%s)", "Bash(%s:*)"' "$DENY_SEP" "$CMD" "$CMD"
+    DENY_SEP=$',\n'
+  done
+  printf '\n    ]\n  }\n}\n'
+} >"$DENY_SETTINGS"
+
+# The same list as prose, for the brief sentence: git plus the bare forms.
+GIT_DENY_PROSE=""
+for CMD in "${GIT_DENY[@]}"; do
+  GIT_DENY_PROSE="${GIT_DENY_PROSE:+$GIT_DENY_PROSE, }${CMD#git }"
+done
+
 # Roster line for every pane, shared by all briefs.
 ROSTER=""
 for i in "${!NAMES[@]}"; do
@@ -221,6 +254,15 @@ for i in "${!NAMES[@]}"; do
     ROLE_SECTION="Your role: $(role_label "${ROLES[$i]}")
 $(cat "${ROLES[$i]}")
 "
+  fi
+  # Rule 2 gets a hard git prohibition for every agent that is not main.
+  # claude panes have the same prohibition enforced by the launch-time deny
+  # settings file; codex and the other CLIs have no launch-time permission
+  # file, so for them this sentence is the only guard, and it does not reach
+  # subagents they spawn.
+  RULE2="2. Git discipline: never run git add -A and never run destructive git commands unless the user asks. Stage only the files you claimed. Only one agent touches git at a time. Commits happen only when the user asks for one, and only in the ${NAMES[$MAIN]} pane (${PANE_IDS[$MAIN]}): any other agent asked to commit messages that pane instead of committing."
+  if [ "$i" -ne "$MAIN" ]; then
+    RULE2="$RULE2 Hard prohibition for this pane: never run git $GIT_DENY_PROSE; only the main agent commits and touches branches."
   fi
   # Rule 7 is the worker sentence for every agent, plus the manager
   # verification sentence for the main pane only.
@@ -242,7 +284,7 @@ The task board is $TASK_BOARD in the working directory, a table of who | task | 
 
 Rules:
 1. Task intake: the user assigns work by typing into the ${NAMES[$MAIN]} pane (${PANE_IDS[$MAIN]}). That agent splits the work onto the task board and assigns it; every other agent waits for a board entry or a message instead of inventing work at launch. The agent that split the work posts the final summary to the user.
-2. Git discipline: never run git add -A, never commit, and never run destructive git commands unless the user asks. Stage only the files you claimed. Only one agent touches git at a time.
+$RULE2
 3. Held sends: send makes the box check and the paste back to back in one run, and presses Enter only when the box holds exactly your message. A blocked target (mid-dialog, mid-menu, in copy mode, or holding typed text) is retried up to 10 times over about 10 seconds; when send still fails with a busy message, do something else and retry later. Never paste into that pane by hand.
 4. Dead-pane guard: if tmux display -pt <id> '#{pane_current_command}' shows a shell, that agent is gone. Do not send, because your text would run as shell commands. Tell the user instead.
 5. No idle deadlocks: if you are blocked, message once, work on something else, then re-check once. After that, proceed on your best judgment or tell the user.
@@ -269,7 +311,23 @@ EOF
   # Quoted for the pane's shell: a qwen id can be a saved-chat tag, not a uuid.
   RID=${RID:+$(printf %q "$RID")}
   case "$BIN" in
-    claude)      LAUNCH="$BIN${RID:+ --resume $RID}$ARGS" ;;  # bare, keeping user args; the brief follows the TUI
+    claude)
+      # A claude pane that is not the main agent launches with the deny
+      # settings, unless its own args already pass --settings, which wins:
+      # claude reads one --settings and the second would be lost.
+      SETTINGS=""
+      if [ "$i" -ne "$MAIN" ]; then
+        case "$ARGS " in
+          *" --settings "*|*" --settings="*)
+            echo "peon-code: ${NAMES[$i]} passes its own --settings, so it gets no git deny file" >&2 ;;
+          *) SETTINGS=" --settings $(printf %q "$DENY_SETTINGS")" ;;
+        esac
+        case "$ARGS " in
+          *" --dangerously-skip-permissions "*)
+            echo "peon-code: ${NAMES[$i]} passes --dangerously-skip-permissions, so the git deny file has no effect" >&2 ;;
+        esac
+      fi
+      LAUNCH="$BIN${RID:+ --resume $RID}$ARGS$SETTINGS" ;;  # bare, keeping user args; the brief follows the TUI
     codex)       LAUNCH="$BIN${RID:+ resume $RID}$ARGS $Q" ;; # positional prompt, stays interactive
     copilot)     LAUNCH="$BIN${RID:+ --resume=$RID}$ARGS -i $Q" ;;  # -i starts the interactive TUI and runs the prompt
     gemini|qwen) LAUNCH="$BIN${RID:+ --resume $RID}$ARGS -i $Q" ;;  # unverified on this machine
