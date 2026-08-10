@@ -268,7 +268,7 @@ $(cat "${ROLES[$i]}")
   # verification sentence for the main pane only.
   RULE7="7. Task completion: set your board row to done before you send the completion message. A task is not done until its row says done; a message never substitutes for the row edit."
   if [ "$i" -eq "$MAIN" ]; then
-    RULE7="$RULE7 On receiving a completion message, verify the sender's board row is done and set it to done yourself if it is not, before acknowledging the work or dispatching new work. Once the work is verified, delete the row from the board, but only after the reviewer records a verdict on it if the team has one; the board lists only open work."
+    RULE7="$RULE7 On receiving a completion message, verify the sender's board row is done and set it to done yourself if it is not, before acknowledging the work or dispatching new work; if the row already reads reviewed pass or reviewed fail, leave that status as the reviewer wrote it rather than setting it to done, and when it still reads reviewed fail, message the author to finish the rework. Once the work is verified, delete the row from the board, but only after the reviewer records a verdict on it if the team has one; the board lists only open work."
   fi
   read -r -d '' BRIEF <<EOF || true
 You are $WHO, agent ${NAMES[$i]} of peon-code session $SESSION, in pane $i of $N (this pane is ${PANE_IDS[$i]}), one of $N AI coding agents collaborating side-by-side in tmux. The panes are:
@@ -278,7 +278,7 @@ To read another agent's latest output, run: tmux capture-pane -pt <other-pane-id
 $SCRIPT_DIR/peon-code.sh send <other-pane-id> - <<'PEON'
 your message
 PEON
-The message is read from stdin, so quotes and apostrophes in it stay out of your shell. It pastes the message and presses Enter only once the target's input box holds it, and it exits non-zero without pasting when that box already holds typed text. Start every message you send with [from $MSG_FROM ${PANE_IDS[$i]}] so receivers know who sent it and can tell messages apart from scraped output. Message another agent only when: (1) you start a task, to claim the files you will touch; (2) you finish a task, with a one-line summary; (3) you are blocked or detect a conflicting edit. Do not message for routine progress or individual file saves. Check the other panes at task start and task end only.
+The message is read from stdin, so quotes and apostrophes in it stay out of your shell. It pastes the message and presses Enter only once the target's input box holds it, and it exits non-zero without pasting when that box already holds typed text. Start every message you send with [from $MSG_FROM ${PANE_IDS[$i]}] so receivers know who sent it and can tell messages apart from scraped output. Message another agent only when: (1) you start a task, to claim the files you will touch; (2) you finish a task, with a one-line summary; (3) you are blocked or detect a conflicting edit. Do not message for routine progress or individual file saves. Check the other panes at task start and task end only; between those, read the task board instead.
 
 The task board is $TASK_BOARD in the working directory, a table of who | task | files | status; create it with that header row if it is not there. Record your task claims and finishes there, and read it before claiming files someone else already listed. Messages are alerts; the board is the record that lasts.
 
@@ -291,6 +291,7 @@ $RULE2
 6. Rate limits: if you hit a usage limit, note it and the reset time on the task board so the others can reassign the work.
 $RULE7
 8. Stale board rows: after a clear, compact, or rebrief, re-read the board and trust a row only if its status matches reality. If a row says in progress but the deliverable already exists, confirm with the owner before redoing the work.
+9. Parallel work: independent tasks run at the same time, not one after another. Claim every open task assigned to you whose files do not overlap what you or any other agent already claimed, and if your CLI can spawn subagents or background tasks, run them at the same time; if it cannot, switch between them rather than finishing one before you start the next. Any subagent you spawn gets git read-only in its prompt: never checkout, restore, reset, clean, stash, or any command that discards working-tree changes. Tasks touching the same files still run one at a time, and every claimed row still gets its own done edit and its own completion message. A message that arrives while you are working is new work, not an interruption: at your next step boundary, re-read the board and start any new row that does not overlap your current claims, rather than waiting until your current task is done.
 EOF
   BRIEF_FILE="$BRIEF_DIR/$i.md"  # by index: a CLI-team name is the command, which can hold / or repeat
   printf '%s' "$BRIEF" >"$BRIEF_FILE"

@@ -254,13 +254,50 @@ test_config_loading() {
   assert_not_contains "$brief_file" "Avoid single quotes"
 }
 
+# Rule 9 tells every pane to run independent tasks at the same time.
+test_brief_rule9_parallel() {
+  local fake_bin=$1 log="$TEST_DIR/tmux-rule9.log" home_dir="$TEST_DIR/home-rule9"
+  local work_dir="$TEST_DIR/rule9-work" line boss_brief helper_brief
+  local rule9="9. Parallel work: independent tasks run at the same time, not one after another."
+  local claim_rule="Claim every open task assigned to you whose files do not overlap what you or any other agent already claimed"
+  local git_rule="Any subagent you spawn gets git read-only in its prompt: never checkout, restore, reset, clean, stash"
+  local serial_rule="Tasks touching the same files still run one at a time"
+  mkdir -p "$home_dir" "$work_dir"
+  printf '*boss ./missing-agent -\nhelper ./missing-agent -\n' >"$work_dir/peon-code.conf"
+
+  (
+    cd "$work_dir"
+    PATH="$fake_bin:$PATH" HOME="$home_dir" TMPDIR="$TEST_DIR" \
+      FAKE_TMUX_LOG="$log" FAKE_TMUX_MODE=launch FAKE_TMUX_PANES=2 \
+      "$ROOT/peon-code.sh" -c "$work_dir/peon-code.conf" rule9-test
+  ) >"$TEST_DIR/rule9.out" 2>"$TEST_DIR/rule9.err" || true
+
+  line=$(grep -F "buffer-content:" "$log" | sed -n '1p')
+  boss_brief=${line#*"\$(cat "}
+  boss_brief=${boss_brief%%')"'*}
+  line=$(grep -F "buffer-content:" "$log" | sed -n '2p')
+  helper_brief=${line#*"\$(cat "}
+  helper_brief=${helper_brief%%')"'*}
+  [ -n "$boss_brief" ] || fail "rule9 test did not record the main pane's brief file"
+  [ -n "$helper_brief" ] || fail "rule9 test did not record the other pane's brief file"
+
+  assert_contains "$boss_brief" "$rule9"
+  assert_contains "$boss_brief" "$claim_rule"
+  assert_contains "$boss_brief" "$git_rule"
+  assert_contains "$boss_brief" "$serial_rule"
+  assert_contains "$helper_brief" "$rule9"
+  assert_contains "$helper_brief" "$claim_rule"
+  assert_contains "$helper_brief" "$git_rule"
+  assert_contains "$helper_brief" "$serial_rule"
+}
+
 # Rule 7 differs by pane: the main pane's brief carries the manager
 # verification sentence too, every other pane gets the worker sentence alone.
 test_brief_rule7_variants() {
   local fake_bin=$1 log="$TEST_DIR/tmux-rule7.log" home_dir="$TEST_DIR/home-rule7"
   local work_dir="$TEST_DIR/rule7-work" line boss_brief helper_brief
   local worker_rule="7. Task completion: set your board row to done before you send the completion message. A task is not done until its row says done; a message never substitutes for the row edit."
-  local manager_rule="On receiving a completion message, verify the sender's board row is done and set it to done yourself if it is not, before acknowledging the work or dispatching new work."
+  local manager_rule="On receiving a completion message, verify the sender's board row is done and set it to done yourself if it is not, before acknowledging the work or dispatching new work; if the row already reads reviewed pass or reviewed fail, leave that status as the reviewer wrote it rather than setting it to done, and when it still reads reviewed fail, message the author to finish the rework."
   local delete_rule="Once the work is verified, delete the row from the board, but only after the reviewer records a verdict on it if the team has one; the board lists only open work."
   mkdir -p "$home_dir" "$work_dir"
   printf '*boss ./missing-agent -\nhelper ./missing-agent -\n' >"$work_dir/peon-code.conf"
@@ -1457,6 +1494,7 @@ test_unique_buffers_and_launch_failure "$fake_bin"
 test_launch_with_prompt_box "$fake_bin"
 test_config_loading "$fake_bin"
 test_brief_rule7_variants "$fake_bin"
+test_brief_rule9_parallel "$fake_bin"
 test_git_deny_settings "$fake_bin"
 test_git_deny_unstarred_main "$fake_bin"
 SEND_BIN=$(make_send_bin "$fake_bin")

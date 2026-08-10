@@ -35,5 +35,6 @@ Bash launcher that builds a tmux session of side-by-side AI coding agent CLIs (c
 Every role (`roles/*.md` plus the shared brief text in `peon-code.sh`) must encode the task-board completion rule; keep it intact when adding or editing a role:
 
 - The board row is the record of completion, not messages. A worker sets its own row to done first, then sends the completion message; a message never substitutes for the row edit.
-- A manager-type role, on receiving a completion message, verifies the sender's row is done and fixes it if not, before acknowledging or dispatching new work. Once it verifies the task, it deletes the row; the board lists only open work.
+- A manager-type role, on receiving a completion message, verifies the sender's row is done and fixes it if not, before acknowledging or dispatching new work. Once it has verified the work, it deletes the row, after the reviewer records a verdict on it if the team has a reviewer; the board lists only open work.
+- A reviewer-type role records its verdict in the row status, reviewed pass or reviewed fail, and no other role overwrites that status. A failed row goes back to its author, who sets it to in progress for the rework and to done again when the fix is ready; a row back at done counts as unreviewed and gets a fresh review.
 - After a clear, compact, or rebrief, the role re-reads the board skeptically: if a row's deliverable already exists, confirm with the row's owner instead of re-executing the task.
