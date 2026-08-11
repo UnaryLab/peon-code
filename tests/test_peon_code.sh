@@ -249,6 +249,21 @@ test_config_loading() {
   assert_contains "$brief_file" "3. Held sends: send makes the box check and the paste back to back"
   # A message never substitutes for closing the board row.
   assert_contains "$brief_file" "7. Task completion: set your board row to done before you send the completion message."
+  # The board row is the claim: no start message, alerts name the row id,
+  # scrapes stop at 100 lines, and the header rules ride inside the brief's
+  # recreate instruction.
+  assert_contains "$brief_file" "tmux capture-pane -pt <other-pane-id> -S -100"
+  assert_not_contains "$brief_file" "you start a task, to claim the files you will touch"
+  assert_contains "$brief_file" "The board row is the claim, so starting a task sends no message."
+  assert_contains "$brief_file" "an alert is one line naming the row id"
+  assert_contains "$brief_file" "Its header states the row format, the id rule, and the status rules"
+  assert_contains "$brief_file" "| id | who | task | files | status |"
+  assert_contains "$brief_file" "a status change overwrites the cell, never appends to it"
+  assert_contains "$brief_file" "never delay a status change to collect a batch"
+  # The seeded board opens with the same rules header the brief embeds.
+  assert_contains "$work_dir/.peon-code-task.md" "| id | who | task | files | status |"
+  assert_contains "$work_dir/.peon-code-task.md" "a status change overwrites the cell, never appends to it"
+  assert_contains "$work_dir/.peon-code-task.md" "never reused, even after the row is deleted"
   assert_not_contains "$brief_file" "tmux send-keys -t <other-pane-id> -l"
   # The message goes in on stdin, so nothing asks agents to mind their quoting.
   assert_not_contains "$brief_file" "Avoid single quotes"
@@ -298,7 +313,8 @@ test_brief_rule7_variants() {
   local work_dir="$TEST_DIR/rule7-work" line boss_brief helper_brief
   local worker_rule="7. Task completion: set your board row to done before you send the completion message. A task is not done until its row says done; a message never substitutes for the row edit."
   local manager_rule="On receiving a completion message, verify the sender's board row is done and set it to done yourself if it is not, before acknowledging the work or dispatching new work; if the row already reads reviewed pass or reviewed fail, leave that status as the reviewer wrote it rather than setting it to done, and when it still reads reviewed fail, message the author to finish the rework."
-  local delete_rule="Once the work is verified, delete the row from the board, but only after the reviewer records a verdict on it if the team has one; the board lists only open work."
+  local delete_rule="Once the work is verified, delete the row from the board, but only after the reviewer records a verdict on it if the team has one; the board lists only open work, and the deletion is the acknowledgment, so message a worker only to assign, reassign, request rework, or unblock."
+  local dispatch_rule="When you dispatch, send each agent one message listing all its row ids rather than one message per row, never delaying a ready dispatch to collect a batch."
   mkdir -p "$home_dir" "$work_dir"
   printf '*boss ./missing-agent -\nhelper ./missing-agent -\n' >"$work_dir/peon-code.conf"
 
@@ -318,10 +334,11 @@ test_brief_rule7_variants() {
   [ -n "$boss_brief" ] || fail "rule7 test did not record the main pane's brief file"
   [ -n "$helper_brief" ] || fail "rule7 test did not record the other pane's brief file"
 
-  assert_contains "$boss_brief" "$worker_rule $manager_rule $delete_rule"
+  assert_contains "$boss_brief" "$worker_rule $manager_rule $delete_rule $dispatch_rule"
   assert_contains "$helper_brief" "$worker_rule"
   assert_not_contains "$helper_brief" "$manager_rule"
   assert_not_contains "$helper_brief" "$delete_rule"
+  assert_not_contains "$helper_brief" "$dispatch_rule"
 }
 
 # The launch line ends with the settings path as printf %q wrote it, so the
