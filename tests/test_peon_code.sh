@@ -273,7 +273,7 @@ test_config_loading() {
 test_brief_rule9_parallel() {
   local fake_bin=$1 log="$TEST_DIR/tmux-rule9.log" home_dir="$TEST_DIR/home-rule9"
   local work_dir="$TEST_DIR/rule9-work" line boss_brief helper_brief
-  local rule9="9. Parallel work: independent tasks run at the same time, not one after another."
+  local rule9="10. Parallel work: independent tasks run at the same time, not one after another."
   local claim_rule="Claim every open task assigned to you whose files do not overlap what you or any other agent already claimed"
   local git_rule="Any subagent you spawn gets git read-only in its prompt: never checkout, restore, reset, clean, stash"
   local serial_rule="Tasks touching the same files still run one at a time"
