@@ -28,6 +28,26 @@ if [ ! -f "$FALLBACK_CONF" ]; then
   echo "created fallback config: $FALLBACK_CONF (edit it to set your team)"
 fi
 
+# Install the tmux config, prompting before overwriting an existing one.
+TMUX_CONF="$HOME/.tmux.conf"
+if [ -e "$TMUX_CONF" ]; then
+  if [ -t 0 ]; then
+    printf '%s already exists; overwrite it? [y/N] ' "$TMUX_CONF"
+    read -r reply
+  else
+    reply=n
+  fi
+  case "$reply" in
+    [yY]|[yY][eE][sS])
+      cp "$SCRIPT_DIR/tmux.conf" "$TMUX_CONF"
+      echo "overwrote: $TMUX_CONF" ;;
+    *) echo "kept your existing $TMUX_CONF (run 'cp $SCRIPT_DIR/tmux.conf $TMUX_CONF' to overwrite)" ;;
+  esac
+else
+  cp "$SCRIPT_DIR/tmux.conf" "$TMUX_CONF"
+  echo "installed: $TMUX_CONF"
+fi
+
 case ":$PATH:" in
   *":$BIN_DIR:"*) ;;
   *) echo "note: $BIN_DIR is not on your PATH; add it to use plain 'peon-code'" ;;

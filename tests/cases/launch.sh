@@ -35,6 +35,22 @@ test_install_guard() {
   assert_contains "$TEST_DIR/installed-help.out" "peon-code.sh [-c file]"
 }
 
+test_install_tmux_conf() {
+  local home_dir="$TEST_DIR/home-tmuxconf" bin_dir="$TEST_DIR/bin-tmuxconf"
+  mkdir -p "$home_dir" "$bin_dir"
+
+  # Fresh home: the config is installed.
+  HOME="$home_dir" "$ROOT/install.sh" "$bin_dir" >"$TEST_DIR/tmuxconf-new.out"
+  [ "$(cat "$home_dir/.tmux.conf")" = "$(cat "$ROOT/tmux.conf")" ] ||
+    fail "install did not write ~/.tmux.conf"
+
+  # Existing config, non-interactive: left untouched.
+  printf 'my own config\n' >"$home_dir/.tmux.conf"
+  HOME="$home_dir" "$ROOT/install.sh" "$bin_dir" >"$TEST_DIR/tmuxconf-keep.out" </dev/null
+  [ "$(cat "$home_dir/.tmux.conf")" = "my own config" ] ||
+    fail "install overwrote an existing ~/.tmux.conf"
+}
+
 test_session_ownership() {
   local fake_bin=$1 log="$TEST_DIR/tmux-ownership.log" home_dir="$TEST_DIR/home-tmux"
   mkdir -p "$home_dir"
@@ -252,6 +268,7 @@ test_brief_rule7_variants() {
 
 fake_bin=$(make_fake_commands)
 test_install_guard
+test_install_tmux_conf
 test_session_ownership "$fake_bin"
 test_unique_buffers_and_launch_failure "$fake_bin"
 test_launch_with_prompt_box "$fake_bin"
