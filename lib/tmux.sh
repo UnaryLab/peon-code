@@ -257,21 +257,27 @@ wait_agent_ready() {
   return 1
 }
 
-# A resumed claude pane can open on a picker asking how to resume a large or
-# old session; its default row is "Resume from summary (recommended)". Enter
-# accepts that default, so the pane moves on instead of sitting on the dialog
-# until the settle wait gives up. A pane that reaches the input line first
-# never showed the picker, so the wait ends there. Always returns 0: a pane
-# still drawing after the cap is left for wait_pane_settled to judge.
-answer_resume_picker() {
-  local pane=$1 i cur
+# Answer a startup dialog whose default row is the wanted answer, by pressing
+# Enter once the pane shows text matching the glob pattern. Two dialogs are
+# answered this way: the folder-trust check a CLI asks on its first visit to
+# a directory (claude "Do you trust the files in this folder?", codex "Do you
+# trust the contents of this directory?"; the selected row is the yes), and
+# claude's picker for resuming a large or old session ("Resume from summary
+# (recommended)"). A pane that reaches its input line first never showed the
+# dialog, so the wait ends there. Always returns 0: a pane still drawing
+# after the cap, 15s, is left for wait_pane_settled to judge.
+# The input-line check knows the claude and codex markers only; a CLI drawing
+# another marker waits the full cap when it shows no dialog.
+answer_dialog() {
+  local pane=$1 pattern=$2 i cur
   for ((i = 0; i < 50; i++)); do
     cur=$(tmux capture-pane -pt "$pane" 2>/dev/null) || cur=""
-    if [[ $cur == *"Resume from summary"* ]]; then
+    # shellcheck disable=SC2053  # unquoted on purpose: the pattern is a glob
+    if [[ $cur == $pattern ]]; then
       tmux send-keys -t "$pane" Enter
       return 0
     fi
-    # Input line drawn and no menu on screen: the pane never showed a picker.
+    # Input line drawn and no menu on screen: the pane never showed a dialog.
     if ! pane_has_menu "$cur" && [[ $cur == *❯* || $cur == *›* ]]; then
       return 0
     fi

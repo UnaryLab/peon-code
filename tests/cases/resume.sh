@@ -117,8 +117,8 @@ test_resume_picks_each_agent_thread() {
   assert_contains "$TEST_DIR/two-mains.err" "a second agent is marked main with *"
 }
 
-# The resume-summary picker is answered with Enter (its summary default);
-# a pane already at the input line is left alone.
+# The resume-summary picker and the folder-trust check are answered with
+# Enter (their default rows); a pane already at the input line is left alone.
 test_resume_picker_answered() {
   local fake_bin=$1 log="$TEST_DIR/picker.log" bin_dir="$TEST_DIR/picker-bin"
   mkdir -p "$bin_dir"
@@ -135,14 +135,23 @@ FAKE_TMUX
   : >"$log"
   FAKE_TMUX_LOG="$log" PATH="$bin_dir:$PATH" \
     FAKE_TMUX_CAPTURE='❯ 1. Resume from summary (recommended)' \
-    bash -c 'source "$1/lib/tmux.sh"; answer_resume_picker %9' _ "$ROOT"
+    bash -c 'source "$1/lib/tmux.sh"; answer_dialog %9 "*Resume from summary*"' _ "$ROOT"
   assert_contains "$log" "send-keys -t %9 Enter"
 
   : >"$log"
   FAKE_TMUX_LOG="$log" PATH="$bin_dir:$PATH" \
     FAKE_TMUX_CAPTURE='❯ try "fix the tests"' \
-    bash -c 'source "$1/lib/tmux.sh"; answer_resume_picker %9' _ "$ROOT"
+    bash -c 'source "$1/lib/tmux.sh"; answer_dialog %9 "*Resume from summary*"' _ "$ROOT"
   assert_not_contains "$log" "send-keys"
+
+  : >"$log"
+  FAKE_TMUX_LOG="$log" PATH="$bin_dir:$PATH" \
+    FAKE_TMUX_CAPTURE='Do you trust the files in this folder?
+
+ ❯ 1. Yes, proceed
+   2. No, exit' \
+    bash -c 'source "$1/lib/tmux.sh"; answer_dialog %9 "*[Tt]rust*"' _ "$ROOT"
+  assert_contains "$log" "send-keys -t %9 Enter"
 }
 
 fake_bin=$(make_fake_commands)

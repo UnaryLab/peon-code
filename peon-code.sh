@@ -23,6 +23,7 @@
 #   grok            positional prompt, stays interactive (verified on this machine); resumes with --resume <id>
 #   gemini, qwen    -i <prompt>  (documented; unverified on this machine); resume with --resume <id>
 # Any other command is passed through as-is: <cmd> <quoted-brief>.
+# A pane opening on the folder-trust check gets Enter, taking its yes row.
 set -euo pipefail
 
 # Resolve symlinks without readlink -f, which macOS lacks before 12.3.
@@ -298,11 +299,14 @@ for i in "${!NAMES[@]}"; do
     FAILED_AGENTS+=("${NAMES[$i]}")
     continue
   fi
+  # A first visit to a directory opens on the folder-trust check; take its
+  # default, the yes row, so the pane moves on to its prompt.
+  answer_dialog "${PANE_IDS[$i]}" "*[Tt]rust*"
   if [ "${CMDS[$i]%% *}" = claude ]; then
     # A resumed pane may open on the summary picker; take its default,
     # "Resume from summary", then allow for the compaction that starts:
     # 400 settle tries (~2 min) instead of the usual 100.
-    [ -z "$RID" ] || answer_resume_picker "${PANE_IDS[$i]}"
+    [ -z "$RID" ] || answer_dialog "${PANE_IDS[$i]}" "*Resume from summary*"
     # An unsettled pane is showing a dialog or still starting; pasting there
     # would answer the dialog blindly, which the brief tells agents never to do.
     if wait_pane_settled "${PANE_IDS[$i]}" "${RID:+400}"; then
