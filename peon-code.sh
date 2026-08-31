@@ -23,7 +23,9 @@
 #   grok            positional prompt, stays interactive (verified on this machine); resumes with --resume <id>
 #   gemini, qwen    -i <prompt>  (documented; unverified on this machine); resume with --resume <id>
 # Any other command is passed through as-is: <cmd> <quoted-brief>.
-# A pane opening on the folder-trust check gets Enter, taking its yes row.
+# The session is attached first and the CLIs start while it is on screen, their
+# launch notes arriving as tmux status-line messages. A pane opening on the
+# folder-trust check is left for you to answer in the attached session.
 set -euo pipefail
 
 # Resolve symlinks without readlink -f, which macOS lacks before 12.3.
@@ -243,88 +245,118 @@ for i in "${!NAMES[@]}"; do
   ROSTER+="pane ${PANE_IDS[$i]}: ${NAMES[$i]} (${CMDS[$i]}) - $(role_label "${ROLES[$i]}")"$'\n'
 done
 
-for i in "${!NAMES[@]}"; do
-  BRIEF=$(build_brief "$i")
-  BRIEF_FILE="$BRIEF_DIR/$i.md"  # by index: a CLI-team name is the command, which can hold / or repeat
-  printf '%s' "$BRIEF" >"$BRIEF_FILE"
-  # rebrief finds the brief through this pane option.
-  tmux set -pt "${PANE_IDS[$i]}" @peon_brief "$BRIEF_FILE"
-  # The pane reads the brief from the file, so the command line stays one line.
-  Q="\"\$(cat $(printf %q "$BRIEF_FILE"))\""
-  # Map known CLIs to their interactive-session-with-initial-prompt syntax.
-  # First token is the binary; trailing user args are preserved before the flag.
-  # A resume id, when there is one, goes right after the binary, since codex
-  # takes it as a subcommand and every CLI reads its options after it. For
-  # copilot, gemini, and qwen the id rides alongside -i: their flag
-  # validation permits the pair, though their docs do not show it.
-  BIN=${CMDS[$i]%% *}
-  ARGS=""
-  [ "${CMDS[$i]}" = "$BIN" ] || ARGS=" ${CMDS[$i]#* }"
-  RID=${RESUME_IDS[$i]}
-  # Quoted for the pane's shell: a qwen id can be a saved-chat tag, not a uuid.
-  RID=${RID:+$(printf %q "$RID")}
-  case "$BIN" in
-    claude)
-      # A claude pane that is not the main agent launches with the deny
-      # settings, unless its own args already pass --settings, which wins:
-      # claude reads one --settings and the second would be lost.
-      SETTINGS=""
-      if [ "$i" -ne "$MAIN" ]; then
-        case "$ARGS " in
-          *" --settings "*|*" --settings="*)
-            echo "peon-code: ${NAMES[$i]} passes its own --settings, so it gets no git deny file" >&2 ;;
-          *) SETTINGS=" --settings $(printf %q "$DENY_SETTINGS")" ;;
-        esac
-        case "$ARGS " in
-          *" --dangerously-skip-permissions "*)
-            echo "peon-code: ${NAMES[$i]} passes --dangerously-skip-permissions, so the git deny file has no effect" >&2 ;;
-        esac
-      fi
-      LAUNCH="$BIN${RID:+ --resume $RID}$ARGS$SETTINGS" ;;  # bare, keeping user args; the brief follows the TUI
-    codex)       LAUNCH="$BIN${RID:+ resume $RID}$ARGS $Q" ;; # positional prompt, stays interactive
-    grok)        LAUNCH="$BIN${RID:+ --resume $RID}$ARGS $Q" ;; # positional prompt, stays interactive
-    copilot)     LAUNCH="$BIN${RID:+ --resume=$RID}$ARGS -i $Q" ;;  # -i starts the interactive TUI and runs the prompt
-    gemini|qwen) LAUNCH="$BIN${RID:+ --resume $RID}$ARGS -i $Q" ;;  # unverified on this machine
-    *)           LAUNCH="${CMDS[$i]} $Q" ;;     # anything else: positional prompt
-  esac
-  # The pane is still at its shell, whose prompt peon-code cannot predict, so
-  # the box holds no text to check against: Enter follows the paste directly.
-  if printf '%s' "$LAUNCH" | paste_only "${PANE_IDS[$i]}"; then
-    sleep 1
-    tmux send-keys -t "${PANE_IDS[$i]}" Enter
-  else
-    echo "peon-code: tmux refused the command line for ${NAMES[$i]} ${PANE_IDS[$i]}" >&2
-  fi
-  if ! wait_agent_ready "${PANE_IDS[$i]}"; then
-    FAILED_AGENTS+=("${NAMES[$i]}")
-    continue
-  fi
-  # A first visit to a directory opens on the folder-trust check; take its
-  # default, the yes row, so the pane moves on to its prompt.
-  answer_dialog "${PANE_IDS[$i]}" "*[Tt]rust*"
-  if [ "${CMDS[$i]%% *}" = claude ]; then
-    # A resumed pane may open on the summary picker; take its default,
-    # "Resume from summary", then allow for the compaction that starts:
-    # 400 settle tries (~2 min) instead of the usual 100.
-    [ -z "$RID" ] || answer_dialog "${PANE_IDS[$i]}" "*Resume from summary*"
-    # An unsettled pane is showing a dialog or still starting; pasting there
-    # would answer the dialog blindly, which the brief tells agents never to do.
-    if wait_pane_settled "${PANE_IDS[$i]}" "${RID:+400}"; then
-      PASTE_RC=0
-      printf '%s' "$BRIEF" | paste_to_pane "${PANE_IDS[$i]}" || PASTE_RC=$?
-      case $PASTE_RC in
-        1) echo "peon-code: tmux refused the brief for ${NAMES[$i]} ${PANE_IDS[$i]}. Paste it by hand: $BRIEF_FILE" >&2 ;;
-        2) echo "peon-code: no Enter sent to ${NAMES[$i]} ${PANE_IDS[$i]}: the brief is in its box for you to submit" >&2 ;;
-      esac
+# Start each agent in its pane: paste the launch command, wait for the CLI to
+# come up, and paste a claude pane's brief once the pane settles. Agents that
+# never started are named in FAILED_AGENTS.
+launch_agents() {
+  for i in "${!NAMES[@]}"; do
+    BRIEF=$(build_brief "$i")
+    BRIEF_FILE="$BRIEF_DIR/$i.md"  # by index: a CLI-team name is the command, which can hold / or repeat
+    printf '%s' "$BRIEF" >"$BRIEF_FILE"
+    # rebrief finds the brief through this pane option.
+    tmux set -pt "${PANE_IDS[$i]}" @peon_brief "$BRIEF_FILE" ||
+      echo "peon-code: tmux refused the brief path for ${NAMES[$i]} ${PANE_IDS[$i]}; rebrief will not find it" >&2
+    # The pane reads the brief from the file, so the command line stays one line.
+    Q="\"\$(cat $(printf %q "$BRIEF_FILE"))\""
+    # Map known CLIs to their interactive-session-with-initial-prompt syntax.
+    # First token is the binary; trailing user args are preserved before the flag.
+    # A resume id, when there is one, goes right after the binary, since codex
+    # takes it as a subcommand and every CLI reads its options after it. For
+    # copilot, gemini, and qwen the id rides alongside -i: their flag
+    # validation permits the pair, though their docs do not show it.
+    BIN=${CMDS[$i]%% *}
+    ARGS=""
+    [ "${CMDS[$i]}" = "$BIN" ] || ARGS=" ${CMDS[$i]#* }"
+    RID=${RESUME_IDS[$i]}
+    # Quoted for the pane's shell: a qwen id can be a saved-chat tag, not a uuid.
+    RID=${RID:+$(printf %q "$RID")}
+    case "$BIN" in
+      claude)
+        # A claude pane that is not the main agent launches with the deny
+        # settings, unless its own args already pass --settings, which wins:
+        # claude reads one --settings and the second would be lost.
+        SETTINGS=""
+        if [ "$i" -ne "$MAIN" ]; then
+          case "$ARGS " in
+            *" --settings "*|*" --settings="*)
+              echo "peon-code: ${NAMES[$i]} passes its own --settings, so it gets no git deny file" >&2 ;;
+            *) SETTINGS=" --settings $(printf %q "$DENY_SETTINGS")" ;;
+          esac
+          case "$ARGS " in
+            *" --dangerously-skip-permissions "*)
+              echo "peon-code: ${NAMES[$i]} passes --dangerously-skip-permissions, so the git deny file has no effect" >&2 ;;
+          esac
+        fi
+        LAUNCH="$BIN${RID:+ --resume $RID}$ARGS$SETTINGS" ;;  # bare, keeping user args; the brief follows the TUI
+      codex)       LAUNCH="$BIN${RID:+ resume $RID}$ARGS $Q" ;; # positional prompt, stays interactive
+      grok)        LAUNCH="$BIN${RID:+ --resume $RID}$ARGS $Q" ;; # positional prompt, stays interactive
+      copilot)     LAUNCH="$BIN${RID:+ --resume=$RID}$ARGS -i $Q" ;;  # -i starts the interactive TUI and runs the prompt
+      gemini|qwen) LAUNCH="$BIN${RID:+ --resume $RID}$ARGS -i $Q" ;;  # unverified on this machine
+      *)           LAUNCH="${CMDS[$i]} $Q" ;;     # anything else: positional prompt
+    esac
+    # The pane is still at its shell, whose prompt peon-code cannot predict, so
+    # the box holds no text to check against: Enter follows the paste directly.
+    if printf '%s' "$LAUNCH" | paste_only "${PANE_IDS[$i]}"; then
+      sleep 1
+      tmux send-keys -t "${PANE_IDS[$i]}" Enter ||
+        echo "peon-code: tmux refused Enter for ${NAMES[$i]} ${PANE_IDS[$i]}" >&2
     else
-      echo "peon-code: ${NAMES[$i]} is still on a dialog or starting up. Answer it, then paste the brief: $BRIEF_FILE" >&2
+      echo "peon-code: tmux refused the command line for ${NAMES[$i]} ${PANE_IDS[$i]}" >&2
     fi
+    if ! wait_agent_ready "${PANE_IDS[$i]}"; then
+      FAILED_AGENTS+=("${NAMES[$i]}")
+      continue
+    fi
+    if [ "${CMDS[$i]%% *}" = claude ]; then
+      # A resumed pane may open on the summary picker; take its default,
+      # "Resume from summary", then allow for the compaction that starts:
+      # 400 settle tries (~2 min) instead of the usual 100.
+      [ -z "$RID" ] || answer_dialog "${PANE_IDS[$i]}" "*Resume from summary*"
+      # An unsettled pane is showing a dialog or still starting; pasting there
+      # would answer the dialog blindly, which the brief tells agents never to do.
+      if wait_pane_settled "${PANE_IDS[$i]}" "${RID:+400}"; then
+        PASTE_RC=0
+        printf '%s' "$BRIEF" | paste_to_pane "${PANE_IDS[$i]}" || PASTE_RC=$?
+        case $PASTE_RC in
+          1) echo "peon-code: tmux refused the brief for ${NAMES[$i]} ${PANE_IDS[$i]}. Send it with: peon-code rebrief ${NAMES[$i]}" >&2 ;;
+          2) echo "peon-code: no Enter sent to ${NAMES[$i]} ${PANE_IDS[$i]}: the brief is in its box for you to submit" >&2 ;;
+        esac
+      else
+        echo "peon-code: ${NAMES[$i]} is still on a dialog or starting up. Answer it, then run: peon-code rebrief ${NAMES[$i]}" >&2
+      fi
+    fi
+  done
+}
+
+if [ -t 0 ]; then
+  # The session goes on screen first and the agents start while it is up, so
+  # a pane opening on a dialog is in front of you to answer. Launch notes go
+  # to the status line, and a pane whose agent never started stays up. The
+  # redirections keep the terminal to the tmux client alone.
+  {
+    launch_agents
+    [ ${#FAILED_AGENTS[@]} -eq 0 ] ||
+      echo "peon-code: agents failed to start: ${FAILED_AGENTS[*]}" >&2
+  } </dev/null 2>&1 |
+    while IFS= read -r note; do
+      # A message needs the client showing this session: with no -c, tmux picks
+      # a client of its own and can write to an unrelated session's status line.
+      # The attach is still in flight for the first notes, so wait up to 5s.
+      client=""
+      for _ in 1 2 3 4 5 6 7 8 9 10; do
+        client=$(tmux list-clients -t "=$SESSION" -F '#{client_name}' 2>/dev/null | head -1)
+        [ -n "$client" ] && break
+        sleep 0.5
+      done
+      # tmux reads the text as a format string, so # is doubled to show as text.
+      [ -n "$client" ] &&
+        tmux display-message -d 10000 -c "$client" -- "${note//#/##}"
+    done >/dev/null 2>&1 &
+else
+  launch_agents
+  if [ ${#FAILED_AGENTS[@]} -gt 0 ]; then
+    tmux kill-session -t "=$SESSION"
+    die "agents failed to start; killed session $SESSION: ${FAILED_AGENTS[*]}"
   fi
-done
-
-if [ ${#FAILED_AGENTS[@]} -gt 0 ]; then
-  tmux kill-session -t "=$SESSION"
-  die "agents failed to start; killed session $SESSION: ${FAILED_AGENTS[*]}"
 fi
-
 goto_session "$SESSION"

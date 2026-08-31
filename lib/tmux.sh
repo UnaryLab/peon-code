@@ -258,14 +258,12 @@ wait_agent_ready() {
 }
 
 # Answer a startup dialog whose default row is the wanted answer, by pressing
-# Enter once the pane shows text matching the glob pattern. Two dialogs are
-# answered this way: the folder-trust check a CLI asks on its first visit to
-# a directory (claude "Do you trust the files in this folder?", codex "Do you
-# trust the contents of this directory?"; the selected row is the yes), and
-# claude's picker for resuming a large or old session ("Resume from summary
-# (recommended)"). A pane that reaches its input line first never showed the
-# dialog, so the wait ends there. Always returns 0: a pane still drawing
-# after the cap, 15s, is left for wait_pane_settled to judge.
+# Enter once the pane shows text matching the glob pattern. One dialog is
+# answered this way: claude's picker for resuming a large or old session
+# ("Resume from summary (recommended)"). A pane that reaches its input line
+# first never showed the dialog, so the wait ends there. Always returns 0: a
+# pane still drawing after the cap, 15s, is left for wait_pane_settled to
+# judge.
 # The input-line check knows the claude and codex markers only; a CLI drawing
 # another marker waits the full cap when it shows no dialog.
 answer_dialog() {

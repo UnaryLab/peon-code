@@ -97,7 +97,7 @@ test_unique_buffers_and_launch_failure() {
     PATH="$fake_bin:$PATH" HOME="$home_dir" TMPDIR="$TEST_DIR" \
       FAKE_TMUX_LOG="$log" FAKE_TMUX_MODE=launch \
       "$ROOT/peon-code.sh" launch ./missing-agent
-  ) >"$TEST_DIR/launch.out" 2>"$TEST_DIR/launch.err" &&
+  ) >"$TEST_DIR/launch.out" 2>"$TEST_DIR/launch.err" </dev/null &&
     fail "a launch with a dead agent succeeded"
   assert_contains "$TEST_DIR/launch.err" "agents failed to start; killed session launch: ./missing-agent"
   assert_contains "$log" "set-option -t launch @peon_code 1"
@@ -157,7 +157,7 @@ test_config_loading() {
     PATH="$fake_bin:$PATH" HOME="$home_dir" TMPDIR="$TEST_DIR" \
       FAKE_TMUX_LOG="$log" FAKE_TMUX_MODE=launch \
       "$ROOT/peon-code.sh" -c "$config_dir/team.conf" config-test
-  ) >"$TEST_DIR/config.out" 2>"$TEST_DIR/config.err" &&
+  ) >"$TEST_DIR/config.out" 2>"$TEST_DIR/config.err" </dev/null &&
     fail "a config launch with a dead agent succeeded"
   assert_contains "$TEST_DIR/config.err" "agents failed to start; killed session config-test: boss"
   assert_contains "$log" "kill-session -t =config-test"
@@ -210,7 +210,7 @@ test_brief_rule9_parallel() {
     PATH="$fake_bin:$PATH" HOME="$home_dir" TMPDIR="$TEST_DIR" \
       FAKE_TMUX_LOG="$log" FAKE_TMUX_MODE=launch FAKE_TMUX_PANES=2 \
       "$ROOT/peon-code.sh" -c "$work_dir/peon-code.conf" rule9-test
-  ) >"$TEST_DIR/rule9.out" 2>"$TEST_DIR/rule9.err" || true
+  ) >"$TEST_DIR/rule9.out" 2>"$TEST_DIR/rule9.err" </dev/null || true
 
   line=$(grep -F "buffer-content:" "$log" | sed -n '1p')
   boss_brief=${line#*"\$(cat "}
@@ -248,7 +248,7 @@ test_brief_rule7_variants() {
     PATH="$fake_bin:$PATH" HOME="$home_dir" TMPDIR="$TEST_DIR" \
       FAKE_TMUX_LOG="$log" FAKE_TMUX_MODE=launch FAKE_TMUX_PANES=2 \
       "$ROOT/peon-code.sh" -c "$work_dir/peon-code.conf" rule7-test
-  ) >"$TEST_DIR/rule7.out" 2>"$TEST_DIR/rule7.err" || true
+  ) >"$TEST_DIR/rule7.out" 2>"$TEST_DIR/rule7.err" </dev/null || true
 
   line=$(grep -F "buffer-content:" "$log" | sed -n '1p')
   boss_brief=${line#*"\$(cat "}
@@ -266,12 +266,63 @@ test_brief_rule7_variants() {
   assert_not_contains "$helper_brief" "$dispatch_rule"
 }
 
+# Headless: every agent is started before the attach line is printed, so a
+# script calling the launcher gets back a session whose panes are running.
+# The launcher's own output appends to the tmux log, so one file holds both
+# streams in the order they happened.
+test_headless_launch_order() {
+  local fake_bin=$1 log="$TEST_DIR/tmux-order.log" home_dir="$TEST_DIR/home-order"
+  local work_dir="$TEST_DIR/order-work" launch_line ready_line
+  local prompt_box='work on main
+❯ [12:34:56]'
+  mkdir -p "$home_dir" "$work_dir"
+  printf 'boss claude -\n' >"$work_dir/peon-code.conf"
+
+  : >"$log"
+  # shellcheck disable=SC2094  # both streams append to the one file on purpose
+  (
+    cd "$work_dir"
+    PATH="$fake_bin:$PATH" HOME="$home_dir" TMPDIR="$TEST_DIR" \
+      FAKE_TMUX_LOG="$log" FAKE_TMUX_MODE=launch FAKE_TMUX_CMD=node \
+      FAKE_TMUX_CAPTURE="$prompt_box" \
+      "$ROOT/peon-code.sh" order-test
+  ) >>"$log" 2>"$TEST_DIR/order.err" </dev/null ||
+    fail "the headless launch failed"
+  launch_line=$(grep -n -F "buffer-content:claude" "$log" | tail -1 | cut -d: -f1)
+  ready_line=$(grep -n -F "session order-test is ready" "$log" | cut -d: -f1)
+  [ -n "$launch_line" ] || fail "the headless launch logged no agent launch"
+  [ -n "$ready_line" ] || fail "the headless launch printed no attach line"
+  [ "$launch_line" -lt "$ready_line" ] ||
+    fail "the attach line came before the agents were launched"
+  # Headless notes stay on stderr: nothing goes to the status line.
+  assert_not_contains "$log" "display-message"
+}
+
+# Attached, the session goes up first and the launch notes become status-line
+# messages, leaving a failed agent's pane in view instead of killing it.
+# A TTY cannot be faked portably, so this reads the wiring out of the source.
+test_attached_launch_notes() {
+  local block
+  block=$(sed -n '/^if \[ -t 0 \]; then$/,/^else$/p' "$ROOT/peon-code.sh")
+  [ -n "$block" ] || fail "peon-code.sh has no attached-launch branch"
+  # The launch runs in the background and its notes go to the session's client.
+  assert_contains <(printf '%s\n' "$block") "launch_agents"
+  assert_contains <(printf '%s\n' "$block") "done >/dev/null 2>&1 &"
+  # shellcheck disable=SC2016  # source text to match, not an expansion
+  assert_contains <(printf '%s\n' "$block") \
+    'tmux display-message -d 10000 -c "$client"'
+  # The user is looking at the failed pane, so the session stays up.
+  assert_not_contains <(printf '%s\n' "$block") "kill-session"
+}
+
 fake_bin=$(make_fake_commands)
 test_install_guard
 test_install_tmux_conf
 test_session_ownership "$fake_bin"
 test_unique_buffers_and_launch_failure "$fake_bin"
 test_launch_with_prompt_box "$fake_bin"
+test_headless_launch_order "$fake_bin"
+test_attached_launch_notes
 test_config_loading "$fake_bin"
 test_brief_rule7_variants "$fake_bin"
 test_brief_rule9_parallel "$fake_bin"

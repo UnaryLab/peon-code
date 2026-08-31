@@ -43,7 +43,7 @@ test_git_deny_settings() {
     PATH="$fake_bin:$PATH" HOME="$home_dir" TMPDIR="$TEST_DIR" \
       FAKE_TMUX_LOG="$log" FAKE_TMUX_MODE=launch FAKE_TMUX_PANES=6 \
       "$ROOT/peon-code.sh" -c "$work_dir/peon-code.conf" deny-test
-  ) >"$TEST_DIR/deny.out" 2>"$TEST_DIR/deny.err" || true
+  ) >"$TEST_DIR/deny.out" 2>"$TEST_DIR/deny.err" </dev/null || true
 
   boss_launch=$(grep -F 'buffer-content:claude' "$log" | sed -n '1p')
   helper_launch=$(grep -F 'buffer-content:claude' "$log" | sed -n '2p')
@@ -131,7 +131,7 @@ test_git_deny_unstarred_main() {
     PATH="$fake_bin:$PATH" HOME="$home_dir" TMPDIR="$TEST_DIR" \
       FAKE_TMUX_LOG="$log" FAKE_TMUX_MODE=launch FAKE_TMUX_PANES=3 \
       "$ROOT/peon-code.sh" -c "$work_dir/peon-code.conf" unstarred-test
-  ) >"$TEST_DIR/unstarred.out" 2>"$TEST_DIR/unstarred.err" || true
+  ) >"$TEST_DIR/unstarred.out" 2>"$TEST_DIR/unstarred.err" </dev/null || true
 
   boss_launch=$(grep -F 'buffer-content:claude' "$log" | sed -n '1p')
   helper_launch=$(grep -F 'buffer-content:claude' "$log" | sed -n '2p')
