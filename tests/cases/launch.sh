@@ -294,6 +294,9 @@ test_headless_launch_order() {
   [ -n "$ready_line" ] || fail "the headless launch printed no attach line"
   [ "$launch_line" -lt "$ready_line" ] ||
     fail "the attach line came before the agents were launched"
+  # The border label reads @peon_name, which an agent CLI cannot overwrite.
+  assert_contains "$log" "pane-border-format"
+  assert_contains "$log" "#{@peon_name}"
   # Headless notes stay on stderr: nothing goes to the status line.
   assert_not_contains "$log" "display-message"
 }

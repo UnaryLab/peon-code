@@ -320,6 +320,9 @@ create_agent_session() {
   # Session-scoped, so the terminal tab caption is set only here.
   tmux set -t "$session" set-titles on
   tmux set -t "$session" set-titles-string '#S : #{b:pane_current_path}'
+  # Agent CLIs rewrite the pane title, so the border reads the @peon_name option.
+  tmux set -w -t "$session":agents pane-border-status top
+  tmux set -w -t "$session":agents pane-border-format ' #{pane_index}: #{?#{@peon_name},#{@peon_name},#{pane_title}} '
   for ((i = 1; i < count; i++)); do
     if ! tmux split-window -t "$session":agents -c "$PWD"; then
       tmux kill-session -t "=$session"

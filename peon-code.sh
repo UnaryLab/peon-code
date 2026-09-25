@@ -196,7 +196,6 @@ create_agent_session "$SESSION" "$N" "$MAIN"
 FAILED_AGENTS=()
 for i in "${!NAMES[@]}"; do
   tmux set -pt "${PANE_IDS[$i]}" @peon_name "${NAMES[$i]}"
-  tmux select-pane -t "${PANE_IDS[$i]}" -T "${NAMES[$i]}"  # border label only
   wait_shell_ready "${PANE_IDS[$i]}"
 done
 
