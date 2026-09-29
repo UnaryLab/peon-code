@@ -34,6 +34,7 @@ peon-code <session> <cmd> [<cmd> ...]        # one pane per agent command, confi
 peon-code lab claude codex claude            # 3-agent example
 peon-code resume [<session>] [<cmd> ...]     # same, each agent reopening its last conversation
 peon-code dismiss [<session>]                # kill one session
+peon-code detach [<session>]                 # detach every client of one session
 peon-code msg <name|all> 'text' [<session>]  # send text to an agent pane
 peon-code send <pane-id> 'text'|-            # agent to agent: paste into a pane and submit it
 peon-code rebrief <name|all> [<session>]     # send an agent its launch brief again
@@ -44,7 +45,7 @@ peon-code uninstall [bin-dir]                # remove the install.sh symlink
 peon-code -h                                 # help
 ```
 
-Every `[<session>]` argument defaults to the current directory's base name, with `.` and `:` replaced by `_`, since tmux rewrites those characters in session names. peon-code marks each session it creates; attaching and every session-scoped subcommand (`dismiss`, `msg`, `rebrief`, `compact`, `clear`) refuse a same-named session peon-code did not create.
+Every `[<session>]` argument defaults to the current directory's base name, with `.` and `:` replaced by `_`, since tmux rewrites those characters in session names. peon-code marks each session it creates; attaching and every session-scoped subcommand (`dismiss`, `detach`, `msg`, `rebrief`, `compact`, `clear`) refuse a same-named session peon-code did not create.
 
 ### Supported providers
 
@@ -74,7 +75,7 @@ If any agent command does not start, its name goes to the status line and the se
 
 ### Detach and reattach
 
-Detaching is plain tmux: press `Ctrl-b d`, the default detach binding. The session stays alive and its agents keep running in the background, so use `dismiss` to actually stop it.
+To detach one client, press `Ctrl-b d`, the default tmux detach binding. `peon-code detach [<session>]` detaches every client attached to the session at once, from inside or outside it; with no such session, or one peon-code did not create, it exits 1. Either way the session stays alive and its agents keep running in the background, so use `dismiss` to actually stop it.
 
 To come back, run the launcher again from the same directory (or with the same session name): an existing session is attached instead of rebuilt. From inside another tmux session it switches the client rather than nesting. `tmux attach -t <session>` works too.
 

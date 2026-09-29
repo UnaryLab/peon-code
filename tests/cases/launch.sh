@@ -80,6 +80,32 @@ test_session_ownership() {
   fi
 }
 
+test_detach() {
+  local fake_bin=$1 log="$TEST_DIR/tmux-detach.log" home_dir="$TEST_DIR/home-detach"
+  mkdir -p "$home_dir"
+
+  PATH="$fake_bin:$PATH" HOME="$home_dir" FAKE_TMUX_LOG="$log" FAKE_TMUX_MODE=owned \
+    "$ROOT/peon-code.sh" detach owned >"$TEST_DIR/detach.out"
+  assert_contains "$log" "detach-client -s =owned"
+  assert_not_contains "$log" "kill-session"
+
+  : >"$log"
+  if PATH="$fake_bin:$PATH" HOME="$home_dir" FAKE_TMUX_LOG="$log" FAKE_TMUX_MODE=launch \
+    "$ROOT/peon-code.sh" detach gone >"$TEST_DIR/detach-gone.out" 2>"$TEST_DIR/detach-gone.err"; then
+    fail "detach exited 0 with no session"
+  fi
+  assert_contains "$TEST_DIR/detach-gone.err" "no session gone"
+  assert_not_contains "$log" "detach-client"
+
+  : >"$log"
+  if PATH="$fake_bin:$PATH" HOME="$home_dir" FAKE_TMUX_LOG="$log" FAKE_TMUX_MODE=foreign \
+    "$ROOT/peon-code.sh" detach foreign >"$TEST_DIR/detach-foreign.out" 2>"$TEST_DIR/detach-foreign.err"; then
+    fail "detach accepted a foreign session"
+  fi
+  assert_contains "$TEST_DIR/detach-foreign.err" "session foreign was not created by peon-code"
+  assert_not_contains "$log" "detach-client"
+}
+
 test_unique_buffers_and_launch_failure() {
   local fake_bin=$1 log="$TEST_DIR/tmux-buffer.log" home_dir="$TEST_DIR/home-buffer"
   mkdir -p "$home_dir" "$TEST_DIR/work"
@@ -322,6 +348,7 @@ fake_bin=$(make_fake_commands)
 test_install_guard
 test_install_tmux_conf
 test_session_ownership "$fake_bin"
+test_detach "$fake_bin"
 test_unique_buffers_and_launch_failure "$fake_bin"
 test_launch_with_prompt_box "$fake_bin"
 test_headless_launch_order "$fake_bin"

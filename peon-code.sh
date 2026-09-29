@@ -50,6 +50,9 @@ peon-code.sh resume [<session>] [<cmd> ...]     same, each agent reopening its l
                                                 grok, gemini, qwen)
 peon-code.sh dismiss [<session>]                kill one session
                                                 (session defaults to the current directory name)
+peon-code.sh detach [<session>]                 detach every client of one session, leaving
+                                                it and its agents running
+                                                (session defaults to the current directory name)
 peon-code.sh msg <name|all> 'text' [<session>]  send text to an agent pane
                                                 (session defaults to the current directory name)
 peon-code.sh send <pane-id> 'text'|-            agent to agent: paste into a pane and
@@ -126,6 +129,7 @@ RESUME=0
 case "${1:-}" in
   resume) RESUME=1; shift ;;
   dismiss) shift; cmd_dismiss "$@"; exit 0 ;;
+  detach) shift; cmd_detach "$@"; exit 0 ;;
   msg)  shift; cmd_msg "$@"; exit 0 ;;
   send) shift; cmd_send "$@"; exit 0 ;;
   rebrief) shift; cmd_rebrief "$@"; exit 0 ;;

@@ -12,6 +12,14 @@ cmd_dismiss() {
   tmux kill-session -t "=$session"
 }
 
+cmd_detach() {
+  local session
+  session=$(session_name "${1:-}")
+  tmux has-session -t "=$session" 2>/dev/null || die "no session $session"
+  is_peon_session "$session" || die "session $session was not created by peon-code"
+  tmux detach-client -s "=$session"
+}
+
 # Paste text into agent panes, one at a time, with the Enter after each paste
 # held back until that pane's box shows the message. A pane that refuses the
 # paste, never shows it, or sits in copy mode is reported and the rest still
