@@ -75,7 +75,9 @@ If any agent command does not start, its name goes to the status line and the se
 
 ### Detach and reattach
 
-`peon-code detach [<session>]` detaches every terminal attached to the session. Run it from a terminal outside the session, or from a claude pane as `! peon-code detach`. With no such session, or one peon-code did not create, it exits 1. The session stays alive and its agents keep running in the background, so use `dismiss` to actually stop it.
+From inside the session, press the tmux prefix then `d` (`Ctrl-b d` with the default prefix) to detach the current terminal.
+
+Alternatively, `peon-code detach [<session>]` detaches every terminal attached to the session. Run it from a terminal outside the session. With no such session, or one peon-code did not create, it exits 1. The session stays alive and its agents keep running in the background, so use `dismiss` to actually stop it.
 
 To come back, run `peon-code` again from the same directory, or `peon-code <session>` with the same session name: an existing session is attached instead of rebuilt.
 
