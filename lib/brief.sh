@@ -61,7 +61,7 @@ Record your claim on the board before you start (a new id, your name, the task, 
 Rules:
 1. Task intake: the user assigns work by typing into the ${NAMES[$MAIN]} pane (${PANE_IDS[$MAIN]}). That agent splits the work onto the task board and assigns it; every other agent waits for a board entry or a message instead of inventing work at launch. The agent that split the work posts the final summary to the user.
 $RULE2
-3. Held sends: send makes the box check and the paste back to back in one run, and presses Enter only when the box holds exactly your message. A blocked target (mid-dialog, mid-menu, in copy mode, or holding typed text) is retried up to 10 times over about 10 seconds; when send still fails with a busy message, do something else and retry later. Never paste into that pane by hand.
+3. Held sends: send makes the box check and the paste back to back in one run, and presses Enter only when the box shows your message (for a long message, at least its last 100 characters). A blocked target (mid-dialog, mid-menu, in copy mode, or holding typed text) is retried up to 10 times over about 10 seconds; when send still fails with a busy message, do something else and retry later. Never paste into that pane by hand.
 4. Dead-pane guard: if tmux display -pt <id> '#{pane_current_command}' shows a shell, that agent is gone. Do not send, because your text would run as shell commands. Tell the user instead.
 5. No idle deadlocks: if you are blocked, message once, work on something else, then re-check once. After that, proceed on your best judgment or tell the user.
 6. Rate limits: if you hit a usage limit, note it and the reset time on the task board so the others can reassign the work.

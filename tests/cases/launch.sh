@@ -110,9 +110,10 @@ test_unique_buffers_and_launch_failure() {
   local fake_bin=$1 log="$TEST_DIR/tmux-buffer.log" home_dir="$TEST_DIR/home-buffer"
   mkdir -p "$home_dir" "$TEST_DIR/work"
 
-  # The pane here never shows the paste, so the run ends nonzero; what this
-  # case checks is the buffer name.
+  # The pane here shows an empty box but never shows the paste, so the run
+  # ends nonzero; what this case checks is the buffer name.
   PATH="$fake_bin:$PATH" HOME="$home_dir" FAKE_TMUX_LOG="$log" FAKE_TMUX_MODE=owned \
+    FAKE_TMUX_CAPTURE=$'output line\n❯\n────' \
     "$ROOT/peon-code.sh" msg all hello owned >"$TEST_DIR/msg.out" 2>"$TEST_DIR/msg.err" || true
   grep -Eq 'load-buffer -b peon-code-[0-9]+-1 -' "$log" ||
     fail "msg did not use a unique tmux buffer"

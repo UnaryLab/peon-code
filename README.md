@@ -97,13 +97,13 @@ With no such session it says so and exits 0. A session peon-code did not create 
 
 `peon-code msg <name|all> 'text' [<session>]` sends text to the named agent's pane, or to every agent pane with `all`, prefixed `[from user]`. Teams share agent names, so reaching one session keeps `msg boss` from interrupting every team on the tmux server.
 
-Panes are taken one at a time, each getting up to about 3 seconds for its input box to show the text before `Enter` follows. A pane that refuses the paste, never shows it, or sits in copy mode is named on stderr and the rest still get theirs; the text is left in that pane's box for you to submit. An unknown agent name prints the session's panes and exits 1, and a run where any pane took no message exits nonzero.
+Panes are taken one at a time, each getting up to about 3 seconds for its input box to show the text before `Enter` follows. A pane in copy mode, on a dialog or a menu, or whose box holds typed text is skipped and takes no paste. A skipped pane, or one that refuses the paste or never shows it, is named on stderr and the rest still get theirs; text the box took but never showed is left there for you to submit. An unknown agent name prints the session's panes and exits 1, and a run where any pane took no message exits nonzero.
 
 ### Send
 
 `peon-code send <pane-id> 'text'|-` is the agent-to-agent path: it pastes a message into another agent's pane and submits it. A message of `-` is read from stdin, which keeps quotes and apostrophes out of the sending agent's shell.
 
-A busy target takes nothing: a pane holding typed text, on a dialog or a menu, or in copy mode is retried up to 10 times over about 10 seconds, then exits nonzero having pasted nothing, so that pane keeps whatever it had. A pane back at a shell, a pane peon-code did not launch, and a pane drawing no prompt marker peon-code knows exit nonzero at once. After a paste, `Enter` follows only once the box holds that message alone; a box that never matches keeps the message with no `Enter` sent, and the run exits nonzero. On a busy target, retry later rather than pasting by hand.
+A busy target takes nothing: a pane holding typed text, on a dialog or a menu, or in copy mode is retried up to 10 times over about 10 seconds, then exits nonzero having pasted nothing, so that pane keeps whatever it had. A pane back at a shell, a pane peon-code did not launch, and a pane drawing no prompt marker peon-code knows exit nonzero at once. After a paste, `Enter` follows only once the box shows that message: all of it, the CLI's paste placeholder, or, for a message too long for the box, its last 100 or more characters; a box that never matches keeps the message with no `Enter` sent, and the run exits nonzero. On a busy target, retry later rather than pasting by hand.
 
 ### Rebrief
 

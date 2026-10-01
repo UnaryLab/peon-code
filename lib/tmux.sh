@@ -42,8 +42,8 @@ paste_only() {
 }
 
 # Paste stdin into a pane, then press Enter once the pane shows the paste: its
-# input box holds the pasted text, either as itself or as the CLI's paste
-# placeholder, and it takes keys. The box is read again on each of 15 tries,
+# input box shows the pasted text, as box_holds_message decides, and it
+# takes keys. The box is read again on each of 15 tries,
 # 0.2s apart, so a box still redrawing or an autocomplete list the paste
 # opened gets time to show the text. Only a box that reads back non-empty is
 # matched, so a pane on a dialog or a menu, one drawing no prompt marker
@@ -62,13 +62,30 @@ paste_to_pane() {
   for ((i = 0; i < 15; i++)); do
     sleep 0.2
     box=$(pane_box_text "$pane") || box=""
-    [ -n "$box" ] || continue
-    [ "$box" = "$want" ] || box_is_paste_placeholder "$box" || continue
+    box_holds_message "$box" "$want" || continue
     pane_takes_keys "$pane" || continue
     tmux send-keys -t "$pane" Enter || return 2
     return 0
   done
   return 2
+}
+
+# Whether a box read after a paste shows the message: the box equals it, holds
+# its paste placeholder, or holds a tail of it. A box shows only its last
+# rows (claude about 7), so a long message keeps only its end on screen.
+# A tail counts only from 100 characters up, so a leftover hint or one stray
+# character cannot pass as the message; a long message whose visible tail is
+# shorter than that gets no Enter.
+box_holds_message() {
+  local box=$1 want=$2
+  [ -n "$box" ] || return 1
+  [ "$box" != "$want" ] || return 0
+  ! box_is_paste_placeholder "$box" || return 0
+  [ "${#box}" -ge 100 ] || return 1
+  case $want in
+    *"$box") return 0 ;;
+  esac
+  return 1
 }
 
 # Printable ASCII only, runs of blanks squeezed to one space, ends trimmed:
@@ -98,6 +115,19 @@ pane_has_menu() {
 # lands in the pane but the Enter after it never reaches the app.
 pane_takes_keys() {
   [ "$(tmux display -pt "$1" '#{pane_in_mode}' 2>/dev/null || echo 1)" = 0 ]
+}
+
+# Whether a pane can take a paste now: 0 when it takes keys and its input box
+# is empty, 1 in copy mode, 2 when it draws no prompt marker peon-code knows,
+# 3 on a dialog or a menu, 4 when its box holds typed text.
+pane_box_ready() {
+  local box rc=0
+  pane_takes_keys "$1" || return 1
+  box=$(pane_box_text "$1") || rc=$?
+  [ "$rc" -ne 2 ] || return 2
+  [ "$rc" -eq 0 ] || return 3
+  [ -z "$box" ] || return 4
+  return 0
 }
 
 # Drop the SGR and other CSI escape codes from a capture read with -e, one

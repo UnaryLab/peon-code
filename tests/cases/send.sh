@@ -245,9 +245,10 @@ case "$*" in *%2*) pane=%2 ;; esac
 case " ${FAKE_REFUSE:-} " in
   *" $pane "*) case ${1:-} in paste-buffer) exit 1 ;; esac ;;
 esac
-box='output line
-❯
-────'
+# A pane shows FAKE_TYPED in its box before any paste, as text the user typed.
+box="output line
+❯${FAKE_TYPED:+ $FAKE_TYPED}
+────"
 # A pane shows what was pasted into it once the paste has reached it, except a
 # pane named in FAKE_BLIND, whose box never shows the paste.
 case " ${FAKE_BLIND:-} " in
@@ -327,18 +328,33 @@ FAKE_TMUX
   assert_contains "$log" "send-keys -t %1 Enter"
   assert_not_contains "$log" "send-keys -t %2"
 
-  # A pane in copy mode routes an Enter through the copy-mode key table, so the
-  # message is left in its box instead.
+  # A pane in copy mode routes an Enter through the copy-mode key table, so it
+  # is skipped before any paste.
   : >"$log"
   if PATH="$bin_dir:$PATH" FAKE_TMUX_LOG="$log" FAKE_IN_MODE=1 \
     "$ROOT/peon-code.sh" msg all hello owned \
     >"$TEST_DIR/msg-copy.out" 2>"$TEST_DIR/msg-copy.err"; then
-    fail "msg reported a message its target never showed as delivered"
+    fail "msg reported a message to a pane in copy mode as delivered"
   fi
   assert_contains "$TEST_DIR/msg-copy.out" "sent to 0 pane(s) in session owned"
-  assert_contains "$TEST_DIR/msg-copy.err" \
-    "no Enter sent to impl %1: the message is in its box for you to submit"
+  assert_contains "$TEST_DIR/msg-copy.err" "no message sent to impl %1: it is in copy mode"
   assert_contains "$TEST_DIR/msg-copy.err" "no message sent in session owned"
+  assert_not_contains "$log" "paste-buffer"
+  assert_not_contains "$log" "send-keys"
+
+  # A pane whose box holds typed text is skipped before any paste, so a long
+  # message cannot scroll the typed text out of view and submit it along with
+  # the message.
+  : >"$log"
+  if PATH="$bin_dir:$PATH" FAKE_TMUX_LOG="$log" FAKE_TYPED='half a thought' \
+    FAKE_PANES='%1 node impl' \
+    "$ROOT/peon-code.sh" msg all hello owned \
+    >"$TEST_DIR/msg-typed.out" 2>"$TEST_DIR/msg-typed.err"; then
+    fail "msg reported a message to a box holding typed text as delivered"
+  fi
+  assert_contains "$TEST_DIR/msg-typed.err" \
+    "no message sent to impl %1: its input box holds typed text"
+  assert_not_contains "$log" "paste-buffer"
   assert_not_contains "$log" "send-keys"
 }
 

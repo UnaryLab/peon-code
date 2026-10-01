@@ -86,5 +86,27 @@ ${e}[2m❯ Try \"fix the bug\"${e}[0m$tail"
 ❯ ${e}]8;;https://ex.com$(printf '\007')see${e}]8;;$(printf '\007') docs$tail"
 }
 
+# A box shows the sent message when it holds all of it, its paste placeholder,
+# or a tail of it at least 100 characters long: a message wrapped past the
+# rows the box shows keeps only its end on screen.
+test_box_holds_message() {
+  local long tail
+  long="start $(printf 'word%.0s ' $(seq 1 60))end [x]*?"
+  tail=${long#start word word }
+  check() {
+    bash -c 'source "$1/lib/tmux.sh"; box_holds_message "$2" "$3"' _ "$ROOT" "$1" "$2"
+  }
+  check "hello world" "hello world" || fail "a box equal to the message did not match"
+  check "[Pasted text #2 +15 lines]" "$long" || fail "a paste placeholder did not match"
+  check "$tail" "$long" || fail "a long tail of the message did not match"
+  check "end [x]*?" "$long" && fail "a tail under 100 characters matched"
+  check "" "$long" && fail "an empty box matched"
+  check "$(printf 'x%.0s' $(seq 1 120))" "$long" && fail "an unrelated box matched"
+  # Glob characters in the box match only themselves.
+  check "$(printf '*%.0s' $(seq 1 120))" "$long" && fail "a box of * matched as a glob"
+  return 0
+}
+
 test_box_hint_text
+test_box_holds_message
 echo "box: PASS"

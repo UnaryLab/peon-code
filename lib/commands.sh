@@ -21,9 +21,10 @@ cmd_detach() {
 }
 
 # Paste text into agent panes, one at a time, with the Enter after each paste
-# held back until that pane's box shows the message. A pane that refuses the
-# paste, never shows it, or sits in copy mode is reported and the rest still
-# get theirs; the count is of panes that took an Enter. A run where any pane
+# held back until that pane's box shows the message. A pane in copy mode, on a
+# dialog or a menu, or whose box holds typed text is skipped before the paste,
+# so the typed text stays its own. A pane that is skipped, refuses the paste,
+# or never shows it is reported and the rest still get theirs; the count is of panes that took an Enter. A run where any pane
 # took no message ends nonzero.
 cmd_msg() {
   local target=${1:-} text=${2:-} session panes id name pair sent=0 unsent=0
@@ -51,6 +52,15 @@ cmd_msg() {
   for pair in "${pairs[@]}"; do
     id=${pair%% *}
     name=${pair#* }
+    pane_box_ready "$id" || {
+      case $? in
+        1) echo "peon-code: no message sent to $name $id: it is in copy mode" >&2 ;;
+        2) echo "peon-code: no message sent to $name $id: it draws no prompt marker peon-code knows; message it by hand" >&2 ;;
+        3) echo "peon-code: no message sent to $name $id: it is on a dialog or a menu" >&2 ;;
+        *) echo "peon-code: no message sent to $name $id: its input box holds typed text" >&2 ;;
+      esac
+      unsent=$((unsent + 1)); continue
+    }
     printf '%s' "[from user] $text" | paste_to_pane "$id" || case $? in
       1) echo "peon-code: no message sent to $name $id: tmux refused the paste" >&2
          unsent=$((unsent + 1)); continue ;;
@@ -170,9 +180,8 @@ slash_then_rebrief() {
 # Send one agent's message to another agent's pane. A message of - is read
 # from stdin, which keeps quotes in it off the sender's command line. One run
 # makes the box check and the paste back to back, and Enter follows only once
-# the box holds the message, either as its text or as the CLI's paste
-# placeholder; a box holding anything else keeps both the message and
-# whatever the user typed.
+# the box shows the message, as box_holds_message decides; a box holding
+# anything else keeps both the message and whatever the user typed.
 cmd_send() {
   local pane=${1:-} text=${2:-} want box i rc reason
   [ -n "$pane" ] && [ -n "$text" ] || die "usage: peon-code.sh send <pane-id> 'text'|-"
@@ -193,20 +202,15 @@ cmd_send() {
   # drawing no prompt marker never clears, so that one dies at once.
   reason=""
   for ((i = 0; i < 10; i++)); do
-    reason=""
-    if ! pane_takes_keys "$pane"; then
-      reason="pane $pane is in copy mode"
-    else
-      rc=0
-      box=$(pane_box_text "$pane") || rc=$?
-      if [ "$rc" -eq 2 ]; then
-        die "pane $pane draws no prompt marker peon-code knows; message it by hand"
-      elif [ "$rc" -ne 0 ]; then
-        reason="pane $pane is on a dialog or a menu"
-      elif [ -n "$box" ]; then
-        reason="target box busy"
-      fi
-    fi
+    rc=0
+    pane_box_ready "$pane" || rc=$?
+    case $rc in
+      0) reason="" ;;
+      1) reason="pane $pane is in copy mode" ;;
+      2) die "pane $pane draws no prompt marker peon-code knows; message it by hand" ;;
+      3) reason="pane $pane is on a dialog or a menu" ;;
+      *) reason="target box busy" ;;
+    esac
     [ -n "$reason" ] || break
     if [ "$i" -lt 9 ]; then sleep 1; fi
   done
@@ -217,7 +221,7 @@ cmd_send() {
   for ((i = 0; i < 10; i++)); do
     sleep 0.2
     box=$(pane_box_text "$pane") || box=""
-    if [ "$box" = "$want" ] || box_is_paste_placeholder "$box"; then
+    if box_holds_message "$box" "$want"; then
       pane_takes_keys "$pane" ||
         die "no Enter sent: pane $pane went into copy mode, and the message is in its box for the user to submit"
       tmux send-keys -t "$pane" Enter
