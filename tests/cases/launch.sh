@@ -345,8 +345,21 @@ test_attached_launch_notes() {
   assert_not_contains <(printf '%s\n' "$block") "kill-session"
 }
 
+# Every role the README lists as shipped resolves to a file, and every worker
+# role records completion on its row before it messages.
+test_shipped_roles() {
+  local role
+  for role in $(sed -n 's/^Shipped roles: //p' "$ROOT/README.md" | tr -d '`,.'); do
+    [ -f "$ROOT/roles/$role.md" ] || fail "README lists an unshipped role: $role"
+  done
+  for role in implementer writer; do
+    assert_contains "$ROOT/roles/$role.md" "set its board row to done, then send the completion message"
+  done
+}
+
 fake_bin=$(make_fake_commands)
 test_install_guard
+test_shipped_roles
 test_install_tmux_conf
 test_session_ownership "$fake_bin"
 test_detach "$fake_bin"

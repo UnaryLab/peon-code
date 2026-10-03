@@ -161,7 +161,7 @@ weird    claude                                       ./my-roles/chaos.md
 - Full-line `#` comments and blank lines are skipped. Inline comments are not.
 - Bad names, duplicate names, lines with fewer than three tokens, and missing role files abort before the session is created.
 
-Shipped roles: `manager`, `implementer`, `reviewer`, `explorer`.
+Shipped roles: `manager`, `implementer`, `reviewer`, `writer`.
 
 ### Task board
 
