@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 
 # Syntax-check the scripts under test before running any case file.
-bash -n "$ROOT/peon-code.sh" "$ROOT/lib/config.sh" "$ROOT/lib/tmux.sh" \
+bash -n "$ROOT/peon-code.sh" "$ROOT/lib/config.sh" "$ROOT/lib/tmux.sh" "$ROOT/lib/watch.sh" \
   "$ROOT/install.sh"
 
 # Each tests/cases/*.sh file is a standalone run of one topic group. Run them

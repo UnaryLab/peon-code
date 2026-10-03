@@ -48,6 +48,7 @@ peon-code send <pane-id> 'text'|-            # agent to agent: paste into a pane
 peon-code rebrief <name|all> [<session>]     # send an agent its launch brief again
 peon-code compact [<name|all>] [<session>]   # send /compact, then the brief again once it ends
 peon-code clear [<name|all>] [<session>]     # send /clear, then the brief again
+peon-code watch [<session>] [<tokens>]        # compact a pane whose context reaches <tokens>; started by every launch
 peon-code list                               # agent panes of every session
 peon-code uninstall [bin-dir]                # remove the install.sh symlink
 peon-code -h                                 # help
@@ -125,6 +126,10 @@ A pane whose input box holds typed text, one on a dialog or a menu, one drawing 
 
 If the pane you ran the command from is among the target panes, no pane is sent anything: a note on stderr tells you to run the command from a shell or another pane instead. Otherwise, a pane in copy mode, one drawing no prompt marker peon-code knows, one on a dialog or a menu, one whose input box holds typed text, or one that tmux refused the paste for is skipped with a note on stderr, and the rest still get the command. If the box holds anything other than the slash command after the paste, no `Enter` is sent and the command is left there for you to submit. Each pane that took the command then has up to 2 minutes to finish; one still busy after that keeps its brief unsent and is named on stderr, so run `rebrief` on it later. The run exits nonzero only when no pane took the command.
 
+### Context watcher
+
+Every launch starts `peon-code watch` in the background for its session. Once a minute it reads each claude and codex pane's context size from the usage record the CLI writes to its transcript (the input tokens of the last request, which include the system prompt, tools, and conversation) and runs `compact` on a pane that has reached the threshold, so the pane gets its brief back in the same step. The threshold is the `compact-at <tokens>` line in the team config, default 250000; `compact-at 0` turns the watcher off. A pane fires once per crossing: after a compact it waits until its reading has dropped below the threshold before it can fire again. Panes of other CLIs are named once on the status line as not watched, since they log no context size the watcher knows. The watcher exits when the session ends; `peon-code watch [<session>] [<tokens>]` starts one by hand.
+
 ### List
 
 `peon-code list` prints every agent pane on the tmux server as `SESSION AGENT PANE STATUS`, so a session can be found without remembering the directory it was launched from. It takes no arguments and covers every session, not one.
@@ -160,6 +165,7 @@ weird    claude                                       ./my-roles/chaos.md
 - Names must match `[A-Za-z0-9_-]+` and be unique. A leading `*` marks the main agent (see [Start and attach](#start-and-attach)); at most one line may carry it.
 - The role field is required. `-` means no role.
 - A bare role name reads `roles/<name>.md` next to `peon-code.sh`. A role token with a `/` is a file path, relative paths resolving against the config file's directory.
+- A line `compact-at <tokens>` sets the context watcher's threshold (see [Context watcher](#context-watcher)); it is the only non-agent line.
 - Full-line `#` comments and blank lines are skipped. Inline comments are not.
 - A role file opens with a frontmatter block: `type:` (one of `manager`, `worker`, `reviewer`), `description:` (one line, shown in the roster). The type picks the agent's duties in `roles/protocol.md`; the body below the block holds only the job-specific rules.
 - Bad names, duplicate names, lines with fewer than three tokens, missing role files, a role file without a type, and a team with roles that lacks a manager-type, a worker-type, or a reviewer-type role all abort before the session is created.

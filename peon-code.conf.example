@@ -13,6 +13,10 @@
 # their brief).
 # A claude line that already passes --settings keeps its own file: that
 # agent gets no deny file.
+# compact-at <tokens>: the context size at which the watcher compacts a
+# claude or codex pane (default 250000; 0 turns the watcher off).
+
+compact-at 250000
 
 # name   command                                                     role
 *boss    claude --model claude-fable-5 --effort high                 manager

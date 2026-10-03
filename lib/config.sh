@@ -70,7 +70,32 @@ url_encode() {
 # The search is capped at 30 days of transcripts, the age past which
 # a thread is not worth reviving.
 last_thread_id() {
-  local marker=$1 bin=$2 dir cwd="" hash found file id
+  local marker=$1 bin=$2 file id
+  file=$(last_thread_file "$marker" "$bin") || return 0
+  [ -n "$file" ] || return 0
+  case $bin in
+    copilot|grok) id=${file%/*}     # <id>/*.jsonl: the directory is the id
+             id=${id##*/} ;;
+    gemini)  # the filename holds 8 chars of the id; the body holds it all.
+             # First occurrence in file order: the top-level sessionId comes
+             # before any sessionId nested inside a message.
+             id=$(grep -o '"sessionId"[[:space:]]*:[[:space:]]*"[^"]*"' "$file" | head -n 1) || true
+             id=${id%\"}
+             id=${id##*\"} ;;
+    codex)   id=${file##*/}
+             id=${id%.jsonl}
+             id=${id: -36} ;;       # rollout-<timestamp>-<id>.jsonl
+    *)       id=${file##*/}
+             id=${id%.jsonl} ;;     # claude and qwen name the file by the id
+  esac
+  [ -n "$id" ] || return 0
+  printf '%s\n' "$id"
+}
+
+# The newest transcript file carrying the marker, or nothing. Shared by the
+# resume lookup and the context watcher.
+last_thread_file() {
+  local marker=$1 bin=$2 dir cwd="" hash found file
   case $bin in
     claude)  dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/${PWD//[^A-Za-z0-9]/-}" ;;
     codex)   dir="${CODEX_HOME:-$HOME/.codex}/sessions"
@@ -99,23 +124,7 @@ last_thread_id() {
   while IFS= read -r file; do
     grep -qF -- "$marker" "$file" || continue
     [ -z "$cwd" ] || grep -qF -- "$cwd" "$file" || continue
-    case $bin in
-      copilot|grok) id=${file%/*}     # <id>/*.jsonl: the directory is the id
-               id=${id##*/} ;;
-      gemini)  # the filename holds 8 chars of the id; the body holds it all.
-               # First occurrence in file order: the top-level sessionId comes
-               # before any sessionId nested inside a message.
-               id=$(grep -o '"sessionId"[[:space:]]*:[[:space:]]*"[^"]*"' "$file" | head -n 1) || true
-               id=${id%\"}
-               id=${id##*\"} ;;
-      codex)   id=${file##*/}
-               id=${id%.jsonl}
-               id=${id: -36} ;;       # rollout-<timestamp>-<id>.jsonl
-      *)       id=${file##*/}
-               id=${id%.jsonl} ;;     # claude and qwen name the file by the id
-    esac
-    [ -n "$id" ] || continue
-    printf '%s\n' "$id"
+    printf '%s\n' "$file"
     return 0
   done < <(printf '%s\n' "$found" | tr '\n' '\0' | xargs -0 ls -t 2>/dev/null)
 }
@@ -129,6 +138,14 @@ read_conf() {
     local tokens=()
     read -ra tokens <<<"$line"
     n=${#tokens[@]}
+    # The one setting line: "compact-at <tokens>" is the context size at
+    # which the watcher compacts a pane; 0 turns the watcher off.
+    if [ "${tokens[0]}" = compact-at ]; then
+      [ "$n" -eq 2 ] && [[ ${tokens[1]} =~ ^[0-9]+$ ]] ||
+        die "$conf line $lineno: compact-at takes one number of tokens: $line"
+      COMPACT_AT=${tokens[1]}
+      continue
+    fi
     [ "$n" -ge 3 ] || die "$conf line $lineno: need name, command, and role (got $n): $line"
     name=${tokens[0]}
     # A leading * marks the main agent: its pane gets the big left slot.
@@ -185,6 +202,7 @@ load_team() {
   CMDS=()
   ROLES=()
   MAIN_INDEX=-1
+  COMPACT_AT=250000
   if [ $# -gt 0 ]; then
     # CLI agent commands win; the name is the command string, no role.
     for arg in "$@"; do

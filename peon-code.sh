@@ -10,6 +10,7 @@
 #   ./peon-code.sh rebrief <name|all> [<session>]
 #   ./peon-code.sh compact [<name|all>] [<session>]
 #   ./peon-code.sh clear [<name|all>] [<session>]
+#   ./peon-code.sh watch [<session>] [<tokens>]
 #   ./peon-code.sh list
 #   ./peon-code.sh uninstall [bin-dir]
 #   ./peon-code.sh -h
@@ -75,6 +76,11 @@ peon-code.sh clear [<name|all>] [<session>]     send /clear to an agent pane, th
                                                 pane (typed text, dialog, menu, copy mode)
                                                 (name and session default to all and the
                                                 current directory name)
+peon-code.sh watch [<session>] [<tokens>]      compact an agent pane whose context reaches
+                                                <tokens> (default 250000), checked once a
+                                                minute from its transcript; started by
+                                                every launch, so run it by hand only
+                                                after killing that one
 peon-code.sh list                               agent panes of every session
 peon-code.sh uninstall [bin-dir]                remove the install.sh symlink
 peon-code.sh -h                                 this help
@@ -113,6 +119,8 @@ source "$SCRIPT_DIR/lib/commands.sh"
 source "$SCRIPT_DIR/lib/config.sh"
 # shellcheck source=lib/brief.sh
 source "$SCRIPT_DIR/lib/brief.sh"
+# shellcheck source=lib/watch.sh
+source "$SCRIPT_DIR/lib/watch.sh"
 
 START_ARGS=("$@")
 CONF=""
@@ -137,6 +145,7 @@ case "${1:-}" in
   rebrief) shift; cmd_rebrief "$@"; exit 0 ;;
   compact) shift; cmd_compact "$@"; exit 0 ;;
   clear) shift; cmd_clear "$@"; exit 0 ;;
+  watch) shift; cmd_watch "$@"; exit 0 ;;
   list) [ $# -eq 1 ] || die "list takes no arguments"; cmd_list; exit 0 ;;
   uninstall)
     LINK="${2:-$HOME/.local/bin}/peon-code"
@@ -220,6 +229,8 @@ create_agent_session "$SESSION" "$N" "$MAIN"
 FAILED_AGENTS=()
 for i in "${!NAMES[@]}"; do
   tmux set -pt "${PANE_IDS[$i]}" @peon_name "${NAMES[$i]}"
+  # The CLI binary, read by the watcher to pick the transcript parser.
+  tmux set -pt "${PANE_IDS[$i]}" @peon_bin "${CMDS[$i]%% *}"
   wait_shell_ready "${PANE_IDS[$i]}"
 done
 
@@ -385,5 +396,10 @@ else
     tmux kill-session -t "=$SESSION"
     die "agents failed to start; killed session $SESSION: ${FAILED_AGENTS[*]}"
   fi
+fi
+# The context watcher outlives this launch: it runs until the session is
+# gone, compacting a pane whose context reaches compact-at tokens.
+if [ "$COMPACT_AT" -gt 0 ]; then
+  nohup "$SCRIPT_DIR/peon-code.sh" watch "$SESSION" "$COMPACT_AT" >/dev/null 2>>"$BRIEF_DIR/watch.log" </dev/null &
 fi
 goto_session "$SESSION"
