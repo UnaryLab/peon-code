@@ -165,3 +165,25 @@ load_team() {
     done
   fi
 }
+
+# Offer a pull when the checkout behind SCRIPT_DIR is behind its upstream.
+# The comparison uses the refs the last fetch left, and a new fetch runs in the
+# background so a start never waits on the network; a push lands in the offer
+# one start late. A checkout with no upstream, or no git, says nothing. Returns
+# 0 only after a pull, so the caller can restart on the new code; headless
+# stdin (EOF) counts as no.
+offer_update() {
+  local behind reply
+  git -C "$SCRIPT_DIR" rev-parse --verify -q '@{u}' >/dev/null 2>&1 || return 1
+  behind=$(git -C "$SCRIPT_DIR" rev-list --count 'HEAD..@{u}' 2>/dev/null) || return 1
+  if [ "${behind:-0}" -eq 0 ]; then
+    (git -C "$SCRIPT_DIR" fetch -q >/dev/null 2>&1 &)  # for the next start
+    return 1
+  fi
+  printf 'peon-code: %s new commit(s) upstream; pull now? [y/N] ' "$behind" >&2
+  read -r reply || reply=n
+  case $reply in
+    [yY]|[yY][eE][sS]) git -C "$SCRIPT_DIR" pull -q --ff-only ;;
+    *) echo "peon-code: not updated; later: git -C $SCRIPT_DIR pull" >&2; return 1 ;;
+  esac
+}

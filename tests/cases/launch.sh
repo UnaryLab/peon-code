@@ -399,8 +399,38 @@ test_writer_gitignore() {
   [ ! -e "$work_dir/.gitignore" ] || fail "a team without a writer wrote .gitignore"
 }
 
+# The start path offers a pull when the checkout is behind upstream, from the
+# refs the last fetch left; no (or headless stdin) leaves it alone, yes pulls.
+test_update_offer() {
+  local origin="$TEST_DIR/update-origin" mine="$TEST_DIR/update-mine"
+  git init -q "$origin"
+  git -C "$origin" -c user.name=t -c user.email=t@t commit -q --allow-empty -m one
+  git clone -q "$origin" "$mine"
+  git -C "$origin" -c user.name=t -c user.email=t@t commit -q --allow-empty -m two
+
+  offer() { bash -c 'SCRIPT_DIR=$1; source "$2/lib/config.sh"; offer_update' _ "$mine" "$ROOT"; }
+  if offer </dev/null 2>"$TEST_DIR/update-before.err"; then fail "offered a pull before any fetch"; fi
+  assert_not_contains "$TEST_DIR/update-before.err" "pull now"
+  # That call's background fetch brings the new commit in; wait for it.
+  local tries=0
+  until [ "$(git -C "$mine" rev-parse '@{u}')" = "$(git -C "$origin" rev-parse HEAD)" ]; do
+    [ $((tries += 1)) -le 20 ] || fail "the background fetch never landed"
+    sleep 1
+  done
+  if offer </dev/null 2>"$TEST_DIR/update-headless.err"; then fail "headless stdin counted as yes"; fi
+  assert_contains "$TEST_DIR/update-headless.err" "peon-code: 1 new commit(s) upstream; pull now? [y/N] "
+  assert_contains "$TEST_DIR/update-headless.err" "not updated; later: git -C $mine pull"
+  if echo n | offer 2>"$TEST_DIR/update-no.err"; then fail "n counted as yes"; fi
+  [ "$(git -C "$mine" rev-parse HEAD)" != "$(git -C "$origin" rev-parse HEAD)" ] || fail "n pulled anyway"
+  echo y | offer 2>"$TEST_DIR/update-yes.err" || fail "y did not report a pull"
+  [ "$(git -C "$mine" rev-parse HEAD)" = "$(git -C "$origin" rev-parse HEAD)" ] || fail "y did not pull"
+  if offer </dev/null 2>"$TEST_DIR/update-current.err"; then fail "offered a pull when current"; fi
+  assert_not_contains "$TEST_DIR/update-current.err" "pull now"
+}
+
 fake_bin=$(make_fake_commands)
 test_install_guard
+test_update_offer
 test_shipped_roles
 test_install_tmux_conf
 test_session_ownership "$fake_bin"
