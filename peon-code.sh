@@ -114,7 +114,7 @@ source "$SCRIPT_DIR/lib/config.sh"
 # shellcheck source=lib/brief.sh
 source "$SCRIPT_DIR/lib/brief.sh"
 
-ARGS=("$@")
+START_ARGS=("$@")
 CONF=""
 CONF_GIVEN=0
 while getopts ":c:h" opt; do
@@ -159,7 +159,7 @@ N=${#NAMES[@]}
 # A pull rewrites this file under a bash that reads it lazily, so restart on
 # the new code before anything else runs.
 if offer_update; then
-  exec "$script_path" ${ARGS[@]+"${ARGS[@]}"}
+  exec "$script_path" ${START_ARGS[@]+"${START_ARGS[@]}"}
 fi
 if tmux has-session -t "=$SESSION" 2>/dev/null; then
   is_peon_session "$SESSION" || die "session $SESSION already exists and was not created by peon-code"
