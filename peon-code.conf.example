@@ -4,7 +4,9 @@
 # a role token with a / is a file path, relative to this config file.
 # Full-line # comments and blank lines are skipped. No inline comments.
 # A leading * on a name marks the main agent: its pane gets the big left
-# slot. Without a mark, the first manager is main, else the first agent.
+# slot. Without a mark, the first manager-type role is main, else the first
+# agent. A team with roles needs a manager, a worker, and a reviewer; the
+# shipped roles are manager, reviewer, implementer, and writer.
 # Only the main agent gets full git: every other agent launches with
 # commit and the destructive git commands denied (claude via a --settings
 # deny file that also binds its subagents; other CLIs via a hard line in
@@ -16,3 +18,4 @@
 *boss    claude --model claude-fable-5 --effort high                 manager
 archie   claude --model claude-opus-5 --effort medium                reviewer
 impl     codex --model gpt-5.6-luna -c model_reasoning_effort=max    implementer
+scribe   claude --model claude-opus-5 --effort medium                writer

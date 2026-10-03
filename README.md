@@ -161,11 +161,14 @@ weird    claude                                       ./my-roles/chaos.md
 - The role field is required. `-` means no role.
 - A bare role name reads `roles/<name>.md` next to `peon-code.sh`. A role token with a `/` is a file path, relative paths resolving against the config file's directory.
 - Full-line `#` comments and blank lines are skipped. Inline comments are not.
-- Bad names, duplicate names, lines with fewer than three tokens, and missing role files abort before the session is created.
+- A role file opens with a frontmatter block: `type:` (one of `manager`, `worker`, `reviewer`), `description:` (one line, shown in the roster). The type picks the agent's duties in `roles/protocol.md`; the body below the block holds only the job-specific rules.
+- Bad names, duplicate names, lines with fewer than three tokens, missing role files, a role file without a type, and a team with roles that lacks a manager-type, a worker-type, or a reviewer-type role all abort before the session is created.
 
 Shipped roles: `manager`, `implementer`, `reviewer`, `writer`.
 
-A team with a `writer` writes its summaries under `innovation_summary/` in the working directory, one markdown file per subject. Each innovation in a write-up has four labeled segments in order: Problem, Importance, Innovation, Implementation. The reviewer checks for that structure; a team without a reviewer gets the same check from the manager. When that directory is a git repository, the launcher adds `innovation_summary/` to `.gitignore` if it is not already listed.
+Types: `manager` is the manager, `implementer` and `writer` are workers, `reviewer` is the reviewer. The board and message protocol every role follows is `roles/protocol.md`; it is part of every role pane's brief.
+
+A team with a `writer` writes its summaries under `innovation_summary/` in the working directory, one markdown file per subject. Each innovation in a write-up has four labeled segments in order: Problem, Importance, Innovation, Implementation. The reviewer checks for that structure. When that directory is a git repository, the launcher adds `innovation_summary/` to `.gitignore` if it is not already listed.
 
 ### Task board
 

@@ -124,7 +124,7 @@ test_git_deny_unstarred_main() {
   local home_dir="$TEST_DIR/home-unstarred" work_dir="$TEST_DIR/unstarred-work"
   local boss_launch helper_launch front_brief boss_brief
   mkdir -p "$home_dir" "$work_dir"
-  printf 'front codex -\nboss claude manager\nhelper claude -\n' >"$work_dir/peon-code.conf"
+  printf 'front codex reviewer\nboss claude manager\nhelper claude implementer\n' >"$work_dir/peon-code.conf"
 
   (
     cd "$work_dir"

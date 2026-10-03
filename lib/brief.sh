@@ -21,10 +21,15 @@ build_brief() {
   # name is the command itself (a roleless CLI team).
   MSG_FROM="${CMDS[$i]%% *} ${NAMES[$i]}"
   [ "${NAMES[$i]}" = "${CMDS[$i]}" ] && MSG_FROM="${CMDS[$i]%% *}"
+  # A role pane gets its role body plus the team protocol once; its type
+  # names the protocol section that holds its duties.
   ROLE_SECTION=""
   if [ -n "${ROLES[$i]}" ]; then
-    ROLE_SECTION="Your role: $(role_label "${ROLES[$i]}")
-$(cat "${ROLES[$i]}")
+    ROLE_SECTION="Your role: $(role_label "${ROLES[$i]}"), type $(role_field "${ROLES[$i]}" type): $(role_field "${ROLES[$i]}" description)
+$(role_body "${ROLES[$i]}")
+
+Team protocol; your duties are the section for your type:
+$(cat "$SCRIPT_DIR/roles/protocol.md")
 "
   fi
   # Rule 2 gets a hard git prohibition for every agent that is not main.
@@ -36,10 +41,13 @@ $(cat "${ROLES[$i]}")
   if [ "$i" -ne "$MAIN" ]; then
     RULE2="$RULE2 Hard prohibition for this pane: never run git $GIT_DENY_PROSE; only the main agent commits and touches branches."
   fi
-  # Rule 7 is the worker sentence for every agent, plus the manager
-  # verification sentence for the main pane only.
+  # Rule 7: a role pane points at the protocol it already carries. A roleless
+  # pane gets the worker sentence, plus the manager verification sentence for
+  # the main pane only.
   RULE7="7. Task completion: set your board row to done before you send the completion message. A task is not done until its row says done; a message never substitutes for the row edit. Send the completion message to the manager and, when the team has a reviewer, to the reviewer as well: an agent acts only when a message reaches its pane, a board edit alone wakes nobody."
-  if [ "$i" -eq "$MAIN" ]; then
+  if [ -n "${ROLES[$i]}" ]; then
+    RULE7="7. Task completion and messaging: follow the team protocol above for your type; the board row edit always precedes the message, because an agent acts only when a message reaches its pane, a board edit alone wakes nobody."
+  elif [ "$i" -eq "$MAIN" ]; then
     RULE7="$RULE7 On receiving a completion message, verify the sender's board row is done and set it to done yourself if it is not, before acknowledging the work or dispatching new work; if the row already reads reviewed pass or reviewed fail, leave that status as the reviewer wrote it rather than setting it to done, and when it still reads reviewed fail, message the author to finish the rework. Once the work is verified, delete the row from the board, but only after the reviewer records a verdict on it if the team has one; the board lists only open work, and the deletion is the acknowledgment, so message a worker only to assign, reassign, request rework, or unblock. When you dispatch, send each agent one message listing all its row ids rather than one message per row, never delaying a ready dispatch to collect a batch."
   fi
   cat <<EOF

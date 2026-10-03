@@ -203,13 +203,13 @@ for i in "${!ROLES[@]}"; do
 done
 
 # The pane the user types into gets the main slot: the agent marked * in the
-# config, else the first manager, else pane 0. Brief rule 1 names this pane
-# as the task-intake pane.
+# config, else the first manager-type role, else pane 0. Brief rule 1 names
+# this pane as the task-intake pane.
 MAIN=$MAIN_INDEX
 if [ "$MAIN" -lt 0 ]; then
   MAIN=0
   for i in "${!ROLES[@]}"; do
-    if [ "$(role_label "${ROLES[$i]}")" = manager ]; then
+    if [ "$(role_field "${ROLES[$i]}" type)" = manager ]; then
       MAIN=$i
       break
     fi
@@ -265,7 +265,11 @@ done
 # Roster line for every pane, shared by all briefs.
 ROSTER=""
 for i in "${!NAMES[@]}"; do
-  ROSTER+="pane ${PANE_IDS[$i]}: ${NAMES[$i]} (${CMDS[$i]}) - $(role_label "${ROLES[$i]}")"$'\n'
+  ROSTER+="pane ${PANE_IDS[$i]}: ${NAMES[$i]} (${CMDS[$i]}) - $(role_label "${ROLES[$i]}")"
+  if [ -n "${ROLES[$i]}" ]; then
+    ROSTER+=" ($(role_field "${ROLES[$i]}" type)): $(role_field "${ROLES[$i]}" description)"
+  fi
+  ROSTER+=$'\n'
 done
 
 # Start each agent in its pane: paste the launch command, wait for the CLI to

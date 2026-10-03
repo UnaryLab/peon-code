@@ -19,6 +19,22 @@ role_label() {
   echo "${base%.md}"
 }
 
+# A role file opens with a frontmatter block (--- lines) holding type: and
+# description:. role_field prints one key's
+# value, empty when the file or key is missing; role_body prints the file
+# without the block. The type (manager, worker, reviewer) picks the agent's
+# duties in roles/protocol.md; the body holds only the domain rules.
+role_field() {
+  local path=$1 key=$2
+  [ -f "$path" ] || return 0
+  [ "$(sed -n 1p "$path")" = "---" ] || return 0
+  sed -n '2,/^---$/p' "$path" | sed -n "s/^$key:[[:space:]]*//p" | head -1
+}
+
+role_body() {
+  awk 'NR == 1 && $0 == "---" { skip = 1; next } skip && $0 == "---" { skip = 0; next } !skip' "$1"
+}
+
 # Percent-encode a string the way JavaScript encodeURIComponent does: keep
 # A-Za-z0-9 and - _ . ~ literal, encode every other byte as uppercase %XX.
 # grok names each per-directory session store by this encoding of the path
@@ -122,11 +138,36 @@ read_conf() {
     done
     path=$(resolve_role "$role" "$conf_dir")
     [ -z "$path" ] || [ -f "$path" ] || die "$conf line $lineno: role file not found: $path"
+    if [ -n "$path" ]; then
+      case $(role_field "$path" type) in
+        manager|worker|reviewer) ;;
+        *) die "$conf line $lineno: role file $path needs a frontmatter type: manager, worker, or reviewer" ;;
+      esac
+    fi
     NAMES+=("$name")
     CMDS+=("$cmd")
     ROLES+=("$path")
   done <"$conf"
   [ ${#NAMES[@]} -gt 0 ] || die "$conf has no agents"
+  # A team that uses roles needs a manager, a worker, and a reviewer: the
+  # protocol routes every task through the manager, every completion to the
+  # reviewer, and every row to a worker. A roleless CLI team coordinates
+  # nothing and skips the check.
+  local has_role=0 has_manager=0 has_worker=0 has_reviewer=0
+  for path in ${ROLES[@]+"${ROLES[@]}"}; do
+    [ -n "$path" ] || continue
+    has_role=1
+    case $(role_field "$path" type) in
+      manager) has_manager=1 ;;
+      worker)  has_worker=1 ;;
+      reviewer) has_reviewer=1 ;;
+    esac
+  done
+  if [ "$has_role" -eq 1 ]; then
+    [ "$has_manager" -eq 1 ] || die "$conf: a team with roles needs a manager-type role"
+    [ "$has_worker" -eq 1 ] || die "$conf: a team with roles needs a worker-type role"
+    [ "$has_reviewer" -eq 1 ] || die "$conf: a team with roles needs a reviewer-type role"
+  fi
 }
 
 load_team() {

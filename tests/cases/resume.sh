@@ -60,7 +60,7 @@ test_resume_picks_each_agent_thread() {
   mkdir -p "$grok_decoy"
   printf '{"type":"user","content":"agent gk of peon-code session resume-test, in pane"}\n' \
     >"$grok_decoy/chat_history.jsonl"
-  printf 'boss claude -\n*second claude -\nimpl codex manager\nscout codex -\ncop copilot -\ngem gemini -\nqw qwen -\nqw2 qwen -\ngk grok -\n' \
+  printf 'boss claude -\n*second claude -\nimpl codex manager\nscout codex implementer\ncop copilot reviewer\ngem gemini -\nqw qwen -\nqw2 qwen -\ngk grok -\n' \
     >"$work_dir/peon-code.conf"
 
   (
@@ -97,11 +97,11 @@ test_resume_picks_each_agent_thread() {
 
   # Without a * mark, the first manager-role agent takes the main slot.
   : >"$log"
-  printf 'boss claude -\nimpl codex manager\n' >"$work_dir/peon-code.conf"
+  printf 'boss claude implementer\nimpl codex manager\ncheck codex reviewer\n' >"$work_dir/peon-code.conf"
   (
     cd "$work_dir"
     PATH="$fake_bin:$PATH" HOME="$home_dir" TMPDIR="$TEST_DIR" \
-      FAKE_TMUX_LOG="$log" FAKE_TMUX_MODE=launch FAKE_TMUX_PANES=2 \
+      FAKE_TMUX_LOG="$log" FAKE_TMUX_MODE=launch FAKE_TMUX_PANES=3 \
       "$ROOT/peon-code.sh" mgr-fallback
   ) >"$TEST_DIR/mgr.out" 2>"$TEST_DIR/mgr.err" </dev/null || true
   assert_contains "$log" "swap-pane -d -s %2 -t %1"
