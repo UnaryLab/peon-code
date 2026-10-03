@@ -40,6 +40,7 @@ done
 SCRIPT_DIR=$(cd -- "$(dirname -- "$script_path")" && pwd)
 DEFAULT_CONF=peon-code.conf
 TASK_BOARD=.peon-code-task.md
+WRITER_DIR=innovation_summary
 
 usage() {
   cat <<'USAGE'
@@ -181,6 +182,19 @@ done
 if [ "$HAS_ROLES" -eq 1 ] && [ ! -f "$TASK_BOARD" ]; then
   printf '%s\n' "$BOARD_HEADER" >"$TASK_BOARD"
 fi
+
+# The writer's output directory stays out of version control: a team with a
+# writer gets it listed in .gitignore once, when the directory is a git repo.
+for i in "${!ROLES[@]}"; do
+  if [ "$(role_label "${ROLES[$i]}")" = writer ] &&
+    git rev-parse --is-inside-work-tree >/dev/null 2>&1 &&
+    ! { [ -f .gitignore ] && grep -qx "$WRITER_DIR/" .gitignore; }; then
+    # A .gitignore with no trailing newline would swallow the new line.
+    [ ! -s .gitignore ] || [ -z "$(tail -c1 .gitignore)" ] || printf '\n' >>.gitignore
+    printf '%s/\n' "$WRITER_DIR" >>.gitignore
+    break
+  fi
+done
 
 # The pane the user types into gets the main slot: the agent marked * in the
 # config, else the first manager, else pane 0. Brief rule 1 names this pane

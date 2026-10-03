@@ -355,6 +355,43 @@ test_shipped_roles() {
   for role in implementer writer; do
     assert_contains "$ROOT/roles/$role.md" "set its board row to done, then send the completion message"
   done
+  # The reviewer judges a write-up on its output file, since a new file
+  # shows in no diff, and verifies the citations instead of running a check.
+  assert_contains "$ROOT/roles/reviewer.md" "a new file shows in no diff, so read it directly"
+  assert_contains "$ROOT/roles/reviewer.md" "every cited path and line exists and says what the write-up claims"
+}
+
+# A team with a writer lists its output directory in .gitignore once; a
+# team without one leaves .gitignore alone.
+test_writer_gitignore() {
+  local fake_bin=$1 home_dir="$TEST_DIR/home-writer" config_dir="$TEST_DIR/writer-config"
+  local work_dir="$TEST_DIR/writer-work" log="$TEST_DIR/tmux-writer.log" n
+  mkdir -p "$home_dir" "$config_dir" "$work_dir"
+  printf 'boss ./missing-agent writer\n' >"$config_dir/team.conf"
+  git -C "$work_dir" init -q
+  printf '*.log' >"$work_dir/.gitignore"
+  for n in 1 2; do
+    (
+      cd "$work_dir"
+      PATH="$fake_bin:$PATH" HOME="$home_dir" TMPDIR="$TEST_DIR" \
+        FAKE_TMUX_LOG="$log" FAKE_TMUX_MODE=launch \
+        "$ROOT/peon-code.sh" -c "$config_dir/team.conf" "writer-test-$n"
+    ) >"$TEST_DIR/writer-$n.out" 2>"$TEST_DIR/writer-$n.err" || true
+  done
+  [ "$(cat "$work_dir/.gitignore")" = "$(printf '*.log\ninnovation_summary/')" ] ||
+    fail "a writer team did not add its output directory to .gitignore exactly once"
+
+  work_dir="$TEST_DIR/no-writer-work"
+  mkdir -p "$work_dir"
+  printf 'boss ./missing-agent implementer\n' >"$config_dir/team.conf"
+  git -C "$work_dir" init -q
+  (
+    cd "$work_dir"
+    PATH="$fake_bin:$PATH" HOME="$home_dir" TMPDIR="$TEST_DIR" \
+      FAKE_TMUX_LOG="$log" FAKE_TMUX_MODE=launch \
+      "$ROOT/peon-code.sh" -c "$config_dir/team.conf" no-writer-test
+  ) >"$TEST_DIR/no-writer.out" 2>"$TEST_DIR/no-writer.err" || true
+  [ ! -e "$work_dir/.gitignore" ] || fail "a team without a writer wrote .gitignore"
 }
 
 fake_bin=$(make_fake_commands)
@@ -368,6 +405,7 @@ test_launch_with_prompt_box "$fake_bin"
 test_headless_launch_order "$fake_bin"
 test_attached_launch_notes
 test_config_loading "$fake_bin"
+test_writer_gitignore "$fake_bin"
 test_brief_rule7_variants "$fake_bin"
 test_brief_rule9_parallel "$fake_bin"
 echo "launch: PASS"
