@@ -22,6 +22,12 @@ Each pane runs one agent CLI, launched with a brief that names the pane's own id
 
 After installation, run `peon-code` from any directory. `install.sh` seeds `~/.config/peon-code/peon-code.conf` from the example if it is missing, installs [`tmux.conf`](tmux.conf) to `~/.tmux.conf` (asking before overwriting an existing one), and prints a note when the bin directory is not on your `PATH`.
 
+`~/.local/bin` is not on the default `PATH` on macOS. If the note appears, add this line to your shell profile (`~/.zshrc` or `~/.bashrc`) and open a new shell:
+
+```sh
+export PATH="$HOME/.local/bin:$PATH"
+```
+
 To uninstall, run `peon-code uninstall [bin-dir]`, which removes the symlink `<bin-dir>/peon-code`, with `bin-dir` defaulting to `~/.local/bin`. The repository itself is left in place. A path that exists but does not point at this `peon-code.sh` is left alone and exits 1. Nothing there at all is reported and exits 0.
 
 ## Quick start
