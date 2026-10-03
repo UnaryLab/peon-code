@@ -77,7 +77,7 @@ peon-code.sh clear [<name|all>] [<session>]     send /clear to an agent pane, th
                                                 (name and session default to all and the
                                                 current directory name)
 peon-code.sh watch [<session>] [<tokens>]      compact an agent pane whose context reaches
-                                                <tokens> (default 250000), checked once a
+                                                <tokens> (default 270000), checked once a
                                                 minute from its transcript; started by
                                                 every launch, so run it by hand only
                                                 after killing that one
