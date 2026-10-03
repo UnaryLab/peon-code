@@ -165,7 +165,7 @@ weird    claude                                       ./my-roles/chaos.md
 
 Shipped roles: `manager`, `implementer`, `reviewer`, `writer`.
 
-A team with a `writer` writes its summaries under `innovation_summary/` in the working directory. When that directory is a git repository, the launcher adds `innovation_summary/` to `.gitignore` if it is not already listed.
+A team with a `writer` writes its summaries under `innovation_summary/` in the working directory, one markdown file per subject. Each innovation in a write-up has four labeled segments in order: Problem, Importance, Innovation, Implementation. The reviewer checks for that structure. When that directory is a git repository, the launcher adds `innovation_summary/` to `.gitignore` if it is not already listed.
 
 ### Task board
 
