@@ -168,6 +168,24 @@ PEON
   assert_contains "$TEST_DIR/send-codex.out" "sent to %2"
   assert_contains "$SEND_LOG" "send-keys -t %2 Enter"
 
+  # A wrapped row can split a path token inside the pasted message.
+  local msg wrapped_tail
+  msg='run the check cd /home/user/project && bash tests/test_peon_code.sh and report the real output of the run back to me with each step checked'
+  [ "${#msg}" -ge 120 ] || fail "wrapped-token message is shorter than 120 characters"
+  wrapped_tail=${msg#*tests/}
+  reset_send_log
+  PATH="$SEND_BIN:$PATH" FAKE_TMUX_LOG="$SEND_LOG" \
+    FAKE_BOX='output line
+›
+────' FAKE_CURSOR='2 1' \
+    FAKE_BOX_AFTER="output line
+› run the check cd /home/user/project && bash tests/
+$wrapped_tail
+────" FAKE_CURSOR_AFTER="${#wrapped_tail} 2" \
+    "$ROOT/peon-code.sh" send %2 "$msg" >"$TEST_DIR/send-wrapped-token.out"
+  assert_contains "$TEST_DIR/send-wrapped-token.out" "sent to %2"
+  assert_contains "$SEND_LOG" "send-keys -t %2 Enter"
+
   # A placeholder with trailing typed text is not the message alone.
   reset_send_log
   if PATH="$SEND_BIN:$PATH" FAKE_TMUX_LOG="$SEND_LOG" \

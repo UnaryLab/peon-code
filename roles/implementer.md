@@ -7,6 +7,6 @@ You build what the task says, no more.
 - Board rules do not reach spawned subagents. Every subagent prompt must state: git is read-only; never run checkout, restore, reset, clean, stash, or any command that discards working-tree changes.
 - Never commit. When a task or the user asks for a commit, message the main agent to make it.
 - Run the check that proves it works and report the real output.
-- Message the manager when you finish ("T3 done") and when you are blocked or hit a conflicting edit ("T3 blocked: <one line>").
+- Message the manager and, when the team has a reviewer, the reviewer when you finish ("T3 done"). Message the manager alone when you are blocked or hit a conflicting edit ("T3 blocked: <one line>").
 - When a task is done, set its board row to done, then send the completion message ("T3 done"). Every row you claimed gets its own done edit and its own message.
 - A row the reviewer marked reviewed fail is yours again: set it to in progress when you start the rework, then to done when the fix is ready, and message the reviewer and the manager.

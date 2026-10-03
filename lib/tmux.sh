@@ -76,14 +76,16 @@ paste_to_pane() {
 # A tail counts only from 100 characters up, so a leftover hint or one stray
 # character cannot pass as the message; a long message whose visible tail is
 # shorter than that gets no Enter.
+# Spaces are left out of the comparison, since a composer that wraps a long row can break inside a token, so the joined rows hold a space the message does not.
 box_holds_message() {
   local box=$1 want=$2
   [ -n "$box" ] || return 1
-  [ "$box" != "$want" ] || return 0
   ! box_is_paste_placeholder "$box" || return 0
-  [ "${#box}" -ge 100 ] || return 1
-  case $want in
-    *"$box") return 0 ;;
+  local b=${box// /} w=${want// /}
+  [ "$b" != "$w" ] || return 0
+  [ "${#b}" -ge 100 ] || return 1
+  case $w in
+    *"$b") return 0 ;;
   esac
   return 1
 }
