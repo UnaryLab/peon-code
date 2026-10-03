@@ -35,6 +35,15 @@ role_body() {
   awk 'NR == 1 && $0 == "---" { skip = 1; next } skip && $0 == "---" { skip = 0; next } !skip' "$1"
 }
 
+# The protocol file sliced for one type: every section stays except the
+# "## <Type> duties" sections of the other types, so a brief carries the
+# role types, the board rules, the message table, and its own duties.
+protocol_for() {
+  awk -v type="$1" '
+    /^## / { keep = 1; if ($0 ~ / duties$/) keep = (tolower($2) == type) }
+    keep' "$SCRIPT_DIR/roles/protocol.md"
+}
+
 # Percent-encode a string the way JavaScript encodeURIComponent does: keep
 # A-Za-z0-9 and - _ . ~ literal, encode every other byte as uppercase %XX.
 # grok names each per-directory session store by this encoding of the path

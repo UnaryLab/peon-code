@@ -37,5 +37,5 @@ Bash launcher that builds a tmux session of side-by-side AI coding agent CLIs (c
 
 - A role file opens with frontmatter: `type:` (manager, worker, or reviewer), `description:` (one line, shown in the roster). The body holds only the domain rules of that job: what to read, what to produce, what to check.
 - The config reader rejects a role file without a type and a team with roles that lacks a manager-type, a worker-type, or a reviewer-type role.
-- To change how agents coordinate (claims, done, verdicts, rework, dispatch), edit `roles/protocol.md` and the seeded board header in `lib/brief.sh`, which restates the row format and status rules so they survive a compact. Keep the two consistent.
+- To change how agents coordinate (claims, done, verdicts, rework, dispatch), edit `roles/protocol.md` and the seeded board header in `lib/brief.sh`, which restates the row format and status rules so they survive a compact. Keep the two consistent. The brief builder keeps only the `## <Type> duties` section matching the pane's type, so a duty every type shares goes in the Board or Messages section, and each duties heading keeps that exact form.
 - A check that only one type performs (the reviewer's write-up checks, for example) lives in that role file, never in the protocol.

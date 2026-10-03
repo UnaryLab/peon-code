@@ -14,23 +14,35 @@ One row per task, edited in place: edit only your own rows and never rewrite the
 # capture. Reads NAMES, CMDS, ROLES, ROSTER, MAIN, SESSION, N, SCRIPT_DIR,
 # TASK_BOARD, GIT_DENY_PROSE, and PANE_IDS from the caller's scope.
 build_brief() {
-  local i=$1 WHO MSG_FROM ROLE_SECTION RULE2 RULE7
+  local i=$1 WHO MSG_FROM ROLE_SECTION RULE2 RULE7 MSG_WHEN CLAIM_PARA RULE8 RULE10_TAIL
   WHO="${NAMES[$i]} (${CMDS[$i]})"
   [ "${NAMES[$i]}" = "${CMDS[$i]}" ] && WHO="${NAMES[$i]}"
   # Message prefix: CLI binary plus agent name; just the binary when the
   # name is the command itself (a roleless CLI team).
   MSG_FROM="${CMDS[$i]%% *} ${NAMES[$i]}"
   [ "${NAMES[$i]}" = "${CMDS[$i]}" ] && MSG_FROM="${CMDS[$i]%% *}"
-  # A role pane gets its role body plus the team protocol once; its type
-  # names the protocol section that holds its duties.
+  # A role pane gets its role body plus the team protocol once, sliced to
+  # its own duties section.
   ROLE_SECTION=""
   if [ -n "${ROLES[$i]}" ]; then
     ROLE_SECTION="Your role: $(role_label "${ROLES[$i]}"), type $(role_field "${ROLES[$i]}" type): $(role_field "${ROLES[$i]}" description)
 $(role_body "${ROLES[$i]}")
 
-Team protocol; your duties are the section for your type:
-$(cat "$SCRIPT_DIR/roles/protocol.md")
+Team protocol, with the duties section for your type:
+$(protocol_for "$(role_field "${ROLES[$i]}" type)")
 "
+  fi
+  # The board and message rules a roleless pane needs; a role pane already
+  # carries them in the protocol, so these stay empty for it.
+  MSG_WHEN=" Message another agent only when: (1) you finish a task; (2) you are blocked or detect a conflicting edit. The board row is the claim, so starting a task sends no message. After the sender prefix, an alert is one line naming the row id, like T3 done or T3 blocked: <why in a few words>; reviewer findings are the one exception, a short list sent by message. Do not message for routine progress or individual file saves."
+  CLAIM_PARA="Record your claim on the board before you start (a new id, your name, the task, the files you will touch, status in progress) and read the board first: do not touch files someone else already listed. Messages are alerts; the board is the record that lasts. Batch edits that fall at the same step boundary, like several claims at launch or the verdicts of one review pass, into one edit, but never delay a status change to collect a batch: a done row gets its edit now."
+  RULE8="8. Stale board rows: after a clear, compact, or rebrief, re-read the board and trust a row only if its status matches reality. If a row says in progress but the deliverable already exists, confirm with the owner before redoing the work."
+  RULE10_TAIL=" Tasks touching the same files still run one at a time, and every claimed row still gets its own done edit and its own completion message. A message that arrives while you are working is new work, not an interruption: at your next step boundary, re-read the board and start any new row that does not overlap your current claims, rather than waiting until your current task is done."
+  if [ -n "${ROLES[$i]}" ]; then
+    MSG_WHEN=""
+    CLAIM_PARA="The board and message rules are in the team protocol above."
+    RULE8="8. Stale board rows: re-read the board as the protocol says after a clear, compact, or rebrief."
+    RULE10_TAIL=" Tasks touching the same files still run one at a time."
   fi
   # Rule 2 gets a hard git prohibition for every agent that is not main.
   # claude panes have the same prohibition enforced by the launch-time deny
@@ -58,13 +70,13 @@ To read another agent's latest output, run: tmux capture-pane -pt <other-pane-id
 $SCRIPT_DIR/peon-code.sh send <other-pane-id> - <<'PEON'
 your message
 PEON
-The message is read from stdin, so quotes and apostrophes in it stay out of your shell. It pastes the message and presses Enter only once the target's input box holds it, and it exits non-zero without pasting when that box already holds typed text. Start every message you send with [from $MSG_FROM ${PANE_IDS[$i]}] so receivers know who sent it and can tell messages apart from scraped output. Message another agent only when: (1) you finish a task; (2) you are blocked or detect a conflicting edit. The board row is the claim, so starting a task sends no message. After the sender prefix, an alert is one line naming the row id, like T3 done or T3 blocked: <why in a few words>; reviewer findings are the one exception, a short list sent by message. Do not message for routine progress or individual file saves. Check the other panes at task start and task end only; between those, read the task board instead.
+The message is read from stdin, so quotes and apostrophes in it stay out of your shell. It pastes the message and presses Enter only once the target's input box holds it, and it exits non-zero without pasting when that box already holds typed text. Start every message you send with [from $MSG_FROM ${PANE_IDS[$i]}] so receivers know who sent it and can tell messages apart from scraped output.$MSG_WHEN Check the other panes at task start and task end only; between those, read the task board instead.
 
 The task board is $TASK_BOARD in the working directory. Its header states the row format, the id rule, and the status rules; keep that header intact, and if the file is missing create it with exactly this content:
 
 $BOARD_HEADER
 
-Record your claim on the board before you start (a new id, your name, the task, the files you will touch, status in progress) and read the board first: do not touch files someone else already listed. Messages are alerts; the board is the record that lasts. Batch edits that fall at the same step boundary, like several claims at launch or the verdicts of one review pass, into one edit, but never delay a status change to collect a batch: a done row gets its edit now.
+$CLAIM_PARA
 
 Rules:
 1. Task intake: the user assigns work by typing into the ${NAMES[$MAIN]} pane (${PANE_IDS[$MAIN]}). That agent splits the work onto the task board and assigns it; every other agent waits for a board entry or a message instead of inventing work at launch. The agent that split the work posts the final summary to the user.
@@ -74,8 +86,8 @@ $RULE2
 5. No idle deadlocks: if you are blocked, message once, work on something else, then re-check once. After that, proceed on your best judgment or tell the user.
 6. Rate limits: if you hit a usage limit, note it and the reset time on the task board so the others can reassign the work.
 $RULE7
-8. Stale board rows: after a clear, compact, or rebrief, re-read the board and trust a row only if its status matches reality. If a row says in progress but the deliverable already exists, confirm with the owner before redoing the work.
+$RULE8
 9. Use your tools: when your CLI offers a built-in skill, command, or subagent that fits the task, prefer it over doing the work by hand.
-10. Parallel work: independent tasks run at the same time, not one after another. Claim every open task assigned to you whose files do not overlap what you or any other agent already claimed, and if your CLI can spawn subagents or background tasks, run them at the same time; if it cannot, switch between them rather than finishing one before you start the next. Any subagent you spawn gets git read-only in its prompt: never checkout, restore, reset, clean, stash, or any command that discards working-tree changes. Tasks touching the same files still run one at a time, and every claimed row still gets its own done edit and its own completion message. A message that arrives while you are working is new work, not an interruption: at your next step boundary, re-read the board and start any new row that does not overlap your current claims, rather than waiting until your current task is done.
+10. Parallel work: independent tasks run at the same time, not one after another. Claim every open task assigned to you whose files do not overlap what you or any other agent already claimed, and if your CLI can spawn subagents or background tasks, run them at the same time; if it cannot, switch between them rather than finishing one before you start the next. Any subagent you spawn gets git read-only in its prompt: never checkout, restore, reset, clean, stash, or any command that discards working-tree changes.$RULE10_TAIL
 EOF
 }

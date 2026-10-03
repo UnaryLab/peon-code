@@ -206,12 +206,14 @@ test_config_loading() {
   # recreate instruction.
   assert_contains "$brief_file" "tmux capture-pane -pt <other-pane-id> -S -100"
   assert_not_contains "$brief_file" "you start a task, to claim the files you will touch"
-  assert_contains "$brief_file" "The board row is the claim, so starting a task sends no message."
-  assert_contains "$brief_file" "an alert is one line naming the row id"
+  assert_contains "$brief_file" "The row is the claim: a worker writes its row"
+  assert_not_contains "$brief_file" "Message another agent only when"
+  assert_not_contains "$brief_file" "Record your claim on the board before you start"
+  assert_contains "$brief_file" "then one line naming the row id"
   assert_contains "$brief_file" "Its header states the row format, the id rule, and the status rules"
   assert_contains "$brief_file" "| id | who | task | files | status |"
   assert_contains "$brief_file" "a status change overwrites the cell, never appends to it"
-  assert_contains "$brief_file" "never delay a status change to collect a batch"
+  assert_contains "$brief_file" "a status change never waits to collect a batch"
   # The seeded board opens with the same rules header the brief embeds.
   assert_contains "$work_dir/.peon-code-task.md" "| id | who | task | files | status |"
   assert_contains "$work_dir/.peon-code-task.md" "a status change overwrites the cell, never appends to it"
@@ -409,7 +411,13 @@ test_role_frontmatter() {
   assert_contains "$lead_brief" "pane %3: lead (./missing-agent) - lead (manager): a custom lead"
   assert_contains "$helper_brief" "Your role: implementer, type worker: edits code to meet a task"
   assert_contains "$helper_brief" "7. Task completion and messaging: follow the team protocol above for your type"
-  [ "$(grep -c -F "## Manager duties" "$helper_brief")" = 1 ] || fail "the brief does not carry the protocol exactly once"
+  # The protocol rides once, sliced to the pane's own duties section.
+  [ "$(grep -c -F "## Worker duties" "$helper_brief")" = 1 ] || fail "the brief does not carry the protocol exactly once"
+  assert_contains "$helper_brief" "## Messages"
+  assert_not_contains "$helper_brief" "## Manager duties"
+  assert_not_contains "$helper_brief" "## Reviewer duties"
+  assert_contains "$lead_brief" "## Manager duties"
+  assert_not_contains "$lead_brief" "## Worker duties"
 
   printf -- 'No frontmatter here.\n' >"$config_dir/untyped.md"
   printf 'solo ./missing-agent ./untyped.md\n' >"$config_dir/team.conf"
