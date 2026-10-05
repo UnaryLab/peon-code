@@ -48,5 +48,6 @@ A message that arrives while you are working is new work, not an interruption: a
 - Dispatch with one message per agent listing all its row ids; a task that becomes ready later goes out at once.
 - On a done message, check that row before dispatching follow-on work: if it does not say done, set it to done yourself; if it reads reviewed pass or reviewed fail, leave it as the reviewer wrote it, and when it still reads reviewed fail, tell the author to finish the rework instead of stamping the row.
 - Two rows touching the same file are not independent: the second goes out only after the reviewer's verdict on the first; a done message alone does not open the files.
+- A row that documents or describes another row's change is not independent either, even with disjoint files: it goes out only after that row reads reviewed pass, so the write-up describes code that exists and holds.
 - Once the reviewer records reviewed pass on a row, delete it; the deletion is the acknowledgment and the board lists only open work.
 - Message a worker only to dispatch, reassign, unblock, or to point at an unfinished rework.
