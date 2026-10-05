@@ -51,7 +51,7 @@ cmd_watch() {
   local session threshold panes id name bin file tokens
   local watched="" unwatched="" disarmed="" files=""
   session=$(session_name "${1:-}")
-  threshold=${2:-270000}
+  threshold=${2:-250000}
   [[ $threshold =~ ^[0-9]+$ ]] || die "watch takes a number of tokens, got: $threshold"
   [ "$threshold" -gt 0 ] || return 0
   while tmux has-session -t "=$session" 2>/dev/null; do

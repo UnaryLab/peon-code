@@ -202,7 +202,7 @@ load_team() {
   CMDS=()
   ROLES=()
   MAIN_INDEX=-1
-  COMPACT_AT=270000
+  COMPACT_AT=250000
   if [ $# -gt 0 ]; then
     # CLI agent commands win; the name is the command string, no role.
     for arg in "$@"; do

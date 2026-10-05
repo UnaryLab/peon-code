@@ -38,7 +38,7 @@ test_context_tokens() {
 test_compact_at_directive() {
   local conf="$TEST_DIR/compact-at.conf"
   printf 'compact-at 120000\nlead ./missing-agent manager\nimpl ./missing-agent implementer\ncheck ./missing-agent reviewer\n' >"$conf"
-  COMPACT_AT=270000
+  COMPACT_AT=250000
   NAMES=(); CMDS=(); ROLES=(); MAIN_INDEX=-1
   read_conf "$conf"
   [ "$COMPACT_AT" = 120000 ] || fail "compact-at did not set the threshold"
