@@ -86,8 +86,33 @@ test_watch_launch() {
   assert_contains "$TEST_DIR/watch-bad.err" "watch takes a number of tokens"
 }
 
+# One watch tick per pane: the transcript is looked up once and then kept, so
+# the second tick reads the cached path, and the lookup itself writes no
+# error (a pane id like %0 must survive the sed that reads the cache).
+test_watch_loop() {
+  local claude="$TEST_DIR/claude.jsonl" lookups="$TEST_DIR/lookups" err="$TEST_DIR/watch-loop.err" ticks=0
+  : >"$lookups"
+  tmux() {
+    case $1 in
+      has-session) ticks=$((ticks + 1)); [ "$ticks" -le 2 ] ;;
+      show-options) echo claude ;;
+      *) return 0 ;;
+    esac
+  }
+  session_name() { echo "$1"; }
+  list_agent_panes() { printf '%%0 lead\n'; }
+  last_thread_file() { echo x >>"$lookups"; echo "$claude"; }
+  sleep() { :; }
+  cmd_watch loop-test 1000000 2>"$err" || fail "watch loop exited non-zero"
+  [ "$ticks" -eq 3 ] || fail "watch loop ran $ticks has-session checks, expected 3"
+  [ "$(wc -l <"$lookups")" -eq 1 ] || fail "transcript looked up $(wc -l <"$lookups") times, expected 1 (cache missed)"
+  [ ! -s "$err" ] || fail "watch loop wrote to stderr: $(cat "$err")"
+  unset -f tmux session_name list_agent_panes last_thread_file sleep
+}
+
 fake_bin=$(make_fake_commands)
 test_context_tokens
+test_watch_loop
 test_compact_at_directive
 test_watch_launch "$fake_bin"
 echo "watch: PASS"

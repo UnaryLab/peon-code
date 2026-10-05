@@ -70,7 +70,7 @@ cmd_watch() {
       esac
       # The transcript appears after the first turn; look it up until found,
       # then keep the path. A pane id never repeats within a session.
-      file=$(printf '%s\n' "$files" | sed -n "s|^$id |||p")
+      file=$(printf '%s\n' "$files" | sed -n "s|^$id ||p")
       if [ -z "$file" ]; then
         file=$(last_thread_file "agent $name of peon-code session $session," "$bin") || file=""
         [ -n "$file" ] || continue
