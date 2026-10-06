@@ -95,7 +95,7 @@ test_watch_loop() {
   tmux() {
     case $1 in
       has-session) ticks=$((ticks + 1)); [ "$ticks" -le 2 ] ;;
-      show-options) echo claude ;;
+      show-options) case $* in *@peon_bin*) echo claude ;; esac ;;
       *) return 0 ;;
     esac
   }
@@ -110,9 +110,42 @@ test_watch_loop() {
   unset -f tmux session_name list_agent_panes last_thread_file sleep
 }
 
+# Newest watcher wins: a second watcher on the same session takes the
+# @peon_watch_pid session option, and the first one exits on its next tick
+# instead of running beside it. Uses a real tmux session, killed by name.
+test_watch_owner() (
+  local session="peon-watch-owner-$$" a="" b="" owner i
+  trap 'tmux kill-session -t "=$session" 2>/dev/null; kill $a $b 2>/dev/null; true' EXIT
+  tmux new-session -d -s "$session" || fail "could not create tmux session $session"
+  PEON_WATCH_TICK=1 "$ROOT/peon-code.sh" watch "$session" 1000 2>/dev/null &
+  a=$!
+  for i in 1 2 3 4 5; do
+    owner=$(tmux show-options -qv -t "=$session:" @peon_watch_pid)
+    [ "$owner" = "$a" ] && break
+    sleep 1
+  done
+  [ "$owner" = "$a" ] || fail "first watcher did not register: owner '$owner', expected $a"
+  PEON_WATCH_TICK=1 "$ROOT/peon-code.sh" watch "$session" 1000 2>/dev/null &
+  b=$!
+  for i in 1 2 3 4 5; do
+    owner=$(tmux show-options -qv -t "=$session:" @peon_watch_pid)
+    [ "$owner" = "$b" ] && break
+    sleep 1
+  done
+  [ "$owner" = "$b" ] || fail "second watcher did not take over: owner '$owner', expected $b"
+  for i in 1 2 3 4 5; do
+    kill -0 "$a" 2>/dev/null || break
+    sleep 1
+  done
+  if kill -0 "$a" 2>/dev/null; then fail "stale watcher $a still runs beside $b"; fi
+  wait "$a" || fail "stale watcher exited non-zero"
+  kill -0 "$b" 2>/dev/null || fail "newest watcher $b exited"
+)
+
 fake_bin=$(make_fake_commands)
 test_context_tokens
 test_watch_loop
+test_watch_owner
 test_compact_at_directive
 test_watch_launch "$fake_bin"
 echo "watch: PASS"
