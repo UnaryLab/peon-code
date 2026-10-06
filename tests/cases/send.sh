@@ -69,7 +69,7 @@ test_send_refuses() {
   assert_send_refused "a codex pane sitting on a menu" "is on a dialog or a menu after 10 tries, giving up" \
     FAKE_BOX="$codex_menu_box" FAKE_CURSOR='1 1'
   # No marker means no box peon-code can measure, which no waiting fixes, so
-  # send dies on the first read and says to send it by hand.
+  # send dies on the first read and says it cannot message the pane.
   assert_send_refused "a pane drawing no prompt marker" "draws no prompt marker peon-code knows" \
     FAKE_BOX="$bare_box" FAKE_CURSOR='7 1'
   [ "$(send_captures)" = 1 ] || fail "send made $(send_captures) box reads, expected 1"

@@ -27,8 +27,7 @@ Every message starts with the sender prefix the brief gives you, then one line n
 | done | worker | manager and reviewer | own row already set to done | `T3 done` |
 | blocked | worker | manager only | stuck, out of quota, or a conflicting edit | `T3 blocked: <one line>` |
 | verdict | reviewer | manager | row set to reviewed pass | `T3 reviewed pass` |
-| findings | reviewer | author and manager | row set to reviewed fail | `T3 reviewed fail` plus a short list, file and line each |
-| commit | any non-main agent | main pane | a task or the user asks for a commit | the request |
+| findings | reviewer | author and manager | row set to reviewed fail | `T3 reviewed fail` plus a short list, file, line, and what is wrong each |
 
 A message that arrives while you are working is new work, not an interruption: at your next step boundary, re-read the board and act on it.
 
@@ -36,7 +35,6 @@ A message that arrives while you are working is new work, not an interruption: a
 
 - Set the row to done first, then send the done message; a message never substitutes for the row edit. Every claimed row gets its own done edit and its own message.
 - A row the reviewer set to reviewed fail is yours again: set it to in progress when you start, then to done when the fix is ready, and send the done message again.
-- Never commit; send the commit message instead.
 
 ## Reviewer duties
 

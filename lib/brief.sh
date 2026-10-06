@@ -41,8 +41,8 @@ $(protocol_for "$(role_field "${ROLES[$i]}" type)")
   if [ -n "${ROLES[$i]}" ]; then
     MSG_WHEN=""
     CLAIM_PARA="The board and message rules are in the team protocol above."
-    RULE8="8. Stale board rows: re-read the board as the protocol says after a clear, compact, or rebrief."
-    RULE10_TAIL=" Tasks touching the same files still run one at a time."
+    RULE8="8. Stale board rows: see the team protocol above."
+    RULE10_TAIL=""
   fi
   # Rule 2 gets a hard git prohibition for every agent that is not main.
   # claude panes have the same prohibition enforced by the launch-time deny
@@ -81,8 +81,8 @@ $CLAIM_PARA
 Rules:
 1. Task intake: the user assigns work by typing into the ${NAMES[$MAIN]} pane (${PANE_IDS[$MAIN]}). That agent splits the work onto the task board and assigns it; every other agent waits for a board entry or a message instead of inventing work at launch. The agent that split the work posts the final summary to the user.
 $RULE2
-3. Held sends: send makes the box check and the paste back to back in one run, and presses Enter only when the box shows your message (for a long message, at least its last 100 characters). A blocked target (mid-dialog, mid-menu, in copy mode, or holding typed text) is retried up to 10 times over about 10 seconds; when send still fails with a busy message, do something else and retry later. Never paste into that pane by hand.
-4. Dead-pane guard: if tmux display -pt <id> '#{pane_current_command}' shows a shell, that agent is gone. Do not send, because your text would run as shell commands. Tell the user instead.
+3. Held sends: when send gives up on a blocked target (in copy mode, on a dialog or a menu, or holding typed text in its box), do something else and retry later. When send says no Enter sent, the message is already in the box: do not resend; tell the user. Never paste into that pane by hand.
+4. Dead-pane guard: when send refuses a pane that is back at a shell, or a pane you read shows a shell prompt instead of an agent, that agent is gone. When send refuses a pane as missing, not an agent pane, or drawing no prompt marker it knows, check the id against the roster. In every case tell the user.
 5. No idle deadlocks: if you are blocked, message once, work on something else, then re-check once. After that, proceed on your best judgment or tell the user.
 6. Rate limits: if you hit a usage limit, note it and the reset time on the task board so the others can reassign the work.
 $RULE7

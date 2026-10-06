@@ -55,7 +55,7 @@ cmd_msg() {
     pane_box_ready "$id" || {
       case $? in
         1) echo "peon-code: no message sent to $name $id: it is in copy mode" >&2 ;;
-        2) echo "peon-code: no message sent to $name $id: it draws no prompt marker peon-code knows; message it by hand" >&2 ;;
+        2) echo "peon-code: no message sent to $name $id: it draws no prompt marker peon-code knows, so peon-code cannot message it" >&2 ;;
         3) echo "peon-code: no message sent to $name $id: it is on a dialog or a menu" >&2 ;;
         *) echo "peon-code: no message sent to $name $id: its input box holds typed text" >&2 ;;
       esac
@@ -207,7 +207,7 @@ cmd_send() {
     case $rc in
       0) reason="" ;;
       1) reason="pane $pane is in copy mode" ;;
-      2) die "pane $pane draws no prompt marker peon-code knows; message it by hand" ;;
+      2) die "pane $pane draws no prompt marker peon-code knows, so peon-code cannot message it" ;;
       3) reason="pane $pane is on a dialog or a menu" ;;
       *) reason="target box busy" ;;
     esac

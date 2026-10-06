@@ -198,7 +198,7 @@ test_config_loading() {
   # Agents send through the subcommand, which checks and pastes in one run,
   # instead of the raw send-keys recipe that left a gap between the two.
   assert_contains "$brief_file" "$ROOT/peon-code.sh send <other-pane-id> - <<'PEON'"
-  assert_contains "$brief_file" "3. Held sends: send makes the box check and the paste back to back"
+  assert_contains "$brief_file" "3. Held sends: when send gives up on a blocked target"
   # A message never substitutes for closing the board row.
   assert_contains "$brief_file" "7. Task completion and messaging: follow the team protocol above for your type"
   # The board row is the claim: no start message, alerts name the row id,
