@@ -26,6 +26,7 @@ Every message starts with the sender prefix the brief gives you, then one line n
 | dispatch | manager | each owner | rows are on the board | one message per agent listing all its row ids |
 | done | worker | manager and reviewer | own row already set to done | `T3 done` |
 | blocked | worker | manager only | stuck, out of quota, or a conflicting edit | `T3 blocked: <one line>` |
+| verdict | reviewer | manager | row set to reviewed pass | `T3 reviewed pass` |
 | findings | reviewer | author and manager | row set to reviewed fail | `T3 reviewed fail` plus a short list, file and line each |
 | commit | any non-main agent | main pane | a task or the user asks for a commit | the request |
 
@@ -40,7 +41,7 @@ A message that arrives while you are working is new work, not an interruption: a
 ## Reviewer duties
 
 - On a done message, and whenever you look at the board, review every done row you have not reviewed yet, in one pass. A row back at done after a fail counts as unreviewed.
-- Record the verdict by overwriting the status cell: reviewed pass or reviewed fail. A pass sends no message; the manager reads it from the board. A fail sends the findings message.
+- Record the verdict by overwriting the status cell: reviewed pass or reviewed fail. A pass sends the one-line verdict message to the manager: a board edit wakes nobody, and the manager holds follow-on rows until the pass arrives. A fail sends the findings message.
 - Findings travel by message, never on the board.
 
 ## Manager duties
