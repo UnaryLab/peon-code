@@ -1,25 +1,5 @@
 # shellcheck shell=bash
 
-cmd_dismiss() {
-  local session
-  session=$(session_name "${1:-}")
-  if ! tmux has-session -t "=$session" 2>/dev/null; then
-    echo "peon-code: no session $session"
-    exit 0
-  fi
-  is_peon_session "$session" || die "session $session was not created by peon-code"
-  echo "peon-code: killing session $session"
-  tmux kill-session -t "=$session"
-}
-
-cmd_detach() {
-  local session
-  session=$(session_name "${1:-}")
-  tmux has-session -t "=$session" 2>/dev/null || die "no session $session"
-  is_peon_session "$session" || die "session $session was not created by peon-code"
-  tmux detach-client -s "=$session"
-}
-
 # Paste text into agent panes, one at a time, with the Enter after each paste
 # held back until that pane's box shows the message. A pane in copy mode, on a
 # dialog or a menu, or whose box holds typed text is skipped before the paste,
@@ -65,6 +45,8 @@ cmd_msg() {
       1) echo "peon-code: no message sent to $name $id: tmux refused the paste" >&2
          unsent=$((unsent + 1)); continue ;;
       2) echo "peon-code: no Enter sent to $name $id: the message is in its box for you to submit" >&2
+         unsent=$((unsent + 1)); continue ;;
+      3|75) echo "peon-code: no message sent to $name $id: input or another delivery is busy" >&2
          unsent=$((unsent + 1)); continue ;;
       *) echo "peon-code: no message sent to $name $id: unexpected status from the paste" >&2
          unsent=$((unsent + 1)); continue ;;
@@ -123,32 +105,8 @@ slash_then_rebrief() {
   for pair in "${pairs[@]}"; do
     id=${pair%% *}
     name=${pair#* }
-    if ! pane_takes_keys "$id"; then
-      echo "peon-code: skipped $id: it is in copy mode" >&2
-      continue
-    fi
-    box=$(pane_box_text "$id") || case $? in
-      2) echo "peon-code: skipped $id: it draws no prompt marker peon-code knows" >&2; continue ;;
-      *) echo "peon-code: skipped $id: it is on a dialog or a menu" >&2; continue ;;
-    esac
-    if [ -n "$box" ]; then
-      echo "peon-code: skipped $id: its input box holds typed text" >&2
-      continue
-    fi
-    if ! printf '%s' "$slash" | paste_only "$id"; then
-      echo "peon-code: skipped $id: tmux refused the paste" >&2
-      continue
-    fi
     submitted=0
-    for ((i = 0; i < 10; i++)); do
-      sleep 0.2
-      box=$(pane_box_text "$id") || box=""
-      [ "$box" = "$slash" ] || continue
-      pane_takes_keys "$id" || break
-      tmux send-keys -t "$id" Enter
-      submitted=1
-      break
-    done
+    if with_pane_delivery "$id" slash_locked "$id" "$slash"; then submitted=1; fi
     if [ "$submitted" -eq 1 ]; then
       sent=$((sent + 1))
       done_panes+=("$pair")
@@ -183,8 +141,13 @@ slash_then_rebrief() {
 # the box shows the message, as box_holds_message decides; a box holding
 # anything else keeps both the message and whatever the user typed.
 cmd_send() {
+  with_pane_delivery "${1:-}" send_locked "$@"
+}
+
+send_locked() {
   local pane=${1:-} text=${2:-} want box i rc reason
   [ -n "$pane" ] && [ -n "$text" ] || die "usage: peon-code.sh send <pane-id> 'text'|-"
+  pane_identity_matches "$pane" || die "no message sent: agent changed"
   if [ "$text" = - ]; then
     text=$(cat)
     [ -n "$text" ] || die "no message on stdin"
@@ -224,7 +187,8 @@ cmd_send() {
     if box_holds_message "$box" "$want"; then
       pane_takes_keys "$pane" ||
         die "no Enter sent: pane $pane went into copy mode, and the message is in its box for the user to submit"
-      tmux send-keys -t "$pane" Enter
+      pane_identity_matches "$pane" || die "no Enter sent: agent changed"
+      tmux send-keys -t "$pane" Enter || die "no Enter sent: tmux refused submission to $pane"
       echo "peon-code: sent to $pane"
       return 0
     fi
@@ -240,6 +204,10 @@ cmd_send() {
 # keeps what the user typed and no Enter answers the dialog. A brief the box
 # never showed, so no Enter followed it, returns 4.
 rebrief_pane() {
+  with_pane_delivery "$1" rebrief_locked "$@"
+}
+
+rebrief_locked() {
   local id=$1 name=$2 brief box
   brief=$(tmux show-options -pqv -t "$id" @peon_brief 2>/dev/null) || brief=""
   if [ -z "$brief" ] || [ ! -f "$brief" ]; then
@@ -253,6 +221,7 @@ rebrief_pane() {
   [ -z "$box" ] || return 3
   paste_to_pane "$id" <"$brief" || case $? in
     2) return 4 ;;
+    3|75) return 3 ;;
     *) return 2 ;;
   esac
   return 0
@@ -288,78 +257,33 @@ cmd_rebrief() {
   [ "$unsent" -eq 0 ] || die "$unsent brief(s) were not delivered in session $session"
 }
 
-# Every agent pane on the server, so a session can be found without
-# remembering the directory it was launched from. A pane back at a shell
-# is reported as gone: its agent exited.
-cmd_list() {
-  local out rows="" session id cmd name
-  # Tab-separated: a session name can hold spaces.
-  out=$(tmux list-panes -a -F $'#{session_name}\t#{pane_id}\t#{pane_current_command}\t#{@peon_name}' 2>/dev/null) || out=""
-  while IFS=$'\t' read -r session id cmd name; do
-    [ -n "$name" ] || continue
-    # An agent CLI renames its process, so the name itself says little;
-    # what the user needs is whether the pane is back at a shell.
-    case $cmd in
-      sh|bash|zsh|fish|dash|ksh) cmd="gone ($cmd)" ;;
-      *) cmd=running ;;
-    esac
-    rows+=$(printf '%-16s %-10s %-6s %s' "$session" "$name" "$id" "$cmd")$'\n'
-  done <<<"$out"
-  [ -n "$rows" ] || { echo "peon-code: no agent panes"; return; }
-  printf '%-16s %-10s %-6s %s\n' SESSION AGENT PANE STATUS
-  printf '%s' "$rows" | sort
-}
-
-goto_session() {
-  local session=$1
-  # No TTY means a headless caller: build the session, print how to reach it.
-  if [ ! -t 0 ]; then
-    echo "peon-code: session $session is ready. Attach with: tmux attach -t $session"
-    exit 0
+slash_locked() {
+  local id=$1 slash=$2 box i submitted
+  if ! pane_takes_keys "$id"; then
+    echo "peon-code: skipped $id: it is in copy mode" >&2
+    return 1
   fi
-  if [ -n "${TMUX:-}" ]; then
-    exec tmux switch-client -t "=$session"
+  box=$(pane_box_text "$id") || case $? in
+    2) echo "peon-code: skipped $id: it draws no prompt marker peon-code knows" >&2; return 1 ;;
+    *) echo "peon-code: skipped $id: it is on a dialog or a menu" >&2; return 1 ;;
+  esac
+  if [ -n "$box" ]; then
+    echo "peon-code: skipped $id: its input box holds typed text" >&2
+    return 1
   fi
-  exec tmux attach -t "=$session"
-}
-
-create_agent_session() {
-  local session=$1 count=$2 main=$3 i pane_id
-  # First agent is the new-session window; the rest are split off it.
-  # Retile after each split so large teams do not hit "pane too small".
-  tmux new-session -d -s "$session" -n agents -c "$PWD"
-  tmux set-option -t "$session" @peon_code 1
-  # Session-scoped, so the terminal tab caption is set only here.
-  tmux set -t "$session" set-titles on
-  tmux set -t "$session" set-titles-string '#S : #{b:pane_current_path}'
-  # Agent CLIs rewrite the pane title, so the border reads the @peon_name option.
-  tmux set -w -t "$session":agents pane-border-status top
-  tmux set -w -t "$session":agents pane-border-format ' #{pane_index}: #{?#{@peon_name},#{@peon_name},#{pane_title}} '
-  for ((i = 1; i < count; i++)); do
-    if ! tmux split-window -t "$session":agents -c "$PWD"; then
-      tmux kill-session -t "=$session"
-      die "could not make pane $((i + 1)) of $count; killed session $session"
-    fi
-    tmux select-layout -t "$session":agents tiled >/dev/null || true
+  if ! printf '%s' "$slash" | paste_only "$id"; then
+    echo "peon-code: skipped $id: tmux refused the paste" >&2
+    return 1
+  fi
+  submitted=0
+  for ((i = 0; i < 10; i++)); do
+    sleep 0.2
+    box=$(pane_box_text "$id") || box=""
+    [ "$box" = "$slash" ] || continue
+    pane_takes_keys "$id" || break
+    tmux send-keys -t "$id" Enter || return 1
+    submitted=1
+    break
   done
-
-  # Stable pane IDs survive pane moves and layout changes, unlike indices.
-  PANE_IDS=()
-  while read -r pane_id; do
-    PANE_IDS+=("$pane_id")
-  done < <(tmux list-panes -t "$session":agents -F '#{pane_id}')
-
-  # A failed split leaves a half-built session; drop the one this run made.
-  if [ ${#PANE_IDS[@]} -ne "$count" ]; then
-    tmux kill-session -t "=$session"
-    die "made ${#PANE_IDS[@]} panes for $count agents; killed session $session"
-  fi
-
-  # The main agent's pane takes the whole left side, the others stack to its
-  # right. Swapped into the first position first, since main-vertical makes
-  # that pane the main one. PANE_IDS is left alone: a pane id follows its
-  # pane. A layout call tmux rejects leaves the tiled arrangement in place.
-  [ "$main" -eq 0 ] || tmux swap-pane -d -s "${PANE_IDS[$main]}" -t "${PANE_IDS[0]}"
-  tmux set-option -w -t "$session":agents main-pane-width 60% || true
-  tmux select-layout -t "$session":agents main-vertical >/dev/null || true
+  [ "$submitted" -eq 1 ]
 }

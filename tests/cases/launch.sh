@@ -4,108 +4,6 @@ CASE_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=tests/helpers.sh
 . "$CASE_DIR/../helpers.sh"
 
-test_install_guard() {
-  local home_dir="$TEST_DIR/home-install" bin_dir="$TEST_DIR/bin-install"
-  mkdir -p "$home_dir" "$bin_dir"
-  printf 'keep me\n' >"$bin_dir/peon-code"
-  if HOME="$home_dir" "$ROOT/install.sh" "$bin_dir" >"$TEST_DIR/install.out" 2>"$TEST_DIR/install.err"; then
-    fail "install replaced an existing command"
-  fi
-  [ "$(cat "$bin_dir/peon-code")" = "keep me" ] || fail "install changed an existing command"
-
-  bin_dir="$TEST_DIR/bin-dangling"
-  mkdir -p "$bin_dir"
-  ln -s "$TEST_DIR/missing-foreign-command" "$bin_dir/peon-code"
-  if HOME="$home_dir" "$ROOT/install.sh" "$bin_dir" >"$TEST_DIR/install-dangling.out" 2>"$TEST_DIR/install-dangling.err"; then
-    fail "install replaced a foreign dangling symlink"
-  fi
-  [ "$(readlink "$bin_dir/peon-code")" = "$TEST_DIR/missing-foreign-command" ] ||
-    fail "install changed a foreign dangling symlink"
-
-  bin_dir="$TEST_DIR/bin-new"
-  mkdir -p "$bin_dir"
-  HOME="$home_dir" "$ROOT/install.sh" "$bin_dir" >"$TEST_DIR/install-new.out"
-  HOME="$home_dir" "$ROOT/install.sh" "$bin_dir" >"$TEST_DIR/install-again.out"
-  [ "$(readlink "$bin_dir/peon-code")" = "$ROOT/peon-code.sh" ] ||
-    fail "install did not create the expected symlink"
-  (
-    cd "$TEST_DIR"
-    HOME="$home_dir" "$bin_dir/peon-code" -h
-  ) >"$TEST_DIR/installed-help.out"
-  assert_contains "$TEST_DIR/installed-help.out" "peon-code.sh [-c file]"
-}
-
-test_install_tmux_conf() {
-  local home_dir="$TEST_DIR/home-tmuxconf" bin_dir="$TEST_DIR/bin-tmuxconf"
-  mkdir -p "$home_dir" "$bin_dir"
-
-  # Fresh home: the config is installed.
-  HOME="$home_dir" "$ROOT/install.sh" "$bin_dir" >"$TEST_DIR/tmuxconf-new.out"
-  [ "$(cat "$home_dir/.tmux.conf")" = "$(cat "$ROOT/tmux.conf")" ] ||
-    fail "install did not write ~/.tmux.conf"
-
-  # Existing config, non-interactive: left untouched.
-  printf 'my own config\n' >"$home_dir/.tmux.conf"
-  HOME="$home_dir" "$ROOT/install.sh" "$bin_dir" >"$TEST_DIR/tmuxconf-keep.out" </dev/null
-  [ "$(cat "$home_dir/.tmux.conf")" = "my own config" ] ||
-    fail "install overwrote an existing ~/.tmux.conf"
-}
-
-test_session_ownership() {
-  local fake_bin=$1 log="$TEST_DIR/tmux-ownership.log" home_dir="$TEST_DIR/home-tmux"
-  mkdir -p "$home_dir"
-
-  if PATH="$fake_bin:$PATH" HOME="$home_dir" FAKE_TMUX_LOG="$log" FAKE_TMUX_MODE=foreign \
-    "$ROOT/peon-code.sh" dismiss foreign >"$TEST_DIR/foreign.out" 2>"$TEST_DIR/foreign.err"; then
-    fail "dismiss accepted a foreign session"
-  fi
-  assert_contains "$TEST_DIR/foreign.err" "session foreign was not created by peon-code"
-  if grep -Fq "kill-session" "$log"; then
-    fail "dismiss killed a foreign session"
-  fi
-
-  : >"$log"
-  PATH="$fake_bin:$PATH" HOME="$home_dir" FAKE_TMUX_LOG="$log" FAKE_TMUX_MODE=owned \
-    "$ROOT/peon-code.sh" dismiss owned >"$TEST_DIR/owned.out"
-  assert_contains "$log" "kill-session -t =owned"
-
-  : >"$log"
-  if PATH="$fake_bin:$PATH" HOME="$home_dir" FAKE_TMUX_LOG="$log" FAKE_TMUX_MODE=legacy \
-    "$ROOT/peon-code.sh" dismiss legacy >"$TEST_DIR/legacy.out" 2>"$TEST_DIR/legacy.err"; then
-    fail "dismiss accepted an unmarked legacy session"
-  fi
-  assert_contains "$TEST_DIR/legacy.err" "session legacy was not created by peon-code"
-  if grep -Fq "kill-session" "$log"; then
-    fail "dismiss killed an unmarked legacy session"
-  fi
-}
-
-test_detach() {
-  local fake_bin=$1 log="$TEST_DIR/tmux-detach.log" home_dir="$TEST_DIR/home-detach"
-  mkdir -p "$home_dir"
-
-  PATH="$fake_bin:$PATH" HOME="$home_dir" FAKE_TMUX_LOG="$log" FAKE_TMUX_MODE=owned \
-    "$ROOT/peon-code.sh" detach owned >"$TEST_DIR/detach.out"
-  assert_contains "$log" "detach-client -s =owned"
-  assert_not_contains "$log" "kill-session"
-
-  : >"$log"
-  if PATH="$fake_bin:$PATH" HOME="$home_dir" FAKE_TMUX_LOG="$log" FAKE_TMUX_MODE=launch \
-    "$ROOT/peon-code.sh" detach gone >"$TEST_DIR/detach-gone.out" 2>"$TEST_DIR/detach-gone.err"; then
-    fail "detach exited 0 with no session"
-  fi
-  assert_contains "$TEST_DIR/detach-gone.err" "no session gone"
-  assert_not_contains "$log" "detach-client"
-
-  : >"$log"
-  if PATH="$fake_bin:$PATH" HOME="$home_dir" FAKE_TMUX_LOG="$log" FAKE_TMUX_MODE=foreign \
-    "$ROOT/peon-code.sh" detach foreign >"$TEST_DIR/detach-foreign.out" 2>"$TEST_DIR/detach-foreign.err"; then
-    fail "detach accepted a foreign session"
-  fi
-  assert_contains "$TEST_DIR/detach-foreign.err" "session foreign was not created by peon-code"
-  assert_not_contains "$log" "detach-client"
-}
-
 test_unique_buffers_and_launch_failure() {
   local fake_bin=$1 log="$TEST_DIR/tmux-buffer.log" home_dir="$TEST_DIR/home-buffer"
   mkdir -p "$home_dir" "$TEST_DIR/work"
@@ -128,6 +26,7 @@ test_unique_buffers_and_launch_failure() {
     fail "a launch with a dead agent succeeded"
   assert_contains "$TEST_DIR/launch.err" "agents failed to start; killed session launch: ./missing-agent"
   assert_contains "$log" "set-option -t launch @peon_code 1"
+  assert_contains "$log" "set -pt %1 @peon_role_type"
   assert_contains "$log" "list-panes -t launch:agents"
   assert_contains "$log" "kill-session -t =launch"
   assert_not_contains "$log" "set-option -t =launch"
@@ -166,142 +65,10 @@ test_launch_with_prompt_box() {
   assert_contains "$TEST_DIR/prompt-box.out" "session prompt-box is ready"
   assert_contains "$log" "buffer-content:claude"
   assert_contains "$TEST_DIR/prompt-box.err" \
-    "no Enter sent to boss %1: the brief is in its box for you to submit"
+    "no brief sent: input or another delivery is busy for boss %1"
   # One Enter: the command line got it, the brief did not.
   [ "$(grep -c -Fx -- 'send-keys -t %1 Enter' "$log")" = 1 ] ||
     fail "launch pressed the wrong number of Enters into a pane with a prompt box"
-}
-
-test_config_loading() {
-  local fake_bin=$1 log="$TEST_DIR/tmux-config.log" home_dir="$TEST_DIR/home-config"
-  local config_dir="$TEST_DIR/config" work_dir="$TEST_DIR/config-work" line brief_file
-  mkdir -p "$home_dir" "$config_dir" "$work_dir"
-  printf -- '---\ntype: worker\ndescription: a custom worker\n---\nKeep changes focused.\n' >"$config_dir/custom.md"
-  printf 'lead ./missing-agent manager\ncheck ./missing-agent reviewer\nboss ./missing-agent ./custom.md\n' >"$config_dir/team.conf"
-
-  (
-    cd "$work_dir"
-    PATH="$fake_bin:$PATH" HOME="$home_dir" TMPDIR="$TEST_DIR" \
-      FAKE_TMUX_LOG="$log" FAKE_TMUX_MODE=launch FAKE_TMUX_PANES=3 \
-      "$ROOT/peon-code.sh" -c "$config_dir/team.conf" config-test
-  ) >"$TEST_DIR/config.out" 2>"$TEST_DIR/config.err" </dev/null &&
-    fail "a config launch with a dead agent succeeded"
-  assert_contains "$TEST_DIR/config.err" "agents failed to start; killed session config-test: lead check boss"
-  assert_contains "$log" "kill-session -t =config-test"
-  line=$(grep -F "buffer-content:" "$log" | tail -1)
-  brief_file=${line#*"\$(cat "}
-  brief_file=${brief_file%%')"'*}
-  [ -n "$brief_file" ] || fail "the config launch did not record a brief file"
-  assert_contains "$brief_file" "Keep changes focused."
-  # The message prefix names the sender's CLI, its agent name, and its pane.
-  assert_contains "$brief_file" "Start every message you send with [from ./missing-agent boss %"
-  # Agents send through the subcommand, which checks and pastes in one run,
-  # instead of the raw send-keys recipe that left a gap between the two.
-  assert_contains "$brief_file" "$ROOT/peon-code.sh send <other-pane-id> - <<'PEON'"
-  assert_contains "$brief_file" "3. Held sends: when send gives up on a blocked target"
-  # A message never substitutes for closing the board row.
-  assert_contains "$brief_file" "7. Task completion and messaging: follow the team protocol above for your type"
-  # The board row is the claim: no start message, alerts name the row id,
-  # scrapes stop at 100 lines, and the header rules ride inside the brief's
-  # recreate instruction.
-  assert_contains "$brief_file" "tmux capture-pane -pt <other-pane-id> -S -100"
-  assert_not_contains "$brief_file" "you start a task, to claim the files you will touch"
-  assert_contains "$brief_file" "The row is the claim: a worker writes its row"
-  assert_not_contains "$brief_file" "Message another agent only when"
-  assert_not_contains "$brief_file" "Record your claim on the board before you start"
-  assert_contains "$brief_file" "then one line naming the row id"
-  assert_contains "$brief_file" "Its header states the row format, the id rule, and the status rules"
-  assert_contains "$brief_file" "| id | who | task | files | status |"
-  assert_contains "$brief_file" "a status change overwrites the cell, never appends to it"
-  assert_contains "$brief_file" "a status change never waits to collect a batch"
-  # The seeded board opens with the same rules header the brief embeds.
-  assert_contains "$work_dir/.peon-code-task.md" "| id | who | task | files | status |"
-  assert_contains "$work_dir/.peon-code-task.md" "a status change overwrites the cell, never appends to it"
-  assert_contains "$work_dir/.peon-code-task.md" "never reused, even after the row is deleted"
-  assert_not_contains "$brief_file" "tmux send-keys -t <other-pane-id> -l"
-  # The message goes in on stdin, so nothing asks agents to mind their quoting.
-  assert_not_contains "$brief_file" "Avoid single quotes"
-}
-
-# Rule 9 tells every pane to run independent tasks at the same time.
-test_brief_rule9_parallel() {
-  local fake_bin=$1 log="$TEST_DIR/tmux-rule9.log" home_dir="$TEST_DIR/home-rule9"
-  local work_dir="$TEST_DIR/rule9-work" line boss_brief helper_brief
-  local rule9="10. Parallel work: independent tasks run at the same time, not one after another."
-  local claim_rule="Claim every open task assigned to you whose files do not overlap what you or any other agent already claimed"
-  local git_rule="Any subagent you spawn gets git read-only in its prompt: never checkout, restore, reset, clean, stash"
-  local serial_rule="Tasks touching the same files still run one at a time"
-  local signal_rule="Never signal a pid list computed from a ps or awk walk, and never send STOP, TERM, or KILL to any process you did not start"
-  local scope_rule="start it as setsid systemd-run --user --scope -q -p OOMPolicy=continue <cmd>: tmux runs each pane in a systemd scope whose default policy stops the whole pane"
-  mkdir -p "$home_dir" "$work_dir"
-  printf '*boss ./missing-agent -\nhelper ./missing-agent -\n' >"$work_dir/peon-code.conf"
-
-  (
-    cd "$work_dir"
-    PATH="$fake_bin:$PATH" HOME="$home_dir" TMPDIR="$TEST_DIR" \
-      FAKE_TMUX_LOG="$log" FAKE_TMUX_MODE=launch FAKE_TMUX_PANES=2 \
-      "$ROOT/peon-code.sh" -c "$work_dir/peon-code.conf" rule9-test
-  ) >"$TEST_DIR/rule9.out" 2>"$TEST_DIR/rule9.err" </dev/null || true
-
-  line=$(grep -F "buffer-content:" "$log" | sed -n '1p')
-  boss_brief=${line#*"\$(cat "}
-  boss_brief=${boss_brief%%')"'*}
-  line=$(grep -F "buffer-content:" "$log" | sed -n '2p')
-  helper_brief=${line#*"\$(cat "}
-  helper_brief=${helper_brief%%')"'*}
-  [ -n "$boss_brief" ] || fail "rule9 test did not record the main pane's brief file"
-  [ -n "$helper_brief" ] || fail "rule9 test did not record the other pane's brief file"
-
-  assert_contains "$boss_brief" "$rule9"
-  assert_contains "$boss_brief" "$claim_rule"
-  assert_contains "$boss_brief" "$git_rule"
-  assert_contains "$boss_brief" "$serial_rule"
-  assert_contains "$boss_brief" "$signal_rule"
-  assert_contains "$boss_brief" "$scope_rule"
-  assert_contains "$helper_brief" "$rule9"
-  assert_contains "$helper_brief" "$claim_rule"
-  assert_contains "$helper_brief" "$git_rule"
-  assert_contains "$helper_brief" "$serial_rule"
-  assert_contains "$helper_brief" "$signal_rule"
-  assert_contains "$helper_brief" "$scope_rule"
-}
-
-# Rule 7 differs by pane: the main pane's brief carries the manager
-# verification sentence too, every other pane gets the worker sentence alone.
-test_brief_rule7_variants() {
-  local fake_bin=$1 log="$TEST_DIR/tmux-rule7.log" home_dir="$TEST_DIR/home-rule7"
-  local work_dir="$TEST_DIR/rule7-work" line boss_brief helper_brief
-  local worker_rule="7. Task completion: set your board row to done before you send the completion message. A task is not done until its row says done; a message never substitutes for the row edit. Send the completion message to the manager and, when the team has a reviewer, to the reviewer as well: an agent acts only when a message reaches its pane, a board edit alone wakes nobody."
-  local reviewer_rule='Send the completion message to the manager and, when the team has a reviewer, to the reviewer as well'
-  local manager_rule="On receiving a completion message, verify the sender's board row is done and set it to done yourself if it is not, before acknowledging the work or dispatching new work; if the row already reads reviewed pass or reviewed fail, leave that status as the reviewer wrote it rather than setting it to done, and when it still reads reviewed fail, message the author to finish the rework."
-  local delete_rule="Once the work is verified, delete the row from the board, but only after the reviewer records a verdict on it if the team has one; the board lists only open work, and the deletion is the acknowledgment, so message a worker only to assign, reassign, request rework, or unblock."
-  local dispatch_rule="When you dispatch, send each agent one message listing all its row ids rather than one message per row, never delaying a ready dispatch to collect a batch."
-  mkdir -p "$home_dir" "$work_dir"
-  printf '*boss ./missing-agent -\nhelper ./missing-agent -\n' >"$work_dir/peon-code.conf"
-
-  (
-    cd "$work_dir"
-    PATH="$fake_bin:$PATH" HOME="$home_dir" TMPDIR="$TEST_DIR" \
-      FAKE_TMUX_LOG="$log" FAKE_TMUX_MODE=launch FAKE_TMUX_PANES=2 \
-      "$ROOT/peon-code.sh" -c "$work_dir/peon-code.conf" rule7-test
-  ) >"$TEST_DIR/rule7.out" 2>"$TEST_DIR/rule7.err" </dev/null || true
-
-  line=$(grep -F "buffer-content:" "$log" | sed -n '1p')
-  boss_brief=${line#*"\$(cat "}
-  boss_brief=${boss_brief%%')"'*}
-  line=$(grep -F "buffer-content:" "$log" | sed -n '2p')
-  helper_brief=${line#*"\$(cat "}
-  helper_brief=${helper_brief%%')"'*}
-  [ -n "$boss_brief" ] || fail "rule7 test did not record the main pane's brief file"
-  [ -n "$helper_brief" ] || fail "rule7 test did not record the other pane's brief file"
-
-  assert_contains "$boss_brief" "$worker_rule $manager_rule $delete_rule $dispatch_rule"
-  assert_contains "$helper_brief" "$worker_rule"
-  assert_contains "$boss_brief" "$reviewer_rule"
-  assert_contains "$helper_brief" "$reviewer_rule"
-  assert_not_contains "$helper_brief" "$manager_rule"
-  assert_not_contains "$helper_brief" "$delete_rule"
-  assert_not_contains "$helper_brief" "$dispatch_rule"
 }
 
 # Headless: every agent is started before the attach line is printed, so a
@@ -336,7 +103,7 @@ test_headless_launch_order() {
   assert_contains "$log" "pane-border-format"
   assert_contains "$log" "#{@peon_name}"
   # Headless notes stay on stderr: nothing goes to the status line.
-  assert_not_contains "$log" "display-message"
+  if grep '^display-message ' "$log" | grep -vq '^display-message -p '; then fail "headless launch posted a status message"; fi
 }
 
 # Attached, the session goes up first and the launch notes become status-line
@@ -344,8 +111,8 @@ test_headless_launch_order() {
 # A TTY cannot be faked portably, so this reads the wiring out of the source.
 test_attached_launch_notes() {
   local block
-  block=$(sed -n '/^if \[ -t 0 \]; then$/,/^else$/p' "$ROOT/peon-code.sh")
-  [ -n "$block" ] || fail "peon-code.sh has no attached-launch branch"
+  block=$(sed -n '/^if \[ -t 0 \]; then$/,/^else$/p' "$ROOT/lib/launch.sh")
+  [ -n "$block" ] || fail "lib/launch.sh has no attached-launch branch"
   # The launch runs in the background and its notes go to the session's client.
   assert_contains <(printf '%s\n' "$block") "launch_agents"
   assert_contains <(printf '%s\n' "$block") "done >/dev/null 2>&1 &"
@@ -356,198 +123,9 @@ test_attached_launch_notes() {
   assert_not_contains <(printf '%s\n' "$block") "kill-session"
 }
 
-# Every role the README lists as shipped resolves to a file, and every worker
-# role records completion on its row before it messages.
-test_shipped_roles() {
-  local role
-  for role in $(sed -n 's/^Shipped roles: //p' "$ROOT/README.md" | tr -d '`,.'); do
-    [ -f "$ROOT/roles/$role.md" ] || fail "README lists an unshipped role: $role"
-  done
-  # Every shipped role carries a type, and the protocol file, which is not a
-  # role, holds the board and message rules once: no role restates them.
-  for role in manager implementer writer reviewer; do
-    case $(sed -n '2,/^---$/p' "$ROOT/roles/$role.md" | sed -n 's/^type:[[:space:]]*//p') in
-      manager|worker|reviewer) ;;
-      *) fail "roles/$role.md has no frontmatter type" ;;
-    esac
-    assert_not_contains "$ROOT/roles/$role.md" "when the team has a reviewer"
-    assert_not_contains "$ROOT/roles/$role.md" "T3 done"
-  done
-  assert_contains "$ROOT/roles/protocol.md" "| done | worker | manager and reviewer |"
-  assert_contains "$ROOT/roles/protocol.md" "Set the row to done first, then send the done message"
-  assert_contains "$ROOT/roles/protocol.md" "Once the reviewer records reviewed pass on a row, delete it"
-  assert_contains "$ROOT/roles/protocol.md" "A row that documents or describes another row's change is not independent either"
-  # The reviewer judges a write-up on its output file, since a new file
-  # shows in no diff, and verifies the citations instead of running a check.
-  assert_contains "$ROOT/roles/reviewer.md" "a new file shows in no diff, so read it directly"
-  assert_contains "$ROOT/roles/reviewer.md" "every cited path and line exists and says what the write-up claims"
-  assert_contains "$ROOT/roles/reviewer.md" "four labeled segments in order (Problem, Importance, Innovation, Implementation)"
-  assert_contains "$ROOT/roles/writer.md" "four labeled segments in this order"
-}
-
-# A role pane's brief carries the role body without its frontmatter and the
-# protocol once, with rule 7 pointing at it; a role file without a type
-# aborts the launch; a custom role path typed manager becomes the main pane.
-test_role_frontmatter() {
-  local fake_bin=$1 home_dir="$TEST_DIR/home-frontmatter" config_dir="$TEST_DIR/frontmatter-config"
-  local work_dir="$TEST_DIR/frontmatter-work" log="$TEST_DIR/tmux-frontmatter.log"
-  local line lead_brief helper_brief
-  mkdir -p "$home_dir" "$config_dir" "$work_dir"
-  printf -- '---\ntype: manager\ndescription: a custom lead\n---\nLead body line.\n' >"$config_dir/lead.md"
-  printf 'helper ./missing-agent implementer\ncheck ./missing-agent reviewer\nlead ./missing-agent ./lead.md\n' >"$config_dir/team.conf"
-  (
-    cd "$work_dir"
-    PATH="$fake_bin:$PATH" HOME="$home_dir" TMPDIR="$TEST_DIR" \
-      FAKE_TMUX_LOG="$log" FAKE_TMUX_MODE=launch FAKE_TMUX_PANES=3 \
-      "$ROOT/peon-code.sh" -c "$config_dir/team.conf" frontmatter-test
-  ) >"$TEST_DIR/frontmatter.out" 2>"$TEST_DIR/frontmatter.err" </dev/null || true
-
-  line=$(grep -F "buffer-content:" "$log" | sed -n '1p')
-  helper_brief=${line#*"\$(cat "}
-  helper_brief=${helper_brief%%')"'*}
-  line=$(grep -F "buffer-content:" "$log" | sed -n '3p')
-  lead_brief=${line#*"\$(cat "}
-  lead_brief=${lead_brief%%')"'*}
-  [ -f "$lead_brief" ] || fail "frontmatter test did not record both briefs"
-  # The unstarred manager-type role is main: it carries no git prohibition.
-  assert_not_contains "$lead_brief" "Hard prohibition for this pane"
-  assert_contains "$helper_brief" "Hard prohibition for this pane"
-  assert_contains "$lead_brief" "Your role: lead, type manager: a custom lead"
-  assert_contains "$lead_brief" "Lead body line."
-  assert_not_contains "$lead_brief" "description: a custom lead"
-  assert_contains "$lead_brief" "pane %3: lead (./missing-agent) - lead (manager): a custom lead"
-  assert_contains "$helper_brief" "Your role: implementer, type worker: edits code to meet a task"
-  assert_contains "$helper_brief" "7. Task completion and messaging: follow the team protocol above for your type"
-  # The protocol rides once, sliced to the pane's own duties section.
-  [ "$(grep -c -F "## Worker duties" "$helper_brief")" = 1 ] || fail "the brief does not carry the protocol exactly once"
-  assert_contains "$helper_brief" "## Messages"
-  assert_not_contains "$helper_brief" "## Manager duties"
-  assert_not_contains "$helper_brief" "## Reviewer duties"
-  assert_contains "$lead_brief" "## Manager duties"
-  assert_not_contains "$lead_brief" "## Worker duties"
-
-  printf -- 'No frontmatter here.\n' >"$config_dir/untyped.md"
-  printf 'solo ./missing-agent ./untyped.md\n' >"$config_dir/team.conf"
-  if (
-    cd "$work_dir"
-    PATH="$fake_bin:$PATH" HOME="$home_dir" TMPDIR="$TEST_DIR" \
-      FAKE_TMUX_LOG="$log" FAKE_TMUX_MODE=launch FAKE_TMUX_PANES=1 \
-      "$ROOT/peon-code.sh" -c "$config_dir/team.conf" untyped-test
-  ) >"$TEST_DIR/untyped.out" 2>"$TEST_DIR/untyped.err" </dev/null; then
-    fail "a role file without a type launched"
-  fi
-  assert_contains "$TEST_DIR/untyped.err" "needs a frontmatter type: manager, worker, or reviewer"
-
-  # A manager, a worker, and a reviewer are all required once any pane has a role.
-  printf 'lead ./missing-agent manager\ncheck ./missing-agent reviewer\n' >"$config_dir/team.conf"
-  if (
-    cd "$work_dir"
-    PATH="$fake_bin:$PATH" HOME="$home_dir" TMPDIR="$TEST_DIR" \
-      FAKE_TMUX_LOG="$log" FAKE_TMUX_MODE=launch FAKE_TMUX_PANES=2 \
-      "$ROOT/peon-code.sh" -c "$config_dir/team.conf" no-worker-test
-  ) >"$TEST_DIR/no-worker.out" 2>"$TEST_DIR/no-worker.err" </dev/null; then
-    fail "a team with no worker launched"
-  fi
-  assert_contains "$TEST_DIR/no-worker.err" "needs a worker-type role"
-  printf 'impl ./missing-agent implementer\ncheck ./missing-agent reviewer\n' >"$config_dir/team.conf"
-  if (
-    cd "$work_dir"
-    PATH="$fake_bin:$PATH" HOME="$home_dir" TMPDIR="$TEST_DIR" \
-      FAKE_TMUX_LOG="$log" FAKE_TMUX_MODE=launch FAKE_TMUX_PANES=2 \
-      "$ROOT/peon-code.sh" -c "$config_dir/team.conf" no-manager-test
-  ) >"$TEST_DIR/no-manager.out" 2>"$TEST_DIR/no-manager.err" </dev/null; then
-    fail "a team with no manager launched"
-  fi
-  assert_contains "$TEST_DIR/no-manager.err" "needs a manager-type role"
-  printf 'lead ./missing-agent manager\nimpl ./missing-agent implementer\n' >"$config_dir/team.conf"
-  if (
-    cd "$work_dir"
-    PATH="$fake_bin:$PATH" HOME="$home_dir" TMPDIR="$TEST_DIR" \
-      FAKE_TMUX_LOG="$log" FAKE_TMUX_MODE=launch FAKE_TMUX_PANES=2 \
-      "$ROOT/peon-code.sh" -c "$config_dir/team.conf" no-reviewer-test
-  ) >"$TEST_DIR/no-reviewer.out" 2>"$TEST_DIR/no-reviewer.err" </dev/null; then
-    fail "a team with no reviewer launched"
-  fi
-  assert_contains "$TEST_DIR/no-reviewer.err" "needs a reviewer-type role"
-}
-
-# A team with a writer lists its output directory in .gitignore once; a
-# team without one leaves .gitignore alone.
-test_writer_gitignore() {
-  local fake_bin=$1 home_dir="$TEST_DIR/home-writer" config_dir="$TEST_DIR/writer-config"
-  local work_dir="$TEST_DIR/writer-work" log="$TEST_DIR/tmux-writer.log" n
-  mkdir -p "$home_dir" "$config_dir" "$work_dir"
-  printf 'lead ./missing-agent manager\ncheck ./missing-agent reviewer\nboss ./missing-agent writer\n' >"$config_dir/team.conf"
-  git -C "$work_dir" init -q
-  printf '*.log' >"$work_dir/.gitignore"
-  for n in 1 2; do
-    (
-      cd "$work_dir"
-      PATH="$fake_bin:$PATH" HOME="$home_dir" TMPDIR="$TEST_DIR" \
-        FAKE_TMUX_LOG="$log" FAKE_TMUX_MODE=launch FAKE_TMUX_PANES=3 \
-        "$ROOT/peon-code.sh" -c "$config_dir/team.conf" "writer-test-$n"
-    ) >"$TEST_DIR/writer-$n.out" 2>"$TEST_DIR/writer-$n.err" || true
-  done
-  [ "$(cat "$work_dir/.gitignore")" = "$(printf '*.log\ninnovation_summary/')" ] ||
-    fail "a writer team did not add its output directory to .gitignore exactly once"
-
-  work_dir="$TEST_DIR/no-writer-work"
-  mkdir -p "$work_dir"
-  printf 'lead ./missing-agent manager\ncheck ./missing-agent reviewer\nboss ./missing-agent implementer\n' >"$config_dir/team.conf"
-  git -C "$work_dir" init -q
-  (
-    cd "$work_dir"
-    PATH="$fake_bin:$PATH" HOME="$home_dir" TMPDIR="$TEST_DIR" \
-      FAKE_TMUX_LOG="$log" FAKE_TMUX_MODE=launch FAKE_TMUX_PANES=3 \
-      "$ROOT/peon-code.sh" -c "$config_dir/team.conf" no-writer-test
-  ) >"$TEST_DIR/no-writer.out" 2>"$TEST_DIR/no-writer.err" || true
-  [ ! -e "$work_dir/.gitignore" ] || fail "a team without a writer wrote .gitignore"
-}
-
-# The start path offers a pull when the checkout is behind upstream, from the
-# refs the last fetch left; no (or headless stdin) leaves it alone, yes pulls.
-test_update_offer() {
-  local origin="$TEST_DIR/update-origin" mine="$TEST_DIR/update-mine"
-  git init -q "$origin"
-  git -C "$origin" -c user.name=t -c user.email=t@t commit -q --allow-empty -m one
-  git clone -q "$origin" "$mine"
-  git -C "$origin" -c user.name=t -c user.email=t@t commit -q --allow-empty -m two
-
-  offer() { PEON_UPDATE_PAUSE=0 bash -c 'SCRIPT_DIR=$1; source "$2/lib/config.sh"; offer_update' _ "$mine" "$ROOT"; }
-  if offer </dev/null 2>"$TEST_DIR/update-before.err"; then fail "offered a pull before any fetch"; fi
-  assert_not_contains "$TEST_DIR/update-before.err" "pull now"
-  # That call's background fetch brings the new commit in; wait for it.
-  local tries=0
-  until [ "$(git -C "$mine" rev-parse '@{u}')" = "$(git -C "$origin" rev-parse HEAD)" ]; do
-    [ $((tries += 1)) -le 20 ] || fail "the background fetch never landed"
-    sleep 1
-  done
-  if offer </dev/null 2>"$TEST_DIR/update-headless.err"; then fail "headless stdin counted as yes"; fi
-  assert_contains "$TEST_DIR/update-headless.err" "peon-code: 1 new commit(s) upstream; pull now? [y/N] "
-  assert_contains "$TEST_DIR/update-headless.err" "not updated; later: git -C $mine pull"
-  if echo n | offer 2>"$TEST_DIR/update-no.err"; then fail "n counted as yes"; fi
-  [ "$(git -C "$mine" rev-parse HEAD)" != "$(git -C "$origin" rev-parse HEAD)" ] || fail "n pulled anyway"
-  echo y | offer 2>"$TEST_DIR/update-yes.err" || fail "y did not report a pull"
-  [ "$(git -C "$mine" rev-parse HEAD)" = "$(git -C "$origin" rev-parse HEAD)" ] || fail "y did not pull"
-  assert_contains "$TEST_DIR/update-yes.err" "peon-code: updated; starting"
-  if offer </dev/null 2>"$TEST_DIR/update-current.err"; then fail "offered a pull when current"; fi
-  assert_not_contains "$TEST_DIR/update-current.err" "pull now"
-}
-
 fake_bin=$(make_fake_commands)
-test_install_guard
-test_update_offer
-test_shipped_roles
-test_install_tmux_conf
-test_session_ownership "$fake_bin"
-test_detach "$fake_bin"
 test_unique_buffers_and_launch_failure "$fake_bin"
 test_launch_with_prompt_box "$fake_bin"
 test_headless_launch_order "$fake_bin"
 test_attached_launch_notes
-test_config_loading "$fake_bin"
-test_writer_gitignore "$fake_bin"
-test_role_frontmatter "$fake_bin"
-test_brief_rule7_variants "$fake_bin"
-test_brief_rule9_parallel "$fake_bin"
 echo "launch: PASS"

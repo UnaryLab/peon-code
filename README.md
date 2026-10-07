@@ -16,11 +16,11 @@ Each pane runs one agent CLI, launched with a brief that names the pane's own id
 ## Installation
 
 ```sh
-./install.sh            # symlink as peon-code into ~/.local/bin
+./install.sh            # symlink both commands into ~/.local/bin
 ./install.sh <bin-dir>  # symlink into another directory
 ```
 
-After installation, run `peon-code` from any directory. `install.sh` seeds `~/.config/peon-code/peon-code.conf` from the example if it is missing, installs [`tmux.conf`](tmux.conf) to `~/.tmux.conf` (asking before overwriting an existing one), and prints a note when the bin directory is not on your `PATH`.
+Installation adds both `peon-code` and `peon-code-web` command symlinks. Run either from any directory. `install.sh` seeds `~/.config/peon-code/peon-code.conf` from the example if it is missing, installs [`tmux.conf`](tmux.conf) to `~/.tmux.conf` (asking before overwriting an existing one), and prints a note when the bin directory is not on your `PATH`.
 
 `~/.local/bin` is not on the default `PATH` on macOS. If the note appears, add this line to your shell profile (`~/.zshrc` or `~/.bashrc`) and open a new shell:
 
@@ -30,7 +30,7 @@ export PATH="$HOME/.local/bin:$PATH"
 
 When a newer version is available, a start or resume asks `pull now? [y/N]`. Answer `y` to update: the launcher reports `updated; starting`, holds it on screen for three seconds, then starts on the new version; any other answer starts on the current one and prints the `git pull` command to run later. A new push may take one extra start to show up.
 
-To uninstall, run `peon-code uninstall [bin-dir]`, which removes the symlink `<bin-dir>/peon-code`, with `bin-dir` defaulting to `~/.local/bin`. The repository itself is left in place. A path that exists but does not point at this `peon-code.sh` is left alone and exits 1. Nothing there at all is reported and exits 0.
+To uninstall, run `peon-code uninstall [bin-dir]`, which removes both command symlinks from `<bin-dir>`, with `bin-dir` defaulting to `~/.local/bin`. The repository itself is left in place. Both links are checked before either is removed; a foreign command is left alone and exits 1. Nothing there at all is reported and exits 0.
 
 ## Quick start
 
@@ -50,7 +50,7 @@ peon-code compact [<name|all>] [<session>]   # send /compact, then the brief aga
 peon-code clear [<name|all>] [<session>]     # send /clear, then the brief again
 peon-code watch [<session>] [<tokens>]        # compact a pane whose context reaches <tokens>; started by every launch
 peon-code list                               # agent panes of every session
-peon-code uninstall [bin-dir]                # remove the install.sh symlink
+peon-code uninstall [bin-dir]                # remove both installed command symlinks
 peon-code -h                                 # help
 ```
 
@@ -81,6 +81,51 @@ The session is attached as soon as its panes exist, so the agent CLIs start whil
 With no TTY on stdin (a headless caller such as a script or an agent running the launcher), the session is still built, but instead of attaching the launcher prints the session name and the `tmux attach -t <session>` command and exits 0. In that mode the agents start before the line is printed.
 
 If any agent command does not start, its name goes to the status line and the session stays up with the failed pane in view. Headless, the launcher instead kills the new session, names the failed agents, and exits nonzero.
+
+### Browser workspace
+
+The optional `peon-code-web` command is installed alongside `peon-code`. It requires Python 3.8 or newer; the terminal launcher keeps its existing requirements.
+
+```sh
+peon-code-web                 # open all running teams in your local browser
+peon-code-web lab             # open only the existing lab session
+peon-code-web --no-open       # print the URL without opening a browser
+peon-code-web --port 9000     # choose another port if the default is in use
+peon-code-web --ssh my-server # run on your Mac; connect to an SSH host and open locally
+peon-code-web --ssh my-server lab # view one existing session
+peon-code-web --ssh my-server --dir /remote/path/my-project
+peon-code-web --ssh my-server custom --dir "/remote/path/my project"
+```
+
+The command automatically opens your default browser on macOS or Linux. Keep it running while using the UI; Ctrl-C stops the web server and leaves your agents running. If a browser cannot open automatically, use the printed URL. Start teams with `peon-code`; the browser lists them as they appear.
+
+Session tabs switch between teams and identify their project folders; the full folder path appears above the pane. New sessions record their launch directory, and older sessions use the current pane directory. The left sidebar lists manager, reviewer, then worker panes; the manager opens first. Roleless teams use their first pane as manager, second as reviewer, and the rest as workers for navigation. Changed output in an inactive pane highlights both its pane tab and session tab until you view it. The selected pane uses the full remaining width; switching panes keeps your draft and saved selection.
+
+Each agent has a scrolling output pane and a message box. Drag to select text, then use **Copy**, Cmd/Ctrl-C, or **Explain selection**. **Right-click to explain** is on by default: right-click selected text to send the question automatically. Turn it off to keep the browser's usual context menu. Selection pauses that card's output updates until you explain it or click **Resume updates**. The question goes to the same agent; its answer appears in that card and the original tmux pane. Sending preserves typed input in the agent pane and reports blocked deliveries.
+
+If an agent closes while you have a draft or saved selection, its tab remains available for copying text. Delivery is disabled; **Discard saved text** removes the closed tab.
+
+Concurrent deliveries to the same pane are refused while another delivery finishes. A restarted team gets fresh cards, and saved text from a closed agent cannot be sent to its replacement.
+
+Normal delivery exits release their locks. If a delivery is forcibly killed, later sends refuse its retained lock because a child command might still be running. After confirming all deliveries to that pane have stopped, remove the `owner` file and empty directory at the exact lock path printed by the error, then retry.
+
+The browser captures the most recent 1,000 lines of terminal history and the current screen about once a second, preserving explicit foreground/background colors and basic text styles. Truecolor RGB values and explicit tmux pane backgrounds are retained. Indexed colors use the standard xterm palette; tmux cannot reveal a Mac terminal's custom palette or default foreground/background to a remote web server, so unspecified defaults use a neutral dark terminal background. The surrounding UI uses UnaryLab's white and sage theme. Use tmux for interactive terminal menus and key shortcuts.
+
+For SSH, install `peon-code-web` on your Mac and the remote host, then run `peon-code-web --ssh <your-usual-SSH-host>` **on your Mac**. It starts the remote web server, forwards loopback port 8765, and opens your local browser automatically. No copied URL or second tunnel command is needed. The connection lists already-running teams across project folders; select a tab or supply an existing session name. Your existing SSH config, keys, and authentication apply; no local tmux is required for this command. Keep it running; Ctrl-C closes the tunnel and its remote web server while leaving agent sessions alive. If the port is occupied on either computer, use `--port 9000` (or another free port). Already running manual web servers can be stopped first. Local launches also use stable port 8765; `--port 0` chooses a temporary port for local testing.
+
+Add `--dir /remote/project/path` to create or open a team for that project. Without a positional session name, the remote folder basename becomes the session name after resolving `~` and trailing slashes; dots and colons become underscores as in `peon-code`. Supply a positional name for a custom team. A missing session starts with that folder's normal config and installed agents. An existing session opens only if it is a peon-code team and its recorded launch directory matches the requested folder; older teams use tmux's original session directory. A same-name team in another project reports a collision instead of opening it. The directory must exist on the agent host. `--dir` works locally too.
+
+`peon-code-web` uses the same update check as `peon-code`: newer upstream commits offer `pull now? [y/N]`, accepted updates use a fast-forward-only pull and restart the launcher. Messages identify the machine being updated. With `--ssh`, remote update prompts appear in your local terminal before session startup and browser opening. Noninteractive launches decline automatically; a failed pull reports the error and starts the current version.
+
+The web server and SSH forward listen only on loopback. The launch URL grants access to the team, so keep it private.
+
+### Select, copy, and explain in tmux
+
+Left-click and drag in an agent pane to select text. Releasing the button copies it to a tmux buffer and keeps the highlight. With clipboard support enabled in your terminal, the selection also reaches your system clipboard.
+
+Right-click the selection, or press `Alt-e`, to ask that same agent to explain it. The question is submitted automatically and the answer appears in the same pane. A pane holding typed input or showing a dialog takes no question; a delivery failure appears in the tmux status line. Press `q` to leave copy mode without asking.
+
+These bindings load when you start or reattach with `peon-code`; an already attached session needs one reattach. Both emacs and vi copy modes are supported. Mouse bindings in other panes keep their previous actions.
 
 ### Detach and reattach
 

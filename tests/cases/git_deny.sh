@@ -12,18 +12,18 @@ settings_path() {
   eval "printf '%s' $quoted"
 }
 
-# The deny families peon-code.sh declares, so the test checks the one list the
+# The deny families lib/launch.sh declares, so the test checks the one list the
 # deny file and the brief sentence are both built from.
 load_git_deny() {
   local block
-  block=$(sed -n '/^GIT_DENY=(/,/^)$/p' "$ROOT/peon-code.sh")
+  block=$(sed -n '/^GIT_DENY=(/,/^)$/p' "$ROOT/lib/launch.sh")
   # Bound what the eval runs: every line is the opener, the closer, or a row of
   # quoted git commands, so a reflowed array fails here instead of executing.
   if printf '%s\n' "$block" | grep -Eqv '^(GIT_DENY=\(|\)|( *"git [A-Za-z -]+")+)$'; then
     fail "GIT_DENY did not extract as a plain array literal"
   fi
   eval "$block"
-  [ "${#GIT_DENY[@]}" -gt 0 ] || fail "no GIT_DENY list found in peon-code.sh"
+  [ "${#GIT_DENY[@]}" -gt 0 ] || fail "no GIT_DENY list found in lib/launch.sh"
 }
 
 # Only the main agent launches with full git: another claude pane adds a

@@ -10,6 +10,22 @@ Each agent pane carries its name in the `@peon_name` tmux pane option and its br
 
 Text goes in through a tmux buffer as a bracketed paste, so a multi-line message stays in the input line instead of submitting early.
 
+## Browser workspace
+
+`peon-code-web.sh` resolves its install symlink and starts the optional Python stdlib server. `web/launch.py` owns CLI parsing, platform browser opening, and the single-command SSH workflow; port 8765 is its canonical default. SSH requests a loopback-only forward on the same local/remote port, starts the remote installed command with safely quoted arguments and a PATH-independent fallback, validates its JSON launch rendezvous, and opens locally. Remote stdio EOF stops the SSH-owned web server. Port conflicts fail clearly before team creation. `--dir PATH` resolves the project on the agent host and derives the default name from its basename; a positional session name overrides it. Missing sessions use the existing headless launcher in that directory. Existing sessions require the peon marker and matching project metadata, falling back to stable session_path for older teams. Reserved launcher-command names cannot trigger creation.
+
+`web/bridge.py` discovers marked sessions and agent roles, with launch metadata and a brief fallback for older sessions. Session project metadata is recorded at creation; older sessions fall back to pane_current_path via a separate display response preserving whitespace. It captures `-e -N` escape styles and trailing cells plus explicit window/active styles. `web/ansi.js` renders safe text spans with SGR foreground/background/style attributes; terminal data never enters HTML. Unknown local terminal palettes use standard xterm indexed colors. `web/navigation.js` owns session/pane selection and unread navigation; `web/app.js` preserves per-pane drafts/selections and freezes selected output. Inactive capture changes mark unread; initial history does not.
+
+The HTTP server checks token, Host/Origin, and marked-session pane membership. It reuses `explain` and `send` via stdin and subprocess argument arrays, preserving safe-paste checks. Browser sends are serialized to avoid simultaneous empty-input checks.
+
+The web shell launcher reuses `offer_update` before loading Python and restarts after successful pulls. Its SSH stdio mode emits an update event with a sanitized hostname; the client validates the count/hostname, prompts locally only with a TTY, and writes an explicit yes/no response. NonTTY local launches read update replies from `/dev/null`; the remote stdin channel remains open for server lifetime control after the handshake.
+
+## Terminal selection
+
+`lib/mouse.sh` enables mouse support when starting or attaching a session and stores the launcher path in each agent pane's `@peon_script` option. Both copy-mode key tables copy a drag selection without clearing it. Right-click or `Alt-e` pipes that selection to `explain <pane-id>` and exits copy mode; the handler adds the explanation question and uses the existing safe-send checks. Selected text travels through stdin, never a shell command string. Delivery results appear in the status line.
+
+Key tables are shared by the tmux server, so the bindings check `@peon_script` and use the previous key action in other panes. Installation is marked by the server's `@peon_mouse_ui` option to avoid wrapping a binding again on reattach.
+
 ## The busy check
 
 A pane's input box is read as everything from the prompt marker (claude draws `❯`, codex `›`) to the end of the cursor's row, with the CLI's hint text left out, so text the cursor was moved back over still counts. `Enter` follows a paste only once the box reads back the pasted text or the CLI's placeholder row for a long paste, such as `[Pasted text #2 +15 lines]`.

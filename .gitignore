@@ -1,2 +1,5 @@
 .peon-code-task.md
 peon-code.conf
+innovation_summary/
+__pycache__/
+.gstack/

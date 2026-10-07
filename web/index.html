@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>peon-code · Agent workspace</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/ansi.js" defer></script>
+  <script src="/navigation.js" defer></script>
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <header class="top">
+    <a class="brand" href="/">peon<span>•</span>code</a>
+    <span class="tag">Agent workspace</span>
+    <span id="connection" role="status">Connecting…</span>
+  </header>
+  <main>
+    <div class="intro">
+      <div><h1>Your agents.</h1><p>Select output to copy it or ask its agent for an explanation.</p></div>
+      <label class="right-click"><input id="right-click" type="checkbox" checked> Right-click to explain</label>
+    </div>
+    <nav id="sessions" aria-label="Sessions"></nav>
+    <p id="project-path"></p>
+    <p id="empty" hidden>No agent panes yet. Start a team with <code>peon-code</code>, then return here.</p>
+    <div class="workspace">
+      <nav id="agents" aria-label="Agents in this session"></nav>
+      <div id="panes"></div>
+    </div>
+  </main>
+  <footer>
+    <a href="https://github.com/UnaryLab/peon-code" target="_blank" rel="noopener noreferrer">GitHub</a>
+    <a href="/LICENSE" target="_blank" rel="noopener">MIT License</a>
+    <a href="https://www.unarylab.com/" target="_blank" rel="noopener noreferrer">© 2026 UnaryLab</a>
+  </footer>
+  <template id="pane-template">
+    <article class="pane" hidden>
+      <header class="pane-heading"><div><h2></h2><p class="meta"></p></div><span class="state">Live</span></header>
+      <pre tabindex="0" class="output" aria-label="Agent output"></pre>
+      <div class="actions">
+        <button class="explain" disabled>Explain selection</button>
+        <button class="copy" disabled>Copy</button>
+        <button class="resume" hidden>Resume updates</button>
+        <button class="discard" hidden>Discard saved text</button>
+        <span class="selection-note"></span>
+      </div>
+      <form><textarea rows="2" placeholder="Ask this agent something…" aria-label="Message this agent"></textarea><button type="submit">Send ↗</button></form>
+      <p class="feedback" role="status"></p>
+    </article>
+  </template>
+</body>
+</html>

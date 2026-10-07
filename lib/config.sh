@@ -44,91 +44,6 @@ protocol_for() {
     keep' "$SCRIPT_DIR/roles/protocol.md"
 }
 
-# Percent-encode a string the way JavaScript encodeURIComponent does: keep
-# A-Za-z0-9 and - _ . ~ literal, encode every other byte as uppercase %XX.
-# grok names each per-directory session store by this encoding of the path
-# (/ -> %2F, space -> %20). LC_ALL=C makes the loop step one byte at a time,
-# so a multibyte path encodes its UTF-8 bytes.
-# ponytail: the unreserved set omits encodeURIComponent's ! ~ * ' ( ); a path
-# holding those would misencode and just miss the resume, add them if it bites.
-url_encode() {
-  local s=$1 out="" c i LC_ALL=C
-  for ((i = 0; i < ${#s}; i++)); do
-    c=${s:i:1}
-    case $c in
-      [A-Za-z0-9._~-]) out=$out$c ;;
-      *) out=$out$(printf '%%%02X' "'$c") ;;
-    esac
-  done
-  printf '%s' "$out"
-}
-
-# Previous thread of one agent, found by the marker phrase its brief carries:
-# the phrase names the agent and the session, and the CLIs record the prompt
-# in their transcript, so no launch-time bookkeeping is needed. Newest match
-# wins; empty output means there is nothing to resume and the pane starts new.
-# The search is capped at 30 days of transcripts, the age past which
-# a thread is not worth reviving.
-last_thread_id() {
-  local marker=$1 bin=$2 file id
-  file=$(last_thread_file "$marker" "$bin") || return 0
-  [ -n "$file" ] || return 0
-  case $bin in
-    copilot|grok) id=${file%/*}     # <id>/*.jsonl: the directory is the id
-             id=${id##*/} ;;
-    gemini)  # the filename holds 8 chars of the id; the body holds it all.
-             # First occurrence in file order: the top-level sessionId comes
-             # before any sessionId nested inside a message.
-             id=$(grep -o '"sessionId"[[:space:]]*:[[:space:]]*"[^"]*"' "$file" | head -n 1) || true
-             id=${id%\"}
-             id=${id##*\"} ;;
-    codex)   id=${file##*/}
-             id=${id%.jsonl}
-             id=${id: -36} ;;       # rollout-<timestamp>-<id>.jsonl
-    *)       id=${file##*/}
-             id=${id%.jsonl} ;;     # claude and qwen name the file by the id
-  esac
-  [ -n "$id" ] || return 0
-  printf '%s\n' "$id"
-}
-
-# The newest transcript file carrying the marker, or nothing. Shared by the
-# resume lookup and the context watcher.
-last_thread_file() {
-  local marker=$1 bin=$2 dir cwd="" hash found file
-  case $bin in
-    claude)  dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/${PWD//[^A-Za-z0-9]/-}" ;;
-    codex)   dir="${CODEX_HOME:-$HOME/.codex}/sessions"
-             # Rollouts of every directory share this store; a match must also
-             # carry the cwd line naming this directory.
-             cwd="\"cwd\":\"$PWD\"" ;;
-    copilot) dir="$HOME/.copilot/session-state"
-             # Session logs of every directory share this store; a match must
-             # also carry the cwd line naming this directory.
-             cwd="\"cwd\":\"$PWD\"" ;;
-    gemini)  # gemini keys its per-directory store by the SHA-256 of the path
-             hash=$(printf '%s' "$PWD" | shasum -a 256 2>/dev/null) ||
-               hash=$(printf '%s' "$PWD" | sha256sum 2>/dev/null) || return 0
-             dir="$HOME/.gemini/tmp/${hash%% *}/chats" ;;
-    qwen)    dir="$HOME/.qwen/projects/${PWD//[^A-Za-z0-9]/-}/chats" ;;
-    grok)    # grok keys its per-directory store by url-encoding the path,
-             # so this dir already scopes to the cwd and needs no cwd match.
-             dir="$HOME/.grok/sessions/$(url_encode "$PWD")" ;;
-    *) return 0 ;;  # no known transcript store, so no resume handle
-  esac
-  [ -d "$dir" ] || return 0
-  # Checked before sorting: with no input, xargs still runs ls, which would
-  # then list the working directory instead of transcripts.
-  found=$(find "$dir" -name '*.jsonl' -type f -mtime -30 2>/dev/null) || true
-  [ -n "$found" ] || return 0
-  while IFS= read -r file; do
-    grep -qF -- "$marker" "$file" || continue
-    [ -z "$cwd" ] || grep -qF -- "$cwd" "$file" || continue
-    printf '%s\n' "$file"
-    return 0
-  done < <(printf '%s\n' "$found" | tr '\n' '\0' | xargs -0 ls -t 2>/dev/null)
-}
-
 read_conf() {
   local conf=$1 conf_dir line lineno=0 n name cmd role path known
   conf_dir=$(cd -- "$(dirname -- "$conf")" && pwd)
@@ -241,21 +156,31 @@ load_team() {
 # 0 only after a pull, so the caller can restart on the new code; headless
 # stdin (EOF) counts as no.
 offer_update() {
-  local behind reply
+  local behind reply machine
   git -C "$SCRIPT_DIR" rev-parse --verify -q '@{u}' >/dev/null 2>&1 || return 1
   behind=$(git -C "$SCRIPT_DIR" rev-list --count 'HEAD..@{u}' 2>/dev/null) || return 1
   if [ "${behind:-0}" -eq 0 ]; then
     (git -C "$SCRIPT_DIR" fetch -q >/dev/null 2>&1 &)  # for the next start
     return 1
   fi
-  printf 'peon-code: %s new commit(s) upstream; pull now? [y/N] ' "$behind" >&2
+  machine=$(hostname 2>/dev/null | LC_ALL=C tr -cd 'A-Za-z0-9._-') || machine=unknown
+  machine=${machine:0:255}
+  machine=${machine:-unknown}
+  if [ "${1:-}" = stdio ]; then
+    printf '{"update":%s,"host":"%s"}\n' "$behind" "$machine"
+  else
+    printf 'peon-code: %s new commit(s) upstream; pull now? [y/N] [%s] ' "$behind" "$machine" >&2
+  fi
   read -r reply || reply=n
   case $reply in
     [yY]|[yY][eE][sS])
-      git -C "$SCRIPT_DIR" pull -q --ff-only || return 1
+      if ! git -C "$SCRIPT_DIR" pull -q --ff-only; then
+        echo "peon-code: update failed on $machine; starting current version" >&2
+        return 1
+      fi
       # Held on screen so the restart does not wipe the pull's outcome unseen.
-      echo "peon-code: updated; starting" >&2
+      echo "peon-code: updated; starting on $machine" >&2
       sleep "${PEON_UPDATE_PAUSE:-3}" ;;
-    *) echo "peon-code: not updated; later: git -C $SCRIPT_DIR pull" >&2; return 1 ;;
+    *) echo "peon-code: not updated; later: git -C $SCRIPT_DIR pull (host: $machine)" >&2; return 1 ;;
   esac
 }

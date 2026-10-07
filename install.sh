@@ -1,24 +1,29 @@
 #!/usr/bin/env bash
-# Symlink peon-code.sh into a bin directory as `peon-code`.
+# Install the peon-code and peon-code-web command symlinks into a bin directory.
 # Usage: ./install.sh [bin-dir]   (default: ~/.local/bin)
 # Remove with: peon-code uninstall [bin-dir]
 set -euo pipefail
 
 BIN_DIR=${1:-"$HOME/.local/bin"}
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-LINK="$BIN_DIR/peon-code"
-
 mkdir -p "$BIN_DIR"
-if [ -L "$LINK" ]; then
-  [ "$(readlink "$LINK")" = "$SCRIPT_DIR/peon-code.sh" ] ||
-    { echo "not replacing $LINK: it points to $(readlink "$LINK")" >&2; exit 1; }
-elif [ -e "$LINK" ]; then
-  echo "not replacing $LINK: it already exists" >&2
-  exit 1
-else
-  ln -s "$SCRIPT_DIR/peon-code.sh" "$LINK"
-fi
-echo "installed: $LINK -> $SCRIPT_DIR/peon-code.sh"
+# Check both commands before installing either one.
+for command_name in peon-code peon-code-web; do
+  LINK="$BIN_DIR/$command_name"
+  source_script="$SCRIPT_DIR/$command_name.sh"
+  if [ -L "$LINK" ]; then
+    [ "$(readlink "$LINK")" = "$source_script" ] ||
+      { echo "not replacing $LINK: it points to $(readlink "$LINK")" >&2; exit 1; }
+  elif [ -e "$LINK" ]; then
+    echo "not replacing $LINK: it already exists" >&2
+    exit 1
+  fi
+done
+for command_name in peon-code peon-code-web; do
+  LINK="$BIN_DIR/$command_name"
+  [ -L "$LINK" ] || ln -s "$SCRIPT_DIR/$command_name.sh" "$LINK"
+  echo "installed: $LINK -> $SCRIPT_DIR/$command_name.sh"
+done
 
 # Seed the fallback config, used when a directory has no ./peon-code.conf.
 FALLBACK_CONF="$HOME/.config/peon-code/peon-code.conf"

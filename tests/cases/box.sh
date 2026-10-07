@@ -10,7 +10,7 @@ CASE_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 assert_box() {
   local what=$1 want=$2 cap=$3 got
   got=$(FAKE_TMUX_CAPTURE="$cap" PATH="$BOX_BIN:$PATH" \
-    bash -c 'source "$1/lib/tmux.sh"; pane_box_text %9' _ "$ROOT") ||
+    bash -c 'source "$1/lib/input.sh"; pane_box_text %9' _ "$ROOT") ||
     fail "pane_box_text failed on $what"
   [ "$got" = "$want" ] || fail "box for $what is '$got', expected '$want'"
 }
@@ -94,7 +94,7 @@ test_box_holds_message() {
   long="start $(printf 'word%.0s ' $(seq 1 60))end [x]*?"
   tail=${long#start word word }
   check() {
-    bash -c 'source "$1/lib/tmux.sh"; box_holds_message "$2" "$3"' _ "$ROOT" "$1" "$2"
+    bash -c 'source "$1/lib/input.sh"; box_holds_message "$2" "$3"' _ "$ROOT" "$1" "$2"
   }
   check "hello world" "hello world" || fail "a box equal to the message did not match"
   check "[Pasted text #2 +15 lines]" "$long" || fail "a paste placeholder did not match"

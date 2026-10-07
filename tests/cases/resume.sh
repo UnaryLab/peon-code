@@ -23,7 +23,7 @@ test_resume_picks_each_agent_thread() {
   # grok keys its store by url-encoding the path; reuse the real encoder so the
   # test tracks it. The id is the session directory holding the transcript.
   local grok_enc grok_dir
-  grok_enc=$(bash -c 'source "$1/lib/config.sh"; url_encode "$2"' _ "$ROOT" "$work_dir")
+  grok_enc=$(bash -c 'source "$1/lib/resume.sh"; url_encode "$2"' _ "$ROOT" "$work_dir")
   grok_dir="$home_dir/.grok/sessions/$grok_enc/77777777-7777-7777-7777-777777777777"
   mkdir -p "$claude_dir" "$codex_dir" "$copilot_dir" "$gemini_dir" "$qwen_dir" "$grok_dir"
   printf 'agent boss of peon-code session resume-test, in pane\n' \
@@ -56,7 +56,7 @@ test_resume_picks_each_agent_thread() {
   # Same marker under a different encoded cwd: grok's per-directory store keeps
   # it out of this directory's resume.
   local grok_decoy
-  grok_decoy="$home_dir/.grok/sessions/$(bash -c 'source "$1/lib/config.sh"; url_encode "$2"' _ "$ROOT" "$work_dir/elsewhere")/dddddddd-dddd-dddd-dddd-dddddddddddd"
+  grok_decoy="$home_dir/.grok/sessions/$(bash -c 'source "$1/lib/resume.sh"; url_encode "$2"' _ "$ROOT" "$work_dir/elsewhere")/dddddddd-dddd-dddd-dddd-dddddddddddd"
   mkdir -p "$grok_decoy"
   printf '{"type":"user","content":"agent gk of peon-code session resume-test, in pane"}\n' \
     >"$grok_decoy/chat_history.jsonl"
@@ -135,13 +135,13 @@ FAKE_TMUX
   : >"$log"
   FAKE_TMUX_LOG="$log" PATH="$bin_dir:$PATH" \
     FAKE_TMUX_CAPTURE='❯ 1. Resume from summary (recommended)' \
-    bash -c 'source "$1/lib/tmux.sh"; answer_dialog %9 "*Resume from summary*"' _ "$ROOT"
+    bash -c 'source "$1/lib/tmux.sh"; source "$1/lib/input.sh"; answer_dialog %9 "*Resume from summary*"' _ "$ROOT"
   assert_contains "$log" "send-keys -t %9 Enter"
 
   : >"$log"
   FAKE_TMUX_LOG="$log" PATH="$bin_dir:$PATH" \
     FAKE_TMUX_CAPTURE='❯ try "fix the tests"' \
-    bash -c 'source "$1/lib/tmux.sh"; answer_dialog %9 "*Resume from summary*"' _ "$ROOT"
+    bash -c 'source "$1/lib/tmux.sh"; source "$1/lib/input.sh"; answer_dialog %9 "*Resume from summary*"' _ "$ROOT"
   assert_not_contains "$log" "send-keys"
 }
 

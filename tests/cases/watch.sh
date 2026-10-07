@@ -10,6 +10,8 @@ SCRIPT_DIR=$ROOT
 die() { echo "die: $*" >&2; exit 1; }
 # shellcheck source=lib/config.sh
 . "$ROOT/lib/config.sh"
+# shellcheck source=lib/resume.sh
+. "$ROOT/lib/resume.sh"
 # shellcheck source=lib/watch.sh
 . "$ROOT/lib/watch.sh"
 
@@ -66,8 +68,8 @@ test_watch_launch() {
   ) >"$TEST_DIR/watch.out" 2>"$TEST_DIR/watch.err" </dev/null || true
   assert_contains "$log" "set -pt %1 @peon_bin ./missing-agent"
   assert_contains "$log" "set -pt %3 @peon_bin codex"
-  block=$(sed -n '/^# The context watcher outlives this launch/,/^fi$/p' "$ROOT/peon-code.sh")
-  [ -n "$block" ] || fail "peon-code.sh does not start the watcher"
+  block=$(sed -n '/^# The context watcher outlives this launch/,/^fi$/p' "$ROOT/lib/launch.sh")
+  [ -n "$block" ] || fail "lib/launch.sh does not start the watcher"
   # shellcheck disable=SC2016  # source text to match, not an expansion
   assert_contains <(printf '%s\n' "$block") 'if [ "$COMPACT_AT" -gt 0 ]; then'
   # shellcheck disable=SC2016
