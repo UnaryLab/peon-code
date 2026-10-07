@@ -127,6 +127,9 @@ class Handler(BaseHTTPRequestHandler):
                              {"message" if result.returncode == 0 else "error": message})
                 return
             pane, text, identity = data.get("pane"), data.get("text"), data.get("identity")
+            append = data.get("append", False)
+            if self.path == "/api/send" and not isinstance(append, bool):
+                raise ValueError("append must be a boolean")
             if self.path == "/api/keys":
                 key = data.get("key")
                 if key not in ("Tab", "Up", "Down", "Enter", "Escape", "1", "2", "3", "4", "5", "6", "7", "8", "9"):
@@ -139,7 +142,10 @@ class Handler(BaseHTTPRequestHandler):
                 if not isinstance(identity, str) or not any(p["id"] == pane and p.get("identity") == identity for p in panes(self.server.session)):
                     raise ValueError("Agent changed or closed; refresh before sending")
                 action = "key" if self.path == "/api/keys" else "explain" if self.path == "/api/explain" else "send"
-                args = [str(ROOT / "peon-code.sh"), action, pane]
+                args = [str(ROOT / "peon-code.sh"), action]
+                if action == "send" and append:
+                    args.append("--append")
+                args.append(pane)
                 if action == "key":
                     args.append(key)
                 elif action == "send":

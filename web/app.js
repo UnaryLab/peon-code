@@ -43,11 +43,12 @@ function setSelection(card, text) {
   card.el.querySelector('.discard').hidden = !card.closed;
   card.el.querySelector('.discard').disabled = card.busy;
   card.el.querySelector('form button').disabled = card.busy || card.closed;
+  card.el.querySelector('.append').disabled = card.busy || card.closed;
   for (const button of card.el.querySelectorAll('.keys button')) button.disabled = card.busy || card.closed;
   card.el.querySelector('.selection-note').textContent = text ? 'Selection saved · updates paused' : '';
   card.el.querySelector('.state').textContent = card.closed ? 'Closed' : text ? 'Paused' : 'Live';
 }
-async function send(card, action, text) {
+async function send(card, action, text, append = false) {
   if (card.closed || card.busy) return;
   const selectionRevision = card.selectionRevision;
   const draftRevision = card.draftRevision;
@@ -56,12 +57,19 @@ async function send(card, action, text) {
   setSelection(card, card.selected);
   feedback(card, 'Sending to this agent…');
   try {
-    const result = await api('/api/' + action, {pane: card.id, identity: card.latest.identity, ...(action === 'keys' ? {key: text} : {text})});
+    const result = await api('/api/' + action, {pane: card.id, identity: card.latest.identity, ...(action === 'keys' ? {key: text} : {text}), ...(append ? {append: true} : {})});
     feedback(card, result.message);
+    if (action === 'send') { card.appendText = null; card.el.querySelector('.append-action').hidden = true; }
     if (action === 'explain') {
       if (card.selected === text && card.selectionRevision === selectionRevision) { setSelection(card, ''); if (card.key === currentPane()) getSelection().removeAllRanges(); }
     } else if (action === 'send' && card.draftRevision === draftRevision && card.el.querySelector('textarea').value === text) card.el.querySelector('textarea').value = '';
-  } catch (error) { feedback(card, error.message, true); }
+  } catch (error) {
+    feedback(card, error.message, true);
+    if (action === 'send' && error.message.includes('holds typed text') && card.draftRevision === draftRevision && card.el.querySelector('textarea').value === text) {
+      card.appendText = text;
+      card.el.querySelector('.append-action').hidden = false;
+    }
+  }
   finally { card.busy = false; setSelection(card, card.selected); }
 }
 function inputHint(pane) {
@@ -101,6 +109,11 @@ function updateKeys(card) {
   const signature = JSON.stringify(labels);
   if (signature === card.shortcutsRendered) return;
   card.shortcutsRendered = signature;
+  const hasChoices = labels.some(([key]) => /^[1-9]$/.test(key));
+  for (const button of card.el.querySelectorAll('.key-buttons button')) {
+    const key = button.dataset.key;
+    button.hidden = key === 'Tab' ? !!hint : /^[1-9]$/.test(key) ? hasChoices : pane.menu && (key === 'Enter' || key === 'Escape');
+  }
   const buttons = labels.map(([key, label]) => {
     const button = document.createElement('button');
     button.type = 'button'; button.dataset.key = key; button.textContent = label;
@@ -114,7 +127,9 @@ function createCard(pane) {
   const el = document.querySelector('#pane-template').content.firstElementChild.cloneNode(true);
   el.dataset.pane = pane.id;
   el.dataset.key = paneKey(pane);
-  const card = {el, id: pane.id, key: paneKey(pane), lines: 1000, scrollTop: 0, fullHistory: false, selected: '', selectionRevision: 0, draftRevision: 0, busy: false, closed: false, unread: false, needsAnswer: false, latest: null, rendered: null, keysOpen: false};
+  const card = {el, id: pane.id, key: paneKey(pane), lines: 1000, scrollTop: 0, fullHistory: false, selected: '', selectionRevision: 0, draftRevision: 0, appendText: null, busy: false, closed: false, unread: false, needsAnswer: false, latest: null, rendered: null, keysOpen: false};
+  const fallbackKeys = el.querySelector('.key-buttons');
+  fallbackKeys.prepend(fallbackKeys.querySelector('[data-key="Up"]'), fallbackKeys.querySelector('[data-key="Down"]'));
   const keysToggle = el.querySelector('.keys-toggle');
   keysToggle.onclick = () => {
     card.keysOpen = !card.keysOpen;
@@ -125,7 +140,8 @@ function createCard(pane) {
   const shortcuts = document.createElement('div');
   shortcuts.className = 'key-shortcuts';
   el.querySelector('.keys').append(shortcuts);
-  el.querySelector('textarea').oninput = () => { card.draftRevision++; };
+  el.querySelector('textarea').oninput = () => { card.draftRevision++; card.appendText = null; el.querySelector('.append-action').hidden = true; };
+  el.querySelector('.append').onclick = () => { if (card.appendText !== null) send(card, 'send', card.appendText, true); };
   el.querySelector('textarea').onkeydown = event => {
     if (event.key === 'Enter' && event.shiftKey && !event.isComposing) {
       event.preventDefault(); el.querySelector('form').requestSubmit();

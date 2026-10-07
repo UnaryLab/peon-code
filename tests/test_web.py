@@ -114,6 +114,23 @@ class WebTests(unittest.TestCase):
         with patch.object(web, "run_delivery", side_effect=subprocess.TimeoutExpired("delivery", 20)):
             self.assertEqual(self.request("POST", "/api/send", dict(pane="%2", identity="server:session:pane", text=text))[0], 503)
 
+    def test_send_append_boolean_and_delivery_arguments(self):
+        data = dict(pane="%2", identity="server:session:pane", text="It's `quoted`\n日本語")
+        with patch.object(web, "run_delivery", return_value=subprocess.CompletedProcess([], 0, "sent", "")) as run:
+            for options, flags in (({}, []), ({"append": False}, []), ({"append": True}, ["--append"])):
+                with self.subTest(options=options):
+                    self.assertEqual(self.request("POST", "/api/send", dict(data, **options))[0], 200)
+                    run.assert_called_with([str(ROOT / "peon-code.sh"), "send", *flags, "%2", "-"], data["text"], data["identity"])
+            for value in ("true", "false", 1, 0, None, [], {}):
+                with self.subTest(append=value):
+                    status, body = self.request("POST", "/api/send", dict(data, append=value))
+                    self.assertEqual((status, json.loads(body)), (400, {"error": "append must be a boolean"}))
+            for headers in ({"X-Peon-Token": "bad-token"}, {"Host": "evil.test"}, {"Origin": "https://evil.test"}):
+                self.assertEqual(self.request("POST", "/api/send", dict(data, append=True), headers)[0], 403)
+            for options in ({"identity": "old:pane"}, {"pane": "%999"}, {"text": " "}, {"padding": "x" * 262144}):
+                self.assertEqual(self.request("POST", "/api/send", dict(data, append=True, **options))[0], 400)
+            self.assertEqual(run.call_count, 3)
+
     def test_keys_validate_identity_and_only_send_allowed_keys(self):
         keys = ("Tab", "Up", "Down", "Enter", "Escape", "1", "2", "3", "4", "5", "6", "7", "8", "9")
         def deliver(args, text, identity):

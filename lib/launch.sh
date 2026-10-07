@@ -241,6 +241,15 @@ fi
 # The context watcher outlives this launch: it runs until the session is
 # gone, compacting a pane whose context reaches compact-at tokens.
 if [ "$COMPACT_AT" -gt 0 ]; then
+  WATCH_PID_FILE="/tmp/peon-code-watch-$UID/$SESSION.pid"
+  WATCH_PID=$(cat "$WATCH_PID_FILE" 2>/dev/null) || WATCH_PID=""
+  if [[ $WATCH_PID =~ ^[1-9][0-9]*$ ]] && [ "$WATCH_PID" != "$$" ]; then
+    WATCH_ARGS=$(ps -ww -o args= -p "$WATCH_PID" 2>/dev/null) || WATCH_ARGS=""
+    case " $WATCH_ARGS " in
+      *"/peon-code.sh watch $SESSION "*|*" peon-code.sh watch $SESSION "*)
+        kill -TERM "$WATCH_PID" 2>/dev/null || true ;;
+    esac
+  fi
   nohup "$SCRIPT_DIR/peon-code.sh" watch "$SESSION" "$COMPACT_AT" >/dev/null 2>>"$BRIEF_DIR/watch.log" </dev/null &
 fi
 goto_session "$SESSION"

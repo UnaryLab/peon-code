@@ -86,22 +86,17 @@ plain_text() {
   printf '%s' "$s"
 }
 
-# A capture holding a menu: the marker is drawn on the menu's selected row
-# with the cursor right after it, so the input box measures empty while the
-# pane is waiting on an answer.
+# Use the cursor row's marker, else the last marker above it. Confirmation
+# footers count within three rows below the cursor. Invalid cursors return 2.
 pane_has_menu() {
-  local region
-  region=$(printf '%s\n' "$1" | LC_ALL=C awk '
+  printf '%s' "$1" | LC_ALL=C awk -v cy="${2:-}" '
     BEGIN { m = "\342\235\257"; m2 = "\342\200\272" }
-    { rows[NR] = $0; if (index($0, m) || index($0, m2)) mr = NR }
+    NR <= cy + 1 && (index($0, m) || index($0, m2)) { anchor = $0 }
+    NR >= cy + 2 && NR <= cy + 4 && index($0, "Enter to confirm") { menu = 1 }
     END {
-      if (!mr) mr = NR > 12 ? NR - 11 : 1
-      for (r = mr; r <= NR; r++) print rows[r]
-    }')
-  case $region in
-    *"Enter to confirm"*|*"❯ "[0-9]"."*|*"› "[0-9]"."*) return 0 ;;
-  esac
-  return 1
+      if (cy !~ /^[0-9]+$/ || cy >= NR) exit 2
+      exit (menu || anchor ~ ("^ *" m " [0-9][.]") || anchor ~ ("^ *" m2 " [0-9][.]")) ? 0 : 1
+    }'
 }
 
 # Type something. is Claude's label. Update it if Claude changes the label.
@@ -246,12 +241,16 @@ strip_styles() {
 # peon-code pastes over it; model that style in strip_styles if a TUI draws
 # hints another way.
 pane_box_text() {
-  local pane=$1 cy cap box plain free
+  local pane=$1 cy cap box plain free rc=0
   cy=$(tmux display -pt "$pane" '#{cursor_y}' 2>/dev/null) || return 1
-  cap=$(tmux capture-pane -ept "$pane" 2>/dev/null) || return 1
-  plain=$(printf '%s\n' "$cap" | strip_styles 0)
+  cap=$(tmux capture-pane -ept "$pane" 2>/dev/null && printf '.') || return 1
+  cap=${cap%.}
+  plain=$(printf '%s' "$cap" | strip_styles 0 && printf '.') || return 1
+  plain=${plain%.}
+  pane_has_menu "$plain" "$cy" || rc=$?
+  [ "$rc" -ne 2 ] || return 2
   free=$(pane_free_text_number "$plain") || free=""
-  if [ -z "$free" ] && pane_has_menu "$plain"; then
+  if [ -z "$free" ] && [ "$rc" -eq 0 ]; then
     return 1
   fi
   box=$(printf '%s\n' "$cap" | strip_styles 1 | LC_ALL=C awk -v cy="$cy" -v free="$free" '

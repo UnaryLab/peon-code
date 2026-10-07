@@ -103,9 +103,9 @@ Session tabs switch between teams and identify their project folders; the full f
 
 Each agent has a scrolling output pane and a message box. In the message box, Shift+Enter sends the message and plain Enter adds a new line; an Enter that confirms input-method composition is ignored. Drag to select text, then use **Copy**, Cmd/Ctrl-C, or **Explain selection**. **Right-click to explain** is on by default: right-click selected text to send the question automatically. Turn it off to keep the browser's usual context menu. Selection pauses that card's output updates until you explain it or click **Resume updates**. The question goes to the same agent; its answer appears in that card and the original tmux pane. Sending preserves typed input in the agent pane and reports blocked deliveries.
 
-Open **Keys** below a pane's actions to send Tab, Up, Down, Enter, Esc, or 1..9 for agent menus and hints. Focus the output pane to use arrow keys, Enter, Esc, or 1..9 to answer a menu. Enter works only on a menu. Use tmux for all other terminal controls.
+Open **Keys** below a pane's actions to send Up, Down, Tab, Enter, Esc, or 1..9 for agent menus and hints. Up and Down appear first; a menu or hint hides the matching fallback keys. Focus the output pane to use arrow keys, Enter, Esc, or 1..9 to answer a menu. Enter works only on a menu. Use tmux for all other terminal controls.
 
-Visible numbered menu choices appear beside **Keys**, with Enter and Esc shortcuts while a menu is open. A **Tab: hint** button sends Tab for a dim or gray hint on the input row.
+Visible numbered menu choices appear beside **Keys**, with Enter and Esc shortcuts while a menu is open. A **Tab: hint** button sends Tab for a dim or gray hint on the input row. If Send is blocked because the input box holds typed text, **Append and send** adds your message after that text and submits both. This also works after Tab accepts a hint.
 
 **Close session**, below the agent tabs, asks for confirmation and stops all agents in the selected team.
 

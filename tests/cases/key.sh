@@ -15,7 +15,7 @@ run_key() {
   local name=$1
   shift
   : >"$KEY_LOG"
-  PATH="$KEY_BIN:$PATH" FAKE_TMUX_LOG="$KEY_LOG" FAKE_BOX="$menu" \
+  PATH="$KEY_BIN:$PATH" FAKE_TMUX_LOG="$KEY_LOG" FAKE_BOX="$menu" FAKE_CURSOR='2 1' \
     env "$@" "$ROOT/peon-code.sh" key %2 "$name" >"$TEST_DIR/key.out" 2>"$TEST_DIR/key.err"
 }
 
@@ -25,6 +25,16 @@ for name in Tab Up Down Enter Escape 1 2 3 4 5 6 7 8 9; do
   [ "$(grep -c '^send-keys' "$KEY_LOG")" = 1 ] || fail "key sent $name more than once"
   assert_not_contains "$KEY_LOG" 'paste-buffer'
 done
+
+run_key Enter FAKE_BOX="${menu/❯/  ❯}"
+[ "$(grep -c -Fx 'send-keys -t %2 Enter' "$KEY_LOG")" = 1 ] || fail 'indented Claude menu did not take Enter once'
+
+run_key Enter FAKE_BOX='Choose a model
+› 1. Model A
+  2. Model B
+
+enter select / esc back' FAKE_CURSOR='2 4'
+[ "$(grep -c -Fx 'send-keys -t %2 Enter' "$KEY_LOG")" = 1 ] || fail 'Codex footer-cursor menu did not take Enter once'
 
 for name in C-c 0 10 ''; do
   rc=0
@@ -42,8 +52,12 @@ assert_key_refused() {
   assert_not_contains "$KEY_LOG" 'send-keys'
 }
 
-assert_key_refused Enter 'not on a menu' FAKE_BOX='❯ half-typed text'
-assert_key_refused Enter 'not on a menu' FAKE_BOX='❯'
+assert_key_refused Enter 'not on a menu' FAKE_BOX='❯ half-typed text' FAKE_CURSOR='2 0'
+assert_key_refused Enter 'not on a menu' FAKE_BOX='❯' FAKE_CURSOR='2 0'
+assert_key_refused Enter 'not on a menu' FAKE_BOX='› 1. Quoted choice
+❯' FAKE_CURSOR='2 1'
+assert_key_refused Enter 'not on a menu' FAKE_CURSOR='2 invalid'
+assert_key_refused Enter 'not on a menu' FAKE_CURSOR='2 99'
 assert_key_refused Tab 'not a peon-code agent pane' FAKE_PEON_NAME=
 assert_key_refused Tab 'back at a shell' FAKE_CMD=bash
 assert_key_refused Tab 'in copy mode' FAKE_IN_MODE=1

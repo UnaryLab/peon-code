@@ -64,16 +64,20 @@ wait_agent_ready() {
 # The input-line check knows the claude and codex markers only; a CLI drawing
 # another marker waits the full cap when it shows no dialog.
 answer_dialog() {
-  local pane=$1 pattern=$2 i cur
+  local pane=$1 pattern=$2 i cur cy rc
   for ((i = 0; i < 50; i++)); do
-    cur=$(tmux capture-pane -pt "$pane" 2>/dev/null) || cur=""
+    cur=$(tmux capture-pane -pt "$pane" 2>/dev/null && printf '.') || cur=""
+    cur=${cur%.}
+    cy=$(tmux display -pt "$pane" '#{cursor_y}' 2>/dev/null) || cy=""
     # shellcheck disable=SC2053  # unquoted on purpose: the pattern is a glob
     if [[ $cur == $pattern ]]; then
       tmux send-keys -t "$pane" Enter
       return 0
     fi
     # Input line drawn and no menu on screen: the pane never showed a dialog.
-    if ! pane_has_menu "$cur" && [[ $cur == *❯* || $cur == *›* ]]; then
+    rc=0
+    pane_has_menu "$cur" "$cy" || rc=$?
+    if [ "$rc" -eq 1 ] && [[ $cur == *❯* || $cur == *›* ]]; then
       return 0
     fi
     sleep 0.3
@@ -90,10 +94,14 @@ answer_dialog() {
 # the prompt never shows, or the dialog goes unanswered; the caller then
 # skips the paste rather than typing into whatever is on screen.
 wait_pane_settled() {
-  local pane=$1 tries=${2:-100} i prev="" cur
+  local pane=$1 tries=${2:-100} i prev="" cur cy rc
   for ((i = 0; i < tries; i++)); do
-    cur=$(tmux capture-pane -pt "$pane" 2>/dev/null) || cur=""
-    if pane_has_menu "$cur"; then
+    cur=$(tmux capture-pane -pt "$pane" 2>/dev/null && printf '.') || cur=""
+    cur=${cur%.}
+    cy=$(tmux display -pt "$pane" '#{cursor_y}' 2>/dev/null) || cy=""
+    rc=0
+    pane_has_menu "$cur" "$cy" || rc=$?
+    if [ "$rc" -ne 1 ]; then
       cur=""  # a menu, not the input line
     fi
     if [[ $cur == *❯* || $cur == *›* ]] && [ "$cur" = "$prev" ]; then

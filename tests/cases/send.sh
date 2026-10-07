@@ -21,14 +21,69 @@ send_captures() {
 assert_send_refused() {
   local what=$1 want=$2 out="$TEST_DIR/send-refuse.out" err="$TEST_DIR/send-refuse.err"
   shift 2
+  local flags=()
+  if [ "${1:-}" = --append ]; then flags=(--append); shift; fi
   reset_send_log
   if PATH="$SEND_BIN:$PATH" FAKE_TMUX_LOG="$SEND_LOG" \
-    env "$@" "$ROOT/peon-code.sh" send %2 'hello world' >"$out" 2>"$err"; then
+    env "$@" "$ROOT/peon-code.sh" send ${flags[@]+"${flags[@]}"} %2 'hello world' >"$out" 2>"$err"; then
     fail "send pasted into $what"
   fi
   assert_contains "$err" "$want"
   assert_not_contains "$SEND_LOG" "paste-buffer"
   assert_not_contains "$SEND_LOG" "send-keys"
+}
+
+test_send_append() {
+  local bin="$TEST_DIR/append-bin" suffix last expected
+  mkdir -p "$bin"
+  cp "$SEND_BIN/sleep" "$bin/sleep"
+  cat >"$bin/tmux" <<'FAKE_APPEND'
+#!/usr/bin/env bash
+case "$*" in
+  'send-keys -t %2 End'|'send-keys -t %2 Left')
+    printf '%s\n' "$*" >>"$FAKE_TMUX_LOG"
+    printf '%s' "$4" >"$FAKE_TMUX_LOG.cursor"
+    exit 0 ;;
+  'display -pt %2 #{cursor_x} #{cursor_y}')
+    printf '%s\n' "$*" >>"$FAKE_TMUX_LOG"
+    if [ "$(cat "$FAKE_TMUX_LOG.cursor")" = Left ]; then printf '9 1\n'; else printf '10 1\n'; fi
+    exit 0 ;;
+  'display -pt %2 #{cursor_character}')
+    printf '%s\n' "$*" >>"$FAKE_TMUX_LOG"
+    printf '%s\n' "$FAKE_LAST_CHAR"
+    exit 0 ;;
+esac
+exec "$SEND_BASE_TMUX" "$@"
+FAKE_APPEND
+  chmod +x "$bin/tmux"
+  for suffix in '' ' ' $'\t' $'\302\240'; do
+    last=$suffix
+    [ -n "$last" ] || last=g
+    expected=new
+    [ -n "$suffix" ] || expected=' new'
+    reset_send_log
+    PATH="$bin:$PATH" FAKE_TMUX_LOG="$SEND_LOG" SEND_BASE_TMUX="$SEND_BIN/tmux" \
+      FAKE_LAST_CHAR="$last" FAKE_BOX="output line
+❯ existing$suffix
+────" FAKE_CURSOR='2 1' FAKE_BOX_AFTER="output line
+❯ existing${suffix}${expected}
+────" FAKE_CURSOR_AFTER='14 1' \
+      "$ROOT/peon-code.sh" send --append %2 - >"$TEST_DIR/send-append.out" <<'PEON'
+new
+PEON
+    assert_contains "$TEST_DIR/send-append.out" 'sent to %2'
+    grep -Fqx "buffer-content:$expected" "$SEND_LOG" || fail 'append pasted the wrong separator'
+    [ "$(grep -c -Fx 'send-keys -t %2 End' "$SEND_LOG")" = 2 ] || fail 'append did not restore the end cursor'
+    [ "$(grep -c -Fx 'send-keys -t %2 Enter' "$SEND_LOG")" = 1 ] || fail 'append did not submit once'
+  done
+  assert_send_refused 'an append to a menu' 'is on a dialog or a menu' --append \
+    FAKE_BOX='Question
+❯ 1. Yes
+Enter to confirm' FAKE_CURSOR='2 1'
+  assert_send_refused 'an append in copy mode' 'is in copy mode' --append \
+    FAKE_BOX='❯ existing' FAKE_CURSOR='2 0' FAKE_IN_MODE=1
+  assert_send_refused 'an append without a prompt marker' 'draws no prompt marker' --append \
+    FAKE_BOX='> existing' FAKE_CURSOR='2 0'
 }
 
 # Every state that must stop a send before anything is pasted.
@@ -268,7 +323,7 @@ test_send_free_text() {
 Enter to select · ↑/↓ to navigate · ctrl+g to edit in VS Code · Esc to cancel'
   after=${before/Type something./hi there}
   for box in "$before" "$after"; do
-    bash -c 'source "$1/lib/input.sh"; pane_has_menu "$2"' _ "$ROOT" "$box" ||
+    bash -c 'source "$1/lib/input.sh"; pane_has_menu "$2" 6' _ "$ROOT" "$box" ||
       fail 'selected free-text row was not recognized as a menu for explicit keys'
   done
   reset_send_log
@@ -304,11 +359,33 @@ Enter to select · ↑/↓ to navigate · ctrl+g to edit in VS Code · Esc to ca
 }
 
 test_send_menu_region() (
-  local before after cap i
+  local before after cap cy rc
   # shellcheck source=lib/input.sh
   source "$ROOT/lib/input.sh"
+  for cap in '› quoted › 1. Old choice' ' ❯ see ❯ 1. Old choice' $'› first line\nquoted › 1. Old choice\ntail' \
+      '› please press Enter to confirm' $'› first line\ncontinuation\nplease press Enter to confirm'; do
+    cy=0
+    case $cap in *$'\n'*) cy=2 ;; esac
+    if pane_has_menu "$cap" "$cy"; then fail 'draft text was a menu'; fi
+    assert_send_refused 'a draft with menu instructions' 'target box busy' \
+      FAKE_BOX="$cap" FAKE_CURSOR="2 $cy"
+  done
+  assert_send_refused 'a Codex menu with its cursor on the footer' 'is on a dialog or a menu' \
+    FAKE_BOX='Choose a model
+› 1. Model A
+  2. Model B
+
+enter select / esc back' FAKE_CURSOR='2 4'
+  before=$'❯\n\n'
+  after=$'❯ hello world\n\n'
+  reset_send_log
+  PATH="$SEND_BIN:$PATH" FAKE_TMUX_LOG="$SEND_LOG" \
+    FAKE_BOX="$before" FAKE_CURSOR='2 1' FAKE_BOX_AFTER="$after" FAKE_CURSOR_AFTER='13 1' \
+    "$ROOT/peon-code.sh" send %2 'hello world' >"$TEST_DIR/send-blank-cursor-row.out"
+  assert_contains "$SEND_LOG" 'buffer-content:hello world'
+  assert_contains "$SEND_LOG" 'send-keys -t %2 Enter'
   before='Quoted old dialog: Enter to confirm
-❯ 1. Old choice
+› 1. Old choice
 ❯
 ────'
   after=${before/$'❯\n'/$'❯ hello world\n'}
@@ -322,13 +399,31 @@ test_send_menu_region() (
 ❯
 Enter to confirm' FAKE_CURSOR='2 1'
 
-  cap='Enter to confirm'
-  for ((i = 0; i < 12; i++)); do cap="$cap
-ordinary output"; done
-  if pane_has_menu "$cap"; then fail 'menu check read beyond the last twelve rows with no marker'; fi
-  cap="$cap
-Enter to confirm"
-  pane_has_menu "$cap" || fail 'menu check missed a confirmation in the last twelve rows'
+  cap='❯
+ordinary output
+ordinary output
+Enter to confirm'
+  pane_has_menu "$cap" 0 || fail 'menu check missed a confirmation three rows below the cursor'
+  assert_send_refused 'confirmation three rows below' 'is on a dialog or a menu' \
+    FAKE_BOX="$cap" FAKE_CURSOR='2 0'
+  cap='❯
+ordinary output
+ordinary output
+ordinary output
+Enter to confirm'
+  if pane_has_menu "$cap" 0; then fail 'menu check read four rows below the cursor'; fi
+  reset_send_log
+  after=${cap/❯/❯ hello world}
+  PATH="$SEND_BIN:$PATH" FAKE_TMUX_LOG="$SEND_LOG" \
+    FAKE_BOX="$cap" FAKE_CURSOR='2 0' FAKE_BOX_AFTER="$after" FAKE_CURSOR_AFTER='13 0' \
+    "$ROOT/peon-code.sh" send %2 'hello world' >"$TEST_DIR/send-distant-footer.out"
+  assert_contains "$SEND_LOG" 'send-keys -t %2 Enter'
+  for cy in '' invalid -1 99; do
+    rc=0
+    pane_has_menu "$cap" "$cy" || rc=$?
+    [ "$rc" -eq 2 ] || fail "invalid cursor '$cy' returned $rc instead of 2"
+  done
+  assert_send_refused 'an unreadable cursor' 'draws no prompt marker' FAKE_BOX='❯' FAKE_CURSOR='2 invalid'
 )
 
 fake_bin=$(make_fake_commands)
@@ -349,6 +444,7 @@ PATH="$SEND_BIN:$PATH" FAKE_TMUX_LOG="$SEND_LOG" \
 assert_contains "$SEND_LOG" 'buffer-content:日本語 🙂'
 assert_contains "$SEND_LOG" 'send-keys -t %2 Enter'
 test_send_delivers
+test_send_append
 test_send_free_text
 test_send_menu_region
 echo "send: PASS"

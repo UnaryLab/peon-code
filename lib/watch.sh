@@ -48,19 +48,21 @@ watch_note() {
 # reading drops below the threshold again, so a floor above the threshold
 # (a huge system prompt) is reported once instead of compacted every minute.
 cmd_watch() {
-  local session threshold panes id name bin file tokens owner
+  local session threshold panes id name bin file tokens owner pid_file
   local watched="" unwatched="" disarmed="" files=""
   session=$(session_name "${1:-}")
   threshold=${2:-250000}
   [[ $threshold =~ ^[0-9]+$ ]] || die "watch takes a number of tokens, got: $threshold"
   [ "$threshold" -gt 0 ] || return 0
+  pid_file="/tmp/peon-code-watch-$UID/$session.pid"
+  (umask 077; mkdir -p "/tmp/peon-code-watch-$UID"; printf '%s\n' "$$" >"$pid_file") || true
   # A resume recreates the session under the same name, so an older watcher
   # can outlive its session's kill. The newest watcher owns the session; an
   # older one exits on its next tick, up to one tick late.
   tmux set-option -t "=$session:" @peon_watch_pid "$$" 2>/dev/null || true
   while tmux has-session -t "=$session" 2>/dev/null; do
     owner=$(tmux show-options -qv -t "=$session:" @peon_watch_pid 2>/dev/null) || owner=""
-    [ -z "$owner" ] || [ "$owner" = "$$" ] || return 0
+    [ -z "$owner" ] || [ "$owner" = "$$" ] || break
     panes=$(list_agent_panes "$session") || true
     while read -r id name; do
       [ -n "$id" ] || continue
@@ -99,4 +101,7 @@ cmd_watch() {
     done <<<"$panes"
     sleep "${PEON_WATCH_TICK:-60}"
   done
+  if [ "$(cat "$pid_file" 2>/dev/null)" = "$$" ]; then
+    rm -f "$pid_file"
+  fi
 }

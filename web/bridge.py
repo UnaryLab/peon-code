@@ -46,9 +46,9 @@ def panes(session=None):
 def snapshot(pane, lines=1000):
     output = tmux("capture-pane", "-p", "-e", "-N", "-t", pane["id"], "-S", "-" + str(lines))
     visible = tmux("capture-pane", "-p", "-t", pane["id"])
-    screen = visible.rstrip("\n").split("\n")
-    start = next((i for i in range(len(screen) - 1, -1, -1) if re.search(r"[❯›]", screen[i])), max(0, len(screen) - 12))
-    menu = re.search(r"Enter to confirm|[❯›] [0-9]\.", "\n".join(screen[start:])) is not None
+    screen = visible.split("\n")
+    if visible.endswith("\n"):
+        screen.pop()
     try:
         style = tmux("display-message", "-p", "-t", pane["id"], "#{window-style}").strip()
         if tmux("display-message", "-p", "-t", pane["id"], "#{pane_active}").strip() == "1":
@@ -56,9 +56,15 @@ def snapshot(pane, lines=1000):
             style += "," + active
     except subprocess.CalledProcessError:
         style = ""
-    identity, history = tmux("display-message", "-p", "-t", pane["id"], "#{pid}:#{session_id}:#{pane_pid}\t#{history_size}").strip().split("\t")
+    identity, history, cursor = tmux("display-message", "-p", "-t", pane["id"], "#{pid}:#{session_id}:#{pane_pid}\t#{history_size}\t#{cursor_y}").rstrip("\n").split("\t")
     if identity != pane["identity"]:
         return None
+    cy = int(cursor) if re.fullmatch(r"[0-9]+", cursor) else -1
+    menu = False
+    if 0 <= cy < len(screen):
+        anchor = next((screen[i] for i in range(cy, -1, -1) if re.search(r"[❯›]", screen[i])), "")
+        menu = re.match(r" *[❯›] [0-9]\.", anchor) is not None or any(
+            "Enter to confirm" in row for row in screen[cy + 1:cy + 4])
     pane["output"], pane["defaultStyle"], pane["history"], pane["menu"] = output, style, int(history), menu
     pane["screen"] = visible
     return pane

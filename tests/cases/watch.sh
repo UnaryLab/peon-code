@@ -58,13 +58,14 @@ test_compact_at_directive() {
 test_watch_launch() {
   local fake_bin=$1 home_dir="$TEST_DIR/home-watch" config_dir="$TEST_DIR/watch-config"
   local work_dir="$TEST_DIR/watch-work" log="$TEST_DIR/tmux-watch.log" block
+  local session="peon-watch-test-$$"
   mkdir -p "$home_dir" "$config_dir" "$work_dir"
   printf 'lead ./missing-agent manager\ncheck ./missing-agent reviewer\nimpl codex implementer\n' >"$config_dir/team.conf"
   (
     cd "$work_dir"
     PATH="$fake_bin:$PATH" HOME="$home_dir" TMPDIR="$TEST_DIR" \
       FAKE_TMUX_LOG="$log" FAKE_TMUX_MODE=launch FAKE_TMUX_PANES=3 \
-      "$ROOT/peon-code.sh" -c "$config_dir/team.conf" watch-test
+      "$ROOT/peon-code.sh" -c "$config_dir/team.conf" "$session"
   ) >"$TEST_DIR/watch.out" 2>"$TEST_DIR/watch.err" </dev/null || true
   assert_contains "$log" "set -pt %1 @peon_bin ./missing-agent"
   assert_contains "$log" "set -pt %3 @peon_bin codex"
@@ -82,6 +83,12 @@ test_watch_launch() {
       "$ROOT/peon-code.sh" watch gone-session 1000
   ) >"$TEST_DIR/watch-gone.out" 2>"$TEST_DIR/watch-gone.err" </dev/null ||
     fail "watch on a missing session exited non-zero"
+  (
+    cd "$work_dir"
+    PATH="$fake_bin:$PATH" HOME="$home_dir" FAKE_TMUX_LOG="$log" FAKE_TMUX_MODE=launch \
+      "$ROOT/peon-code.sh" watch "$session/none" 1000
+  ) >"$TEST_DIR/watch-slash.out" 2>"$TEST_DIR/watch-slash.err" </dev/null ||
+    fail "watch on a missing slash session exited non-zero when its PID file could not be written"
   if (PATH="$fake_bin:$PATH" "$ROOT/peon-code.sh" watch gone-session soon) 2>"$TEST_DIR/watch-bad.err"; then
     fail "watch accepted a non-numeric threshold"
   fi
@@ -93,6 +100,7 @@ test_watch_launch() {
 # error (a pane id like %0 must survive the sed that reads the cache).
 test_watch_loop() {
   local claude="$TEST_DIR/claude.jsonl" lookups="$TEST_DIR/lookups" err="$TEST_DIR/watch-loop.err" ticks=0
+  local session="peon-watch-loop-$$"
   : >"$lookups"
   tmux() {
     case $1 in
@@ -105,19 +113,65 @@ test_watch_loop() {
   list_agent_panes() { printf '%%0 lead\n'; }
   last_thread_file() { echo x >>"$lookups"; echo "$claude"; }
   sleep() { :; }
-  cmd_watch loop-test 1000000 2>"$err" || fail "watch loop exited non-zero"
+  cmd_watch "$session" 1000000 2>"$err" || fail "watch loop exited non-zero"
   [ "$ticks" -eq 3 ] || fail "watch loop ran $ticks has-session checks, expected 3"
   [ "$(wc -l <"$lookups")" -eq 1 ] || fail "transcript looked up $(wc -l <"$lookups") times, expected 1 (cache missed)"
   [ ! -s "$err" ] || fail "watch loop wrote to stderr: $(cat "$err")"
+  [ ! -e "/tmp/peon-code-watch-$UID/$session.pid" ] || fail "watch loop left its PID file"
   unset -f tmux session_name list_agent_panes last_thread_file sleep
 }
+
+# Launch only signals a recorded watcher for this exact session. All process
+# checks and signals here are mocks, including malformed or foreign PIDs.
+# shellcheck disable=SC2034,SC2317 # Variables and mocks are used by the evaluated launch block.
+test_watch_launch_pid() (
+  local SESSION="peon-watch-launch-$$" COMPACT_AT=1000 BRIEF_DIR=$TEST_DIR
+  local pid_file="/tmp/peon-code-watch-$UID/$SESSION.pid" block args pid
+  local log="$TEST_DIR/watch-signals.log" started="$TEST_DIR/watch-started.log"
+  local checks="$TEST_DIR/watch-process-checks.log"
+  trap 'rm -f "$pid_file"' EXIT
+  (umask 077; mkdir -p "/tmp/peon-code-watch-$UID")
+  block=$(sed -n '/^# The context watcher outlives this launch/,/^fi$/p' "$ROOT/lib/launch.sh")
+  ps() {
+    printf '%s\n' "$*" >>"$checks"
+    printf '%s\n' "$args"
+  }
+  kill() { printf '%s\n' "$*" >>"$log"; }
+  nohup() { printf '%s\n' "$*" >>"$started"; }
+  for args in "bash $ROOT/peon-code.sh watch $SESSION 1000" \
+    "bash $ROOT/peon-code.sh watch ${SESSION}more 1000" \
+    "bash foreign.sh watch $SESSION 1000"; do
+    : >"$log"
+    : >"$checks"
+    printf '12345\n' >"$pid_file"
+    eval "$block"
+    wait
+    [ "$(cat "$checks")" = '-ww -o args= -p 12345' ] || fail "launch did not verify the recorded PID"
+    if [ "$args" = "bash $ROOT/peon-code.sh watch $SESSION 1000" ]; then
+      [ "$(cat "$log")" = '-TERM 12345' ] || fail "launch did not stop the recorded watcher"
+    else
+      [ ! -s "$log" ] || fail "launch signaled a foreign process or session"
+    fi
+  done
+  for pid in "" bad 0 -1 '12345 extra' "$$"; do
+    : >"$log"
+    : >"$checks"
+    printf '%s\n' "$pid" >"$pid_file"
+    eval "$block"
+    wait
+    [ ! -s "$log" ] || fail "launch signaled invalid PID '$pid'"
+    [ ! -s "$checks" ] || fail "launch checked invalid PID '$pid'"
+  done
+  [ "$(wc -l <"$started")" -eq 9 ] || fail "launch did not start each replacement watcher"
+)
 
 # Newest watcher wins: a second watcher on the same session takes the
 # @peon_watch_pid session option, and the first one exits on its next tick
 # instead of running beside it. Uses a real tmux session, killed by name.
 test_watch_owner() (
   local session="peon-watch-owner-$$" a="" b="" owner i
-  trap 'tmux kill-session -t "=$session" 2>/dev/null; kill $a $b 2>/dev/null; true' EXIT
+  local pid_file="/tmp/peon-code-watch-$UID/$session.pid"
+  trap 'tmux kill-session -t "=$session" 2>/dev/null || true; kill $a $b 2>/dev/null || true' EXIT
   tmux new-session -d -s "$session" || fail "could not create tmux session $session"
   PEON_WATCH_TICK=1 "$ROOT/peon-code.sh" watch "$session" 1000 2>/dev/null &
   a=$!
@@ -141,12 +195,19 @@ test_watch_owner() (
   done
   if kill -0 "$a" 2>/dev/null; then fail "stale watcher $a still runs beside $b"; fi
   wait "$a" || fail "stale watcher exited non-zero"
+  a=""
   kill -0 "$b" 2>/dev/null || fail "newest watcher $b exited"
+  [ "$(cat "$pid_file")" = "$b" ] || fail "stale watcher removed the newer PID file"
+  tmux kill-session -t "=$session"
+  wait "$b" || fail "newest watcher exited non-zero"
+  b=""
+  [ ! -e "$pid_file" ] || fail "newest watcher left its PID file"
 )
 
 fake_bin=$(make_fake_commands)
 test_context_tokens
 test_watch_loop
+test_watch_launch_pid
 test_watch_owner
 test_compact_at_directive
 test_watch_launch "$fake_bin"

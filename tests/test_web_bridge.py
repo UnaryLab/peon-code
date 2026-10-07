@@ -41,7 +41,7 @@ class BridgeTests(unittest.TestCase):
 
     def test_capture_keeps_ansi_and_background(self):
         pane = {'id': '%2', 'identity': '100:$1:202'}
-        with patch.object(bridge, 'tmux', side_effect=['\x1b[38;2;1;2;3mtext\x1b[0m', '› 2. Continue\n', 'fg=#abcdef,bg=#123456\n', '0', '100:$1:202\t1500\n']) as tmux:
+        with patch.object(bridge, 'tmux', side_effect=['\x1b[38;2;1;2;3mtext\x1b[0m', '› 2. Continue\n', 'fg=#abcdef,bg=#123456\n', '0', '100:$1:202\t1500\t0\n']) as tmux:
             bridge.snapshot(pane, 2000)
         self.assertIn('-e', tmux.call_args_list[0].args)
         self.assertEqual(tmux.call_args_list[0].args[-2:], ('-S', '-2000'))
@@ -50,21 +50,34 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(pane['screen'], '› 2. Continue\n')
         self.assertEqual(tmux.call_count, 5)
         self.assertEqual(tmux.call_args_list[1].args, ('capture-pane', '-p', '-t', '%2'))
+        self.assertEqual(tmux.call_args_list[-1].args[-1], '#{pid}:#{session_id}:#{pane_pid}\t#{history_size}\t#{cursor_y}')
         self.assertEqual(pane['defaultStyle'], 'fg=#abcdef,bg=#123456')
         self.assertIn('\x1b[', pane['output'])
 
     def test_menu_uses_visible_screen_and_exact_patterns(self):
         history = '\x1b[31mEnter to confirm\x1b[0m\n❯ 1. Old choice\nReady\n\n'
-        for screen, expected in (
-                ('Ready\n\n', False), ('\n\n', False),
-                ('Enter to confirm\n\n', True), ('❯ 1. Accept\n', True), ('› 0. Choice\n', True),
-                ('❯ 10. Choice\n', False), ('enter to confirm\n', False), ('> 1. Choice\n', False),
-                ('Quoted Enter to confirm\n❯ \n\n', False),
-                ('Enter to confirm\n' + 'Ready\n' * 12, False),
-                ('Ready\n' * 12 + 'Enter to confirm\n\n', True),
-                ('❯ 3. Type something.\n  4. Chat about this\n', True)):
+        for screen, cursor_y, expected in (
+                ('Ready\n\n', 0, False), ('\n\n', 1, False),
+                ('Enter to confirm\n\n', 0, False), ('❯ 1. Accept\n', 0, True), ('› 0. Choice\n', 0, True),
+                ('❯ 10. Choice\n', 0, False), ('enter to confirm\n', 0, False), ('> 1. Choice\n', 0, False),
+                ('Quoted Enter to confirm\n❯ \n\n', 1, False),
+                ('Quoted › 1. Choice\n❯ \n\n', 1, False),
+                ('› quoted › 1. Old choice\n', 0, False),
+                (' ❯ see ❯ 1. Old choice\n', 0, False),
+                ('› first line\nquoted › 1. Old choice\ntail\n', 2, False),
+                ('› please press Enter to confirm\n', 0, False),
+                ('› first line\ncontinuation\nplease press Enter to confirm\n', 2, False),
+                ('  ❯ 1. Accept\n', 0, True),
+                ('❯ \nQuoted › 1. Choice\n', 0, False),
+                ('Enter to confirm\n' + 'Ready\n' * 12, 12, False),
+                ('Ready\n' * 12 + 'Enter to confirm\n\n', 11, True),
+                ('❯ \n\n\nEnter to confirm\n', 0, True),
+                ('❯ \n\n\n\nEnter to confirm\n', 0, False),
+                ('❯ 3. Type something.\n  4. Chat about this\n', 0, True),
+                ('Choose a model\n› 1. Model A\n  2. Model B\n\nenter select / esc back\n', 4, True),
+                ('❯ \n', -1, False), ('❯ \n', 99, False), ('❯ \n', '', False), ('❯ \n', 'invalid', False)):
             pane = dict(id='%2', identity='100:$1:202')
-            with self.subTest(screen=screen), patch.object(bridge, 'tmux', side_effect=[history, screen, '', '0', '100:$1:202\t2000\n']):
+            with self.subTest(screen=screen, cursor_y=cursor_y), patch.object(bridge, 'tmux', side_effect=[history, screen, '', '0', f'100:$1:202\t2000\t{cursor_y}\n']):
                 result = bridge.snapshot(pane, 200000)
             self.assertEqual(result['menu'], expected)
             self.assertEqual(result['output'], history)

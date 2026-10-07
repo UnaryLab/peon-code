@@ -138,10 +138,12 @@ slash_then_rebrief() {
 # Send one agent's message to another agent's pane. A message of - is read
 # from stdin, which keeps quotes in it off the sender's command line. One run
 # makes the box check and the paste back to back, and Enter follows only once
-# the box shows the message, as box_holds_message decides; a box holding
-# anything else keeps both the message and whatever the user typed.
+# the box shows the message, as box_holds_message decides. --append includes
+# the user's existing text in that check.
 cmd_send() {
-  with_pane_delivery "${1:-}" send_locked "$@"
+  local append=0
+  if [ "${1:-}" = --append ]; then append=1; shift; fi
+  with_pane_delivery "${1:-}" send_locked "${1:-}" "${2:-}" "$append"
 }
 
 cmd_key() {
@@ -157,7 +159,7 @@ cmd_key() {
 }
 
 key_locked() {
-  local pane=$1 name=$2 capture
+  local pane=$1 name=$2 capture cy
   pane_identity_matches "$pane" || die "no key sent: agent changed"
   case $(tmux display -pt "$pane" '#{pane_current_command}' 2>/dev/null || true) in
     "") die "no pane $pane" ;;
@@ -166,8 +168,10 @@ key_locked() {
   [ -n "$(tmux show-options -pqv -t "$pane" @peon_name 2>/dev/null || true)" ] ||
     die "pane $pane is not a peon-code agent pane"
   if [ "$name" = Enter ]; then
-    capture=$(tmux capture-pane -pt "$pane" 2>/dev/null) || die "cannot read pane $pane"
-    pane_has_menu "$capture" || die "no Enter sent: pane $pane is not on a menu"
+    cy=$(tmux display -pt "$pane" '#{cursor_y}' 2>/dev/null) || die "cannot read cursor for pane $pane"
+    capture=$(tmux capture-pane -pt "$pane" 2>/dev/null && printf '.') || die "cannot read pane $pane"
+    capture=${capture%.}
+    pane_has_menu "$capture" "$cy" || die "no Enter sent: pane $pane is not on a menu"
   fi
   pane_takes_keys "$pane" || die "no key sent: pane $pane is in copy mode"
   pane_identity_matches "$pane" || die "no key sent: agent changed"
@@ -175,8 +179,8 @@ key_locked() {
 }
 
 send_locked() {
-  local pane=${1:-} text=${2:-} want box i rc reason
-  [ -n "$pane" ] && [ -n "$text" ] || die "usage: peon-code.sh send <pane-id> 'text'|-"
+  local pane=${1:-} text=${2:-} append=${3:-0} want box i rc reason cursor end_cursor last key
+  [ -n "$pane" ] && [ -n "$text" ] || die "usage: peon-code.sh send [--append] <pane-id> 'text'|-"
   pane_identity_matches "$pane" || die "no message sent: agent changed"
   if [ "$text" = - ]; then
     text=$(cat)
@@ -202,13 +206,52 @@ send_locked() {
       1) reason="pane $pane is in copy mode" ;;
       2) die "pane $pane draws no prompt marker peon-code knows, so peon-code cannot message it" ;;
       3) reason="pane $pane is on a dialog or a menu" ;;
+      4) if [ "$append" = 1 ]; then reason=""; else reason="target box busy"; fi ;;
       *) reason="target box busy" ;;
     esac
     [ -n "$reason" ] || break
     if [ "$i" -lt 9 ]; then sleep 1; fi
   done
-  [ -z "$reason" ] || die "$reason after 10 tries, giving up"
+  if [ -n "$reason" ]; then
+    [ "$rc" -ne 4 ] || die "$reason after 10 tries, giving up: its input box holds typed text"
+    die "$reason after 10 tries, giving up"
+  fi
   want=$(printf '%s' "$text" | plain_text)
+  if [ "$append" = 1 ]; then
+    box=$(pane_box_text "$pane") || die "no message sent: target box changed"
+    if [ -n "$box" ]; then
+      # Read the cell before the end cursor: normalized box text drops whitespace.
+      for key in End Left End; do
+        pane_takes_keys "$pane" || die "no message sent: pane $pane is in copy mode"
+        pane_identity_matches "$pane" || die "no message sent: agent changed"
+        tmux send-keys -t "$pane" "$key" || die "no message sent: tmux refused cursor movement"
+        for ((i = 0; i < 10; i++)); do
+          sleep 0.2
+          cursor=$(tmux display -pt "$pane" '#{cursor_x} #{cursor_y}') || die "no message sent: cannot read cursor"
+          if [ "$key" = Left ]; then
+            [ "$cursor" != "$end_cursor" ] || continue
+          elif [ -n "${end_cursor:-}" ]; then
+            [ "$cursor" = "$end_cursor" ] || continue
+          fi
+          break
+        done
+        [ "$i" -lt 10 ] || die "no message sent: cursor did not move"
+        if [ "$key" = Left ]; then
+          last=$(tmux display -pt "$pane" '#{cursor_character}') || die "no message sent: cannot read cursor character"
+        else
+          end_cursor=$cursor
+        fi
+      done
+      case $last in
+        [[:space:]]|$'\302\240') ;;
+        *) text=" $text" ;;
+      esac
+      want=$(printf '%s %s' "$box" "$text" | plain_text)
+      pane_takes_keys "$pane" || die "no message sent: pane $pane is in copy mode"
+      pane_identity_matches "$pane" || die "no message sent: agent changed"
+      pane_box_text "$pane" >/dev/null || die "no message sent: target box changed"
+    fi
+  fi
   printf '%s' "$text" | paste_only "$pane" ||
     die "no message sent: tmux refused the paste"
   for ((i = 0; i < 10; i++)); do
