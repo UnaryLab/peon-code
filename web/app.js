@@ -5,6 +5,8 @@ history.replaceState(null, '', location.pathname);
 const cards = new Map();
 const connection = document.querySelector('#connection');
 let dragging = false;
+let dismissing = false;
+let dismissed = null;
 async function api(path, data) {
   const response = await fetch(path, {method: data ? 'POST' : 'GET', headers: {
     'X-Peon-Token': token, ...(data ? {'Content-Type': 'application/json'} : {})
@@ -13,6 +15,22 @@ async function api(path, data) {
   if (!response.ok) throw new Error(result.error || 'Request failed');
   return result;
 }
+document.querySelector('#dismiss').onclick = async () => {
+  const session = navigation.session;
+  if (!session || dismissing || !confirm('Close session ' + session + '? Its agents stop.')) return;
+  dismissing = true;
+  updateNavigation();
+  const status = document.querySelector('#dismiss-status');
+  status.hidden = false;
+  status.classList.remove('error');
+  status.textContent = 'Closing session ' + session;
+  try {
+    status.textContent = (await api('/api/dismiss', {session})).message;
+    dismissed = session;
+  }
+  catch (error) { status.textContent = error.message; status.classList.add('error'); }
+  finally { dismissing = false; updateNavigation(); }
+};
 function feedback(card, message, error = false) {
   card.el.querySelector('.feedback').textContent = message;
   card.el.querySelector('.feedback').classList.toggle('error', error);
@@ -25,6 +43,7 @@ function setSelection(card, text) {
   card.el.querySelector('.discard').hidden = !card.closed;
   card.el.querySelector('.discard').disabled = card.busy;
   card.el.querySelector('form button').disabled = card.busy || card.closed;
+  for (const button of card.el.querySelectorAll('.keys button')) button.disabled = card.busy || card.closed;
   card.el.querySelector('.selection-note').textContent = text ? 'Selection saved · updates paused' : '';
   card.el.querySelector('.state').textContent = card.closed ? 'Closed' : text ? 'Paused' : 'Live';
 }
@@ -37,19 +56,75 @@ async function send(card, action, text) {
   setSelection(card, card.selected);
   feedback(card, 'Sending to this agent…');
   try {
-    const result = await api('/api/' + action, {pane: card.id, identity: card.latest.identity, text});
+    const result = await api('/api/' + action, {pane: card.id, identity: card.latest.identity, ...(action === 'keys' ? {key: text} : {text})});
     feedback(card, result.message);
     if (action === 'explain') {
       if (card.selected === text && card.selectionRevision === selectionRevision) { setSelection(card, ''); if (card.key === currentPane()) getSelection().removeAllRanges(); }
-    } else if (card.draftRevision === draftRevision && card.el.querySelector('textarea').value === text) card.el.querySelector('textarea').value = '';
+    } else if (action === 'send' && card.draftRevision === draftRevision && card.el.querySelector('textarea').value === text) card.el.querySelector('textarea').value = '';
   } catch (error) { feedback(card, error.message, true); }
   finally { card.busy = false; setSelection(card, card.selected); }
+}
+function inputHint(pane) {
+  const markerRow = (pane.screen || '').split('\n').reverse().find(row => /[❯›]/.test(row));
+  if (!markerRow) return '';
+  const parsed = document.createElement('div');
+  for (const row of pane.output.split('\n').reverse()) {
+    if (!/[❯›]/.test(row)) continue;
+    let hint = '', afterMarker = false;
+    renderAnsi(parsed, row, '', (text, hinted) => {
+      const marker = text.search(/[❯›]/);
+      if (!afterMarker && marker >= 0) { afterMarker = true; text = text.slice(marker + 1); }
+      if (afterMarker && hinted) hint += text;
+    });
+    if (/[❯›]/.test(parsed.textContent)) return parsed.textContent.trimEnd() === markerRow.trimEnd() ? hint.trim() : '';
+  }
+  return '';
+}
+function updateKeys(card) {
+  const pane = card.latest;
+  const labels = [];
+  if (pane.menu) {
+    // Claude's numbered menu rows are recognized; Codex and Copilot use the folded Keys controls.
+    const rows = [...(pane.screen || '').matchAll(/^(?:[❯›] | {2})([1-9])\. (.+)$/gm)];
+    let previous = null;
+    for (const match of rows.reverse()) {
+      const digit = Number(match[1]);
+      if (previous !== null && digit !== previous - 1) break;
+      labels.unshift([match[1], (match[1] + '. ' + match[2].trim()).slice(0, 40)]);
+      if (digit === 1) break;
+      previous = digit;
+    }
+    labels.push(['Enter', 'Enter'], ['Escape', 'Esc']);
+  }
+  const hint = inputHint(pane);
+  if (hint) labels.push(['Tab', ('Tab: ' + hint).slice(0, 60)]);
+  const signature = JSON.stringify(labels);
+  if (signature === card.shortcutsRendered) return;
+  card.shortcutsRendered = signature;
+  const buttons = labels.map(([key, label]) => {
+    const button = document.createElement('button');
+    button.type = 'button'; button.dataset.key = key; button.textContent = label;
+    button.disabled = card.busy || card.closed;
+    button.onclick = () => send(card, 'keys', key);
+    return button;
+  });
+  card.el.querySelector('.key-shortcuts').replaceChildren(...buttons);
 }
 function createCard(pane) {
   const el = document.querySelector('#pane-template').content.firstElementChild.cloneNode(true);
   el.dataset.pane = pane.id;
   el.dataset.key = paneKey(pane);
-  const card = {el, id: pane.id, key: paneKey(pane), lines: 1000, scrollTop: 0, fullHistory: false, selected: '', selectionRevision: 0, draftRevision: 0, busy: false, closed: false, unread: false, latest: null, rendered: null};
+  const card = {el, id: pane.id, key: paneKey(pane), lines: 1000, scrollTop: 0, fullHistory: false, selected: '', selectionRevision: 0, draftRevision: 0, busy: false, closed: false, unread: false, needsAnswer: false, latest: null, rendered: null, keysOpen: false};
+  const keysToggle = el.querySelector('.keys-toggle');
+  keysToggle.onclick = () => {
+    card.keysOpen = !card.keysOpen;
+    keysToggle.setAttribute('aria-expanded', String(card.keysOpen));
+    el.querySelector('.key-buttons').hidden = !card.keysOpen;
+  };
+  for (const button of el.querySelectorAll('.key-buttons button')) button.onclick = () => send(card, 'keys', button.dataset.key);
+  const shortcuts = document.createElement('div');
+  shortcuts.className = 'key-shortcuts';
+  el.querySelector('.keys').append(shortcuts);
   el.querySelector('textarea').oninput = () => { card.draftRevision++; };
   el.querySelector('textarea').onkeydown = event => {
     if (event.key === 'Enter' && event.shiftKey && !event.isComposing) {
@@ -68,6 +143,11 @@ function createCard(pane) {
     else if (scrollingUp && output.scrollTop < 200 && !card.selected && getSelection().isCollapsed && card.latest?.history > card.lines && card.latest.capturedLines === card.lines && card.lines < 200000) {
       card.lines += 1000;
     }
+  };
+  el.querySelector('.output').onkeydown = event => {
+    if (event.ctrlKey || event.altKey || event.metaKey || event.isComposing || card.closed || card.busy) return;
+    const key = {ArrowUp: 'Up', ArrowDown: 'Down', Enter: 'Enter', Escape: 'Escape'}[event.key] || (/^[1-9]$/.test(event.key) ? event.key : null);
+    if (typeof key === 'string') { event.preventDefault(); send(card, 'keys', key); }
   };
   el.querySelector('.output').oncontextmenu = event => {
     if (document.querySelector('#right-click').checked && card.selected.trim() && !card.busy && !card.closed) {
@@ -134,7 +214,7 @@ async function refresh() {
     const visible = cards.get(currentPane());
     const lines = visible && !visible.closed ? visible.lines : 1000;
     const query = lines > 1000 ? '?pane=' + encodeURIComponent(visible.id) + '&lines=' + lines : '';
-    const {panes} = await api("/api/panes" + query);
+    const {panes, initial} = await api("/api/panes" + query);
     connection.textContent = panes.length + " agent" + (panes.length === 1 ? "" : "s") + " connected";
     document.querySelector("#empty").hidden = !!panes.length;
     const keys = new Set(panes.map(paneKey));
@@ -142,7 +222,9 @@ async function refresh() {
       const card = cards.get(paneKey(pane)) || createCard(pane);
       if (card.closed) { card.closed = false; setSelection(card, card.selected); feedback(card, 'Agent reconnected'); }
       if (pane.role === 'manager' && card.latest && card.latest.output !== pane.output && card.key !== currentPane()) card.unread = true;
+      card.needsAnswer = pane.menu;
       card.latest = {...pane, capturedLines: visible && visible.id === pane.id ? lines : 1000};
+      updateKeys(card);
       card.el.querySelector("h2").textContent = pane.name;
       card.el.querySelector(".meta").textContent = pane.session + " / " + pane.role + " / " + pane.id;
       updateOutput(card);
@@ -158,7 +240,11 @@ async function refresh() {
       }
     }
     document.querySelector('#empty').hidden = !!panes.length;
-    reconcileNavigation(panes);
+    if (dismissed && !panes.some(pane => pane.session === dismissed && !pane.closed)) {
+      if (navigation.session === dismissed) navigation.session = undefined;
+      dismissed = null;
+    }
+    reconcileNavigation(panes, initial);
   } catch (error) { connection.textContent = error.message; }
   finally { setTimeout(refresh, 1200); }
 }

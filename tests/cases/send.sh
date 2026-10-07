@@ -253,6 +253,84 @@ PEON
 # msg presses Enter into a pane only once that pane's box shows the message,
 # and one pane that never shows it does not hold up the others.
 
+test_send_free_text() {
+  local before after option chat box
+  before='Third test?
+
+  1. A
+     Option A
+  2. B
+     Option B
+❯ 3. Type something.
+────
+  4. Chat about this
+
+Enter to select · ↑/↓ to navigate · ctrl+g to edit in VS Code · Esc to cancel'
+  after=${before/Type something./hi there}
+  for box in "$before" "$after"; do
+    bash -c 'source "$1/lib/input.sh"; pane_has_menu "$2"' _ "$ROOT" "$box" ||
+      fail 'selected free-text row was not recognized as a menu for explicit keys'
+  done
+  reset_send_log
+  box=$(PATH="$SEND_BIN:$PATH" FAKE_TMUX_LOG="$SEND_LOG" FAKE_BOX="$before" FAKE_CURSOR='5 6' \
+    bash -c 'source "$1/lib/input.sh"; pane_box_text %2' _ "$ROOT") || fail 'free-text placeholder was a menu'
+  [ -z "$box" ] || fail "free-text placeholder holds '$box'"
+  box=$(PATH="$SEND_BIN:$PATH" FAKE_TMUX_LOG="$SEND_LOG" FAKE_BOX="$after" FAKE_CURSOR='5 6' \
+    bash -c 'source "$1/lib/input.sh"; pane_box_text %2' _ "$ROOT") || fail 'typed free-text row was a menu'
+  [ "$box" = 'hi there' ] || fail "typed free-text row holds '$box'"
+  box=$(PATH="$SEND_BIN:$PATH" FAKE_TMUX_LOG="$SEND_LOG" FAKE_BOX='output line
+❯ 3. Type something.
+────' FAKE_CURSOR='5 1' \
+    bash -c 'source "$1/lib/input.sh"; pane_box_text %2' _ "$ROOT") || fail 'exact free-text label needs a Chat row'
+  [ -z "$box" ] || fail "exact free-text label holds '$box'"
+
+  reset_send_log
+  PATH="$SEND_BIN:$PATH" FAKE_TMUX_LOG="$SEND_LOG" \
+    FAKE_BOX="$before" FAKE_CURSOR='5 6' FAKE_BOX_AFTER="$after" FAKE_CURSOR_AFTER='13 6' \
+    "$ROOT/peon-code.sh" send %2 'hi there' >"$TEST_DIR/send-free-text.out"
+  assert_contains "$SEND_LOG" 'buffer-content:hi there'
+  [ "$(grep -c -Fx 'send-keys -t %2 Enter' "$SEND_LOG")" = 1 ] || fail 'free-text send did not submit once'
+  assert_send_refused 'typed free-text' 'target box busy after 10 tries, giving up' \
+    FAKE_BOX="$after" FAKE_CURSOR='5 6'
+
+  option=${before/❯ 3./  3.}
+  option=${option/  1. A/❯ 1. A}
+  chat=${before/❯ 3./  3.}
+  chat=${chat/  4. Chat/❯ 4. Chat}
+  assert_send_refused 'selected option' 'is on a dialog or a menu after 10 tries, giving up' \
+    FAKE_BOX="$option" FAKE_CURSOR='5 2'
+  assert_send_refused 'Chat about this' 'is on a dialog or a menu after 10 tries, giving up' \
+    FAKE_BOX="$chat" FAKE_CURSOR='5 8'
+}
+
+test_send_menu_region() (
+  local before after cap i
+  # shellcheck source=lib/input.sh
+  source "$ROOT/lib/input.sh"
+  before='Quoted old dialog: Enter to confirm
+❯ 1. Old choice
+❯
+────'
+  after=${before/$'❯\n'/$'❯ hello world\n'}
+  reset_send_log
+  PATH="$SEND_BIN:$PATH" FAKE_TMUX_LOG="$SEND_LOG" \
+    FAKE_BOX="$before" FAKE_CURSOR='2 2' FAKE_BOX_AFTER="$after" FAKE_CURSOR_AFTER='13 2' \
+    "$ROOT/peon-code.sh" send %2 'hello world' >"$TEST_DIR/send-quoted-menu.out"
+  assert_contains "$SEND_LOG" 'send-keys -t %2 Enter'
+  assert_send_refused 'a current confirmation footer' 'is on a dialog or a menu after 10 tries, giving up' \
+    FAKE_BOX='Question
+❯
+Enter to confirm' FAKE_CURSOR='2 1'
+
+  cap='Enter to confirm'
+  for ((i = 0; i < 12; i++)); do cap="$cap
+ordinary output"; done
+  if pane_has_menu "$cap"; then fail 'menu check read beyond the last twelve rows with no marker'; fi
+  cap="$cap
+Enter to confirm"
+  pane_has_menu "$cap" || fail 'menu check missed a confirmation in the last twelve rows'
+)
+
 fake_bin=$(make_fake_commands)
 SEND_BIN=$(make_send_bin "$fake_bin")
 test_send_refuses
@@ -271,4 +349,6 @@ PATH="$SEND_BIN:$PATH" FAKE_TMUX_LOG="$SEND_LOG" \
 assert_contains "$SEND_LOG" 'buffer-content:日本語 🙂'
 assert_contains "$SEND_LOG" 'send-keys -t %2 Enter'
 test_send_delivers
+test_send_free_text
+test_send_menu_region
 echo "send: PASS"

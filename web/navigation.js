@@ -14,12 +14,12 @@ function showPane() {
   if (card) { card.unread = false; if (!card.selected) updateOutput(card); }
   updateNavigation();
 }
-function tab(label, active, unread, onClick, key) {
+function tab(label, active, unread, onClick, key, needsAnswer) {
   const button = document.createElement('button');
   button.type = 'button'; button.textContent = label; button.dataset.key = key;
-  button.className = 'tab' + (active ? ' active' : '') + (unread ? ' unread' : '');
+  button.className = 'tab' + (active ? ' active' : '') + (unread ? ' unread' : '') + (needsAnswer ? ' needs-answer' : '');
   button.setAttribute('aria-current', active ? 'true' : 'false');
-  if (unread) button.setAttribute('aria-label', label + ', new output');
+  if (unread || needsAnswer) button.setAttribute('aria-label', label + (unread ? ', new output' : '') + (needsAnswer ? ', waiting for an answer' : ''));
   button.onclick = onClick;
   return button;
 }
@@ -31,21 +31,26 @@ function replaceTabs(container, buttons) {
   if (focused) buttons.find(button => button.dataset.key === focused)?.focus({preventScroll: true});
 }
 function updateNavigation() {
+  const dismiss = document.querySelector('#dismiss');
+  dismiss.hidden = !navigation.session;
+  dismiss.disabled = dismissing || !navigation.panes.some(pane => pane.session === navigation.session && !pane.closed);
   const sessions = [...new Set(navigation.panes.map(pane => pane.session))];
   replaceTabs(document.querySelector('#sessions'), sessions.map(session => {
     const project = navigation.panes.find(pane => pane.session === session)?.projectDir || '';
     const label = session + (project ? ' · ' + project.split('/').pop() : '');
-    const button = tab(label, session === navigation.session, navigation.panes.some(pane => pane.session === session && cards.get(paneKey(pane))?.unread), () => chooseSession(session), session);
+    const button = tab(label, session === navigation.session, navigation.panes.some(pane => pane.session === session && cards.get(paneKey(pane))?.unread), () => chooseSession(session), session,
+      navigation.panes.some(pane => pane.session === session && cards.get(paneKey(pane))?.needsAnswer));
     button.title = project; return button;
   }));
   const project = navigation.panes.find(pane => pane.session === navigation.session)?.projectDir || '';
   document.querySelector('#project-path').textContent = project ? 'Folder: ' + project : '';
   replaceTabs(document.querySelector('#agents'), navigation.panes.filter(pane => pane.session === navigation.session).map(pane =>
-    tab(pane.name + ' · ' + pane.role + (pane.closed ? ' · closed' : ''), paneKey(pane) === currentPane(), cards.get(paneKey(pane))?.unread, () => { navigation.active.set(navigation.session, paneKey(pane)); showPane(); }, paneKey(pane))));
+    tab(pane.name + ' · ' + pane.role + (pane.closed ? ' · closed' : ''), paneKey(pane) === currentPane(), cards.get(paneKey(pane))?.unread, () => { navigation.active.set(navigation.session, paneKey(pane)); showPane(); }, paneKey(pane), cards.get(paneKey(pane))?.needsAnswer)));
 }
-function reconcileNavigation(panes) {
+function reconcileNavigation(panes, initial) {
   navigation.panes = panes.slice().sort((a, b) => a.session.localeCompare(b.session) || (roleOrder[a.role] ?? 2) - (roleOrder[b.role] ?? 2) || Number(a.id.slice(1)) - Number(b.id.slice(1)));
-  if (!panes.some(pane => pane.session === navigation.session)) navigation.session = navigation.panes[0]?.session;
+  if (navigation.session === null && panes.some(pane => pane.session === initial)) navigation.session = initial;
+  if (!panes.some(pane => pane.session === navigation.session)) navigation.session = navigation.panes.find(pane => !pane.closed)?.session;
   for (const session of new Set(panes.map(pane => pane.session))) {
     if (!panes.some(pane => pane.session === session && paneKey(pane) === navigation.active.get(session))) {
       navigation.active.set(session, paneKey(navigation.panes.find(pane => pane.session === session)));

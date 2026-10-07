@@ -41,20 +41,42 @@ class BridgeTests(unittest.TestCase):
 
     def test_capture_keeps_ansi_and_background(self):
         pane = {'id': '%2', 'identity': '100:$1:202'}
-        with patch.object(bridge, 'tmux', side_effect=['\x1b[38;2;1;2;3mtext\x1b[0m', 'fg=#abcdef,bg=#123456\n', '0', '100:$1:202\t1500\n']) as tmux:
+        with patch.object(bridge, 'tmux', side_effect=['\x1b[38;2;1;2;3mtext\x1b[0m', '› 2. Continue\n', 'fg=#abcdef,bg=#123456\n', '0', '100:$1:202\t1500\n']) as tmux:
             bridge.snapshot(pane, 2000)
         self.assertIn('-e', tmux.call_args_list[0].args)
         self.assertEqual(tmux.call_args_list[0].args[-2:], ('-S', '-2000'))
         self.assertEqual(pane['history'], 1500)
+        self.assertTrue(pane['menu'])
+        self.assertEqual(pane['screen'], '› 2. Continue\n')
+        self.assertEqual(tmux.call_count, 5)
+        self.assertEqual(tmux.call_args_list[1].args, ('capture-pane', '-p', '-t', '%2'))
         self.assertEqual(pane['defaultStyle'], 'fg=#abcdef,bg=#123456')
         self.assertIn('\x1b[', pane['output'])
+
+    def test_menu_uses_visible_screen_and_exact_patterns(self):
+        history = '\x1b[31mEnter to confirm\x1b[0m\n❯ 1. Old choice\nReady\n\n'
+        for screen, expected in (
+                ('Ready\n\n', False), ('\n\n', False),
+                ('Enter to confirm\n\n', True), ('❯ 1. Accept\n', True), ('› 0. Choice\n', True),
+                ('❯ 10. Choice\n', False), ('enter to confirm\n', False), ('> 1. Choice\n', False),
+                ('Quoted Enter to confirm\n❯ \n\n', False),
+                ('Enter to confirm\n' + 'Ready\n' * 12, False),
+                ('Ready\n' * 12 + 'Enter to confirm\n\n', True),
+                ('❯ 3. Type something.\n  4. Chat about this\n', True)):
+            pane = dict(id='%2', identity='100:$1:202')
+            with self.subTest(screen=screen), patch.object(bridge, 'tmux', side_effect=[history, screen, '', '0', '100:$1:202\t2000\n']):
+                result = bridge.snapshot(pane, 200000)
+            self.assertEqual(result['menu'], expected)
+            self.assertEqual(result['output'], history)
+            self.assertEqual(result['screen'], screen)
+            self.assertEqual(result['history'], 2000)
 
     def test_real_tmux_inherited_background_and_truecolor(self):
         socket = 'peon-web-style-check-' + str(os.getpid())
         def tmux(*args):
             return subprocess.run(['tmux', '-L', socket, *args], capture_output=True, text=True, check=True, timeout=5).stdout
         try:
-            tmux('-f', '/dev/null', 'new-session', '-d', '-s', 'style-check', "printf '\\033[38;2;200;30;40mCOLOUR\\033[0m\\n'; sleep 5")
+            tmux('-f', '/dev/null', 'new-session', '-d', '-s', 'style-check', '-x', '80', '-y', '4', "printf 'Enter to confirm\\n\\n\\n\\n\\n\\033[38;2;200;30;40mCOLOUR\\033[0m\\n'; sleep 5")
             pane = tmux('display-message', '-p', '-t', 'style-check', '#{pane_id}').strip()
             tmux('set-window-option', '-t', 'style-check', 'window-style', 'fg=#abcdef,bg=#123456')
             result = {'id': pane, 'identity': tmux('display-message', '-p', '-t', pane, '#{pid}:#{session_id}:#{pane_pid}').strip()}
@@ -66,6 +88,16 @@ class BridgeTests(unittest.TestCase):
                     time.sleep(.05)
             self.assertIn('\x1b[38;2;200;30;40m', result['output'])
             self.assertIn('bg=#123456', result['defaultStyle'])
+            self.assertFalse(result['menu'])
+            screen = tmux('capture-pane', '-p', '-t', pane)
+            self.assertIn('Enter to confirm', result['output'])
+            self.assertNotIn('Enter to confirm', screen)
+            self.assertEqual(result['screen'], screen)
+            self.assertTrue(screen.endswith('\n\n'))
+            with patch.object(bridge, 'tmux', side_effect=tmux):
+                deeper = bridge.snapshot(dict(result), 2000)
+            self.assertFalse(deeper['menu'])
+            self.assertEqual(deeper['output'], result['output'])
         finally:
             subprocess.run(['tmux', '-L', socket, 'kill-session', '-t', 'style-check'], capture_output=True)
 

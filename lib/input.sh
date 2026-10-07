@@ -90,10 +90,42 @@ plain_text() {
 # with the cursor right after it, so the input box measures empty while the
 # pane is waiting on an answer.
 pane_has_menu() {
-  case $1 in
+  local region
+  region=$(printf '%s\n' "$1" | LC_ALL=C awk '
+    BEGIN { m = "\342\235\257"; m2 = "\342\200\272" }
+    { rows[NR] = $0; if (index($0, m) || index($0, m2)) mr = NR }
+    END {
+      if (!mr) mr = NR > 12 ? NR - 11 : 1
+      for (r = mr; r <= NR; r++) print rows[r]
+    }')
+  case $region in
     *"Enter to confirm"*|*"❯ "[0-9]"."*|*"› "[0-9]"."*) return 0 ;;
   esac
   return 1
+}
+
+# Type something. is Claude's label. Update it if Claude changes the label.
+pane_free_text_number() {
+  printf '%s\n' "$1" | LC_ALL=C awk '
+    BEGIN { m = "\342\235\257"; m2 = "\342\200\272" }
+    {
+      rows[NR] = $0; p = index($0, m); q = index($0, m2)
+      if (!p || (q && q < p)) p = q
+      if (p) { mr = NR; mp = p }
+    }
+    END {
+      if (!mr) exit 1
+      s = substr(rows[mr], mp + 3)
+      if (s !~ /^[ \t]*[0-9]+\.[ \t]+/) exit 1
+      n = s; sub(/^[ \t]*/, "", n); sub(/\..*/, "", n)
+      sub(/^[ \t]*[0-9]+\.[ \t]*/, "", s); sub(/[ \t]*$/, "", s)
+      if (s == "Type something.") { print n; exit }
+      for (r = mr + 1; r <= NR; r++) {
+        s = rows[r]; sub(/^[ \t]*/, "", s)
+        if (s ~ /^[0-9]+\.[ \t]+Chat about this[ \t]*$/ && s + 0 == n + 1) { print n; exit }
+      }
+      exit 1
+    }'
 }
 
 # A pane in copy mode routes keys through the copy-mode key table, so a paste
@@ -214,13 +246,15 @@ strip_styles() {
 # peon-code pastes over it; model that style in strip_styles if a TUI draws
 # hints another way.
 pane_box_text() {
-  local pane=$1 cy cap box
+  local pane=$1 cy cap box plain free
   cy=$(tmux display -pt "$pane" '#{cursor_y}' 2>/dev/null) || return 1
   cap=$(tmux capture-pane -ept "$pane" 2>/dev/null) || return 1
-  if pane_has_menu "$(printf '%s\n' "$cap" | strip_styles 0)"; then
+  plain=$(printf '%s\n' "$cap" | strip_styles 0)
+  free=$(pane_free_text_number "$plain") || free=""
+  if [ -z "$free" ] && pane_has_menu "$plain"; then
     return 1
   fi
-  box=$(printf '%s\n' "$cap" | strip_styles 1 | LC_ALL=C awk -v cy="$cy" '
+  box=$(printf '%s\n' "$cap" | strip_styles 1 | LC_ALL=C awk -v cy="$cy" -v free="$free" '
     # Prompt markers: claude draws U+276F, codex U+203A; both are 3 bytes.
     BEGIN { m = "\342\235\257"; m2 = "\342\200\272" }
     function markpos(s,   p, q) {
@@ -234,7 +268,13 @@ pane_box_text() {
       if (!mr) exit 2
       for (r = mr; r <= cy + 1; r++) {
         s = rows[r]
-        if (r == mr) s = substr(s, markpos(s) + 3)
+        if (r == mr) {
+          s = substr(s, markpos(s) + 3)
+          if (free != "") {
+            sub(/^[ \t]*[0-9]+\.[ \t]*/, "", s)
+            if (s ~ /^Type something\.[ \t]*$/) s = ""
+          }
+        }
         out = out " " s
       }
       print out

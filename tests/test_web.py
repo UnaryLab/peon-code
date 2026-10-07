@@ -1,5 +1,6 @@
 """Run with: conda run -n peon-chat python -m unittest discover -s tests -p 'test_web*.py'"""
 import contextlib
+import errno
 import importlib.util
 import io
 import json
@@ -15,7 +16,7 @@ import unittest
 from types import SimpleNamespace
 from http.client import HTTPConnection
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "web"))
@@ -29,11 +30,17 @@ spec.loader.exec_module(web)
 
 class WebTests(unittest.TestCase):
     def setUp(self):
+        self.config = tempfile.TemporaryDirectory()
+        self.addCleanup(self.config.cleanup)
+        self.environment = patch.dict(os.environ, XDG_CONFIG_HOME=self.config.name)
+        self.environment.start()
+        self.addCleanup(self.environment.stop)
         self.server = web.ThreadingHTTPServer(("127.0.0.1", 0), web.Handler)
         self.server.address = "127.0.0.1:" + str(self.server.server_port)
         self.server.origin = "http://" + self.server.address
         self.server.token = "test-token"
         self.server.session = "team"
+        self.server.initial = "team"
         self.server.send_lock = threading.Lock()
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
@@ -106,6 +113,67 @@ class WebTests(unittest.TestCase):
             self.assertIn("target box busy", json.loads(body)["error"])
         with patch.object(web, "run_delivery", side_effect=subprocess.TimeoutExpired("delivery", 20)):
             self.assertEqual(self.request("POST", "/api/send", dict(pane="%2", identity="server:session:pane", text=text))[0], 503)
+
+    def test_keys_validate_identity_and_only_send_allowed_keys(self):
+        keys = ("Tab", "Up", "Down", "Enter", "Escape", "1", "2", "3", "4", "5", "6", "7", "8", "9")
+        def deliver(args, text, identity):
+            self.assertTrue(self.server.send_lock.locked())
+            return subprocess.CompletedProcess(args, 0, "key sent", "")
+        with patch.object(web, "run_delivery", side_effect=deliver) as run:
+            for key in keys:
+                data = dict(pane="%2", identity="server:session:pane", key=key, text="Never send this text")
+                status, body = self.request("POST", "/api/keys", data)
+                self.assertEqual((status, json.loads(body)), (200, {"message": "key sent"}))
+                run.assert_called_with([str(ROOT / "peon-code.sh"), "key", "%2", key], "", "server:session:pane")
+            for key in ("Esc", "tab", "0", "10", "a", "C-c", "Tab Enter", "", None, 1, []):
+                with self.subTest(key=key):
+                    self.assertEqual(self.request("POST", "/api/keys", dict(pane="%2", identity="server:session:pane", key=key))[0], 400)
+            data = dict(pane="%2", identity="server:session:pane", key="Enter")
+            self.assertEqual(self.request("POST", "/api/keys", data, {"X-Peon-Token": "bad-token"})[0], 403)
+            self.assertEqual(self.request("POST", "/api/keys", data, {"Origin": "https://evil.test"})[0], 403)
+            self.assertEqual(self.request("POST", "/api/keys", dict(data, identity="old:pane"))[0], 400)
+            self.assertEqual(self.request("POST", "/api/keys", dict(data, pane="%999"))[0], 400)
+            self.assertEqual(self.request("POST", "/api/keys", dict(data, padding="x" * 262144))[0], 400)
+            self.assertEqual(self.request("POST", "/api/keys", ["Tab"])[0], 400)
+            self.assertEqual(run.call_count, len(keys))
+
+    def test_keys_delivery_failure_and_timeout(self):
+        data = dict(pane="%2", identity="server:session:pane", key="Enter")
+        with patch.object(web, "run_delivery", return_value=subprocess.CompletedProcess([], 1, "", "no Enter sent: not on a menu")):
+            status, body = self.request("POST", "/api/keys", data)
+            self.assertEqual((status, json.loads(body)), (409, {"error": "no Enter sent: not on a menu"}))
+        with patch.object(web, "run_delivery", side_effect=subprocess.TimeoutExpired("key", 20)):
+            self.assertEqual(self.request("POST", "/api/keys", data)[0], 503)
+
+    def test_dismiss_session_validation_and_authentication(self):
+        session = "team 'quoted' $(literal)"
+        with patch.object(web, "panes", return_value=[dict(session=session)]) as panes, \
+                patch.object(web.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "closed", "")) as run:
+            status, body = self.request("POST", "/api/dismiss", dict(session=session))
+            self.assertEqual((status, json.loads(body)), (200, {"message": "closed"}))
+            panes.assert_called_once_with("team")
+            run.assert_called_once_with([str(ROOT / "peon-code.sh"), "dismiss", session],
+                                        stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                                        timeout=10, start_new_session=True)
+            for value in ("unknown", "", None, 2, []):
+                with self.subTest(session=value):
+                    self.assertEqual(self.request("POST", "/api/dismiss", dict(session=value))[0], 400)
+            for data in ([], "session", 2, None):
+                with self.subTest(data=data):
+                    self.assertEqual(self.request("POST", "/api/dismiss", data)[0], 400)
+            for headers in ({"X-Peon-Token": ""}, {"Host": "evil.test"}, {"Origin": "https://evil.test"}, {"Content-Type": "text/plain"}):
+                with self.subTest(headers=headers):
+                    self.assertEqual(self.request("POST", "/api/dismiss", dict(session=session), headers)[0],
+                                     400 if "Content-Type" in headers else 403)
+            self.assertEqual(self.request("POST", "/api/dismiss", dict(session=session, padding="x" * 262144))[0], 400)
+            self.assertEqual(run.call_count, 1)
+
+    def test_dismiss_failure_and_timeout(self):
+        with patch.object(web.subprocess, "run", return_value=subprocess.CompletedProcess([], 1, "could not close\n", "busy")):
+            status, body = self.request("POST", "/api/dismiss", dict(session="team"))
+            self.assertEqual((status, json.loads(body)), (409, {"error": "could not close\nbusy"}))
+        with patch.object(web.subprocess, "run", side_effect=subprocess.TimeoutExpired("dismiss", 10)):
+            self.assertEqual(self.request("POST", "/api/dismiss", dict(session="team"))[0], 503)
 
     def test_timeout_stops_guard_and_child_before_failure(self):
         result = web.run_delivery(["bash", "-c", 'cat; printf "%s" "$PEON_EXPECTED_IDENTITY" >&2; exit 7'], "日本語", "test-identity")
@@ -225,11 +293,155 @@ elif command == "pull":
             web.main()
         start.assert_not_called()
 
+    def test_directory_selects_initial_without_filtering_sessions(self):
+        all_panes = [dict(id="%2", session="team"), dict(id="%3", session="zeta")]
+        for directory, session, expected_filter, expected_initial in (
+                ("/project", None, None, "zeta"),
+                ("/project", "custom", None, "zeta"),
+                (None, "team", "team", "team"),
+                (None, None, None, None)):
+            args = SimpleNamespace(ssh=None, directory=directory, session=session,
+                                   port=0, stdio=False, no_open=True)
+            with self.subTest(directory=directory, session=session), \
+                    patch.object(web, "arguments", return_value=args), \
+                    patch.object(web, "ThreadingHTTPServer", return_value=self.server), \
+                    patch.object(web, "open_project", return_value="zeta") as start, \
+                    patch.object(web.secrets, "token_urlsafe", return_value="test-token"), \
+                    patch.object(self.server, "serve_forever"), \
+                    patch.object(self.server, "server_close"), \
+                    patch.object(web, "panes", side_effect=lambda selected: [pane for pane in all_panes if selected is None or pane["session"] == selected]) as panes, \
+                    patch.object(web, "snapshot", side_effect=lambda pane: pane), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                web.main()
+                self.assertEqual(self.server.session, expected_filter)
+                self.assertEqual(self.server.initial, expected_initial)
+                if directory:
+                    start.assert_called_once_with(args, ROOT)
+                else:
+                    start.assert_not_called()
+                status, body = self.request("GET", "/api/panes")
+                self.assertEqual(status, 200)
+                panes.assert_called_with(expected_filter)
+                self.assertEqual(json.loads(body), {
+                    "panes": [pane for pane in all_panes if expected_filter is None or pane["session"] == expected_filter],
+                    "initial": expected_initial})
+
     def test_failed_creation_closes_reserved_server(self):
         args = SimpleNamespace(ssh=None, directory='/project', port=0)
         with patch.object(web, 'arguments', return_value=args), patch.object(web, 'ThreadingHTTPServer') as server, patch.object(web, 'open_project', side_effect=RuntimeError('bad project')), self.assertRaisesRegex(SystemExit, 'bad project'):
             web.main()
         server.return_value.server_close.assert_called_once()
+
+
+class ServerLifecycleTests(unittest.TestCase):
+    def setUp(self):
+        self.config = tempfile.TemporaryDirectory()
+        self.addCleanup(self.config.cleanup)
+        environment = patch.dict(os.environ, XDG_CONFIG_HOME=self.config.name)
+        environment.start()
+        self.addCleanup(environment.stop)
+        self.path = web.pid_file(8765)
+        self.path.parent.mkdir(parents=True)
+        self.error = OSError(errno.EADDRINUSE, "address in use")
+
+    def test_orphan_watchdog_checks_every_five_seconds(self):
+        server, stopped = Mock(), Mock()
+        stopped.wait.side_effect = [False, False]
+        with patch.object(web.os, "getppid", side_effect=[42, 1]) as parent:
+            web.watch_parent(server, stopped)
+        self.assertEqual(parent.call_count, 2)
+        self.assertEqual([call.args for call in stopped.wait.call_args_list], [(5,), (5,)])
+        server.shutdown.assert_called_once_with()
+        stopped.wait.side_effect = None
+        stopped.wait.return_value = True
+        with patch.object(web.os, "getppid") as parent:
+            web.watch_parent(server, stopped)
+        parent.assert_not_called()
+
+    def test_verified_server_is_terminated_then_bind_retries_once(self):
+        self.path.write_text("12345\n")
+        server = Mock()
+        with patch.object(web, "ThreadingHTTPServer", side_effect=[self.error, server]) as bind, \
+                patch.object(web.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "python /project/web/server.py --stdio\n", "")) as ps, \
+                patch.object(web.os, "kill") as kill, \
+                patch.object(web.socket, "create_connection", side_effect=ConnectionRefusedError) as connection:
+            self.assertIs(web.bind_server(8765), server)
+        ps.assert_called_once_with(["ps", "-o", "args=", "-p", "12345"], capture_output=True, text=True, timeout=1)
+        kill.assert_called_once_with(12345, signal.SIGTERM)
+        self.assertEqual(bind.call_count, 2)
+        connection.assert_called_once_with(("127.0.0.1", 8765), timeout=0.1)
+
+    def test_foreign_invalid_or_unreadable_pid_never_signaled(self):
+        for contents in (None, "", "invalid", "0", "-2", "1", "999999999999999999999", str(os.getpid()), "12345"):
+            with self.subTest(contents=contents):
+                if contents is None:
+                    self.path.unlink(missing_ok=True)
+                else:
+                    self.path.write_text(contents)
+                with patch.object(web, "ThreadingHTTPServer", side_effect=self.error) as bind, \
+                        patch.object(web.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "python another-server.py", "")) as ps, \
+                        patch.object(web.os, "kill") as kill, self.assertRaises(OSError) as raised:
+                    web.bind_server(8765)
+                self.assertIs(raised.exception, self.error)
+                kill.assert_not_called()
+                self.assertEqual(bind.call_count, 1)
+                self.assertEqual(ps.call_count, int(contents == "12345"))
+
+    def test_lookup_signal_and_retry_failures_preserve_original_bind_error(self):
+        self.path.write_text("12345")
+        for lookup, kill_error in ((OSError("ps failed"), None),
+                                   (subprocess.TimeoutExpired("ps", 1), None),
+                                   (subprocess.CompletedProcess([], 1, "web/server.py", ""), None),
+                                   (subprocess.CompletedProcess([], 0, "web/server.py", ""), PermissionError("kill denied")),
+                                   (subprocess.CompletedProcess([], 0, "web/server.py", ""), None)):
+            with self.subTest(lookup=lookup, kill_error=kill_error), \
+                    patch.object(web, "ThreadingHTTPServer", side_effect=[self.error, OSError("retry failed")]) as bind, \
+                    patch.object(web.subprocess, "run", side_effect=lookup if isinstance(lookup, Exception) else None, return_value=lookup), \
+                    patch.object(web.os, "kill", side_effect=kill_error) as kill, \
+                    patch.object(web.time, "monotonic", side_effect=[0, 0, 2]), \
+                    patch.object(web.time, "sleep") as sleep, \
+                    patch.object(web.socket, "create_connection"), self.assertRaises(OSError) as raised:
+                web.bind_server(8765)
+            self.assertIs(raised.exception, self.error)
+            retry = not isinstance(lookup, Exception) and lookup.returncode == 0 and kill_error is None
+            self.assertEqual(bind.call_count, 2 if retry else 1)
+            self.assertEqual(kill.call_count, int(not isinstance(lookup, Exception) and lookup.returncode == 0))
+            self.assertEqual(sleep.call_count, int(retry))
+
+    def test_main_records_bound_port_and_cleans_up_on_exit(self):
+        args = SimpleNamespace(ssh=None, directory=None, session=None, port=0, stdio=True, no_open=True)
+        path = web.pid_file(9123)
+        pid = str(os.getpid())
+        for outcome in ("normal", "term", "new-owner"):
+            server = Mock(server_port=9123)
+            def serve():
+                self.assertEqual(path.read_text(), pid + "\n")
+                if outcome == "new-owner":
+                    path.write_text("54321\n")
+                elif outcome == "term":
+                    web.stop_server(signal.SIGTERM, None)
+            server.serve_forever.side_effect = serve
+            previous_handler = signal.getsignal(signal.SIGTERM)
+            with self.subTest(outcome=outcome), patch.object(web, "arguments", return_value=args), \
+                    patch.object(web, "bind_server", return_value=server) as bind, \
+                    patch.object(web.shutil, "which", return_value="tmux"), \
+                    patch.object(web.threading, "Thread") as thread, contextlib.redirect_stdout(io.StringIO()):
+                if outcome == "term":
+                    with self.assertRaises(SystemExit) as raised:
+                        web.main()
+                    self.assertEqual(raised.exception.code, 0)
+                else:
+                    web.main()
+            bind.assert_called_once_with(0)
+            server.server_close.assert_called_once_with()
+            self.assertEqual(signal.getsignal(signal.SIGTERM), previous_handler)
+            self.assertEqual(thread.call_count, 2)
+            watchdog = thread.call_args
+            self.assertIs(watchdog.kwargs["target"], web.watch_parent)
+            self.assertTrue(watchdog.kwargs["args"][1].is_set())
+            self.assertEqual(path.exists(), outcome == "new-owner")
+            if path.exists():
+                self.assertEqual(path.read_text(), "54321\n")
 
 
 if __name__ == "__main__":

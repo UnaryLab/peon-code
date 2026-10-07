@@ -1,11 +1,14 @@
 """Loopback-only browser bridge to existing peon-code tmux panes."""
 import json
+import errno
 import os
 import secrets
 import signal
 import subprocess
 import sys
 import shutil
+import socket
+import time
 from bridge import panes, snapshot
 from launch import arguments, open_browser, remote_ui, open_project
 import threading
@@ -95,7 +98,7 @@ class Handler(BaseHTTPRequestHandler):
                             result.append(captured)
                     except subprocess.CalledProcessError:
                         continue
-                self.respond(200, {"panes": result})
+                self.respond(200, {"panes": result, "initial": self.server.initial})
             except (OSError, subprocess.TimeoutExpired) as error:
                 self.respond(503, {"error": str(error)})
         else:
@@ -104,7 +107,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self.allowed(True):
             return
-        if self.path not in ("/api/explain", "/api/send"):
+        if self.path not in ("/api/explain", "/api/send", "/api/dismiss", "/api/keys"):
             self.respond(404, {"error": "Not found"})
             return
         try:
@@ -112,16 +115,34 @@ class Handler(BaseHTTPRequestHandler):
             if not 0 < size <= 262144 or self.headers.get_content_type() != "application/json":
                 raise ValueError("Expected JSON, at most 256 KiB")
             data = json.loads(self.rfile.read(size))
+            if self.path == "/api/dismiss":
+                session = data.get("session")
+                if not isinstance(session, str) or not session or not any(p["session"] == session for p in panes(self.server.session)):
+                    raise ValueError("Session changed or closed; refresh before closing")
+                result = subprocess.run([str(ROOT / "peon-code.sh"), "dismiss", session],
+                                        stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                                        timeout=10, start_new_session=True)
+                message = (result.stdout + result.stderr).strip() or ("Session closed" if result.returncode == 0 else "Could not close session")
+                self.respond(200 if result.returncode == 0 else 409,
+                             {"message" if result.returncode == 0 else "error": message})
+                return
             pane, text, identity = data.get("pane"), data.get("text"), data.get("identity")
-            if not isinstance(text, str) or not text.strip():
+            if self.path == "/api/keys":
+                key = data.get("key")
+                if key not in ("Tab", "Up", "Down", "Enter", "Escape", "1", "2", "3", "4", "5", "6", "7", "8", "9"):
+                    raise ValueError("Allowed keys: Tab, Up, Down, Enter, Escape, 1..9")
+                text = ""
+            elif not isinstance(text, str) or not text.strip():
                 raise ValueError("Select or enter some text first")
             # ponytail: one send at a time; use per-pane locks if concurrent delivery matters.
             with self.server.send_lock:
                 if not isinstance(identity, str) or not any(p["id"] == pane and p.get("identity") == identity for p in panes(self.server.session)):
                     raise ValueError("Agent changed or closed; refresh before sending")
-                action = "explain" if self.path == "/api/explain" else "send"
+                action = "key" if self.path == "/api/keys" else "explain" if self.path == "/api/explain" else "send"
                 args = [str(ROOT / "peon-code.sh"), action, pane]
-                if action == "send":
+                if action == "key":
+                    args.append(key)
+                elif action == "send":
                     args.append("-")
                 result = run_delivery(args, text, identity)
             message = (result.stdout + result.stderr).strip() or ("Sent" if result.returncode == 0 else "Could not send; check the agent pane")
@@ -131,6 +152,51 @@ class Handler(BaseHTTPRequestHandler):
             self.respond(400, {"error": str(error)})
         except (OSError, subprocess.TimeoutExpired) as error:
             self.respond(503, {"error": str(error)})
+
+
+def pid_file(port):
+    config = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
+    return config / "peon-code" / ("web-" + str(port) + ".pid")
+
+
+def bind_server(port):
+    try:
+        return ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    except OSError as error:
+        original = error
+    if original.errno == errno.EADDRINUSE:
+        try:
+            pid = int(pid_file(port).read_text())
+            if not 1 < pid <= 2147483647 or pid == os.getpid():
+                raise ValueError("Invalid server PID")
+            process = subprocess.run(["ps", "-o", "args=", "-p", str(pid)],
+                                     capture_output=True, text=True, timeout=1)
+            if process.returncode or "web/server.py" not in process.stdout:
+                raise ValueError("Port belongs to another process")
+            os.kill(pid, signal.SIGTERM)
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline:
+                try:
+                    with socket.create_connection(("127.0.0.1", port), timeout=0.1):
+                        pass
+                except OSError:
+                    break
+                time.sleep(0.05)
+            return ThreadingHTTPServer(("127.0.0.1", port), Handler)
+        except (OSError, ValueError, OverflowError, UnicodeError, subprocess.TimeoutExpired):
+            pass
+    raise original
+
+
+def watch_parent(server, stopped):
+    while not stopped.wait(5):
+        if os.getppid() == 1:
+            server.shutdown()
+            return
+
+
+def stop_server(signum, frame):
+    raise SystemExit(0)
 
 
 def main():
@@ -145,10 +211,16 @@ def main():
     if not shutil.which("tmux"):
         raise SystemExit("peon-code-web requires tmux on the agent host")
     try:
-        server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
+        server = bind_server(args.port)
     except OSError as error:
         raise SystemExit("Cannot listen on loopback port " + str(args.port) + ": " + str(error) + ". Use --port <free-port>.") from error
+    stopped = threading.Event()
+    path = pid_file(server.server_port)
+    pid = str(os.getpid())
+    previous_handler = signal.signal(signal.SIGTERM, stop_server)
     try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(pid + "\n")
         if args.directory:
             args.session = open_project(args, ROOT)
         if args.session and not panes(args.session):
@@ -156,13 +228,15 @@ def main():
         server.address = "127.0.0.1:" + str(server.server_port)
         server.origin = "http://" + server.address
         server.token = secrets.token_urlsafe(32)
-        server.session = args.session
+        server.session = None if args.directory else args.session
+        server.initial = args.session
         server.send_lock = threading.Lock()
         url = server.origin + "/#" + server.token
         if args.stdio:
             print(json.dumps({"url": url}), flush=True)
             # Closing the local SSH client closes stdin and stops its remote server.
             threading.Thread(target=lambda: (sys.stdin.read(), server.shutdown()), daemon=True).start()
+            threading.Thread(target=watch_parent, args=(server, stopped), daemon=True).start()
         else:
             print("peon-code-web: " + url + "\nKeep this command running. Press Ctrl-C to stop.", flush=True)
         if not args.no_open:
@@ -173,7 +247,14 @@ def main():
     except (OSError, RuntimeError, subprocess.TimeoutExpired) as error:
         raise SystemExit(str(error)) from error
     finally:
+        stopped.set()
         server.server_close()
+        signal.signal(signal.SIGTERM, previous_handler)
+        try:
+            if path.read_text().strip() == pid:
+                path.unlink()
+        except OSError:
+            pass
 
 
 if __name__ == "__main__":

@@ -8,11 +8,11 @@ pane_identity_matches() {
 }
 
 # One delivery owns the check/paste/submit sequence across all callers.
-# Nonblocking directory locks work on macOS too.
+# Directory locks with bounded retries work on macOS too.
 # ponytail: a killed guard may leave a live tmux child; interrupted locks
 # require manual cleanup after confirming all delivery processes stopped.
 with_pane_delivery() (
-  local pane=$1 identity key root lock holder connection
+  local pane=$1 identity key root lock holder connection tries=0
   shift
   identity=$(tmux display-message -p -t "$pane" '#{socket_path}:#{pane_id}' 2>/dev/null) || {
     echo "peon-code: cannot deliver to pane $pane: tmux cannot find it" >&2
@@ -30,11 +30,15 @@ with_pane_delivery() (
     echo 'peon-code: cannot create a private delivery lock directory' >&2; return 75
   fi
   lock=$root/$key
-  if ! mkdir "$lock" 2>/dev/null; then
-    echo "peon-code: another delivery owns $pane; retry after it finishes. Lock: $lock" >&2
-    echo 'If interrupted, confirm all delivery processes stopped before removing that lock.' >&2
-    return 75
-  fi
+  while ! mkdir "$lock" 2>/dev/null; do
+    if [ "$tries" -eq 25 ]; then
+      echo "peon-code: another delivery owns $pane; retry after it finishes. Lock: $lock" >&2
+      echo 'If interrupted, confirm all delivery processes stopped before removing that lock.' >&2
+      return 75
+    fi
+    tries=$((tries + 1))
+    sleep 0.2
+  done
   # $$ remains the invoking shell's PID in a Bash subshell. Ask its child
   # for the actual guard PID, so killing the caller cannot unlock a live guard.
   holder=$(exec sh -c 'echo "$PPID"')

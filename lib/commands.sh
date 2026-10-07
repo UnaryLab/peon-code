@@ -144,6 +144,36 @@ cmd_send() {
   with_pane_delivery "${1:-}" send_locked "$@"
 }
 
+cmd_key() {
+  local pane=${1:-} name=${2:-}
+  if [ $# -ne 2 ] || [ -z "$pane" ]; then
+    die "usage: peon-code.sh key <pane-id> <name>"
+  fi
+  case $name in
+    Tab|Up|Down|Enter|Escape|1|2|3|4|5|6|7|8|9) ;;
+    *) echo "peon-code: allowed keys: Tab, Up, Down, Enter, Escape, 1..9" >&2; return 2 ;;
+  esac
+  with_pane_delivery "$pane" key_locked "$@"
+}
+
+key_locked() {
+  local pane=$1 name=$2 capture
+  pane_identity_matches "$pane" || die "no key sent: agent changed"
+  case $(tmux display -pt "$pane" '#{pane_current_command}' 2>/dev/null || true) in
+    "") die "no pane $pane" ;;
+    sh|bash|zsh|fish|dash|ksh) die "pane $pane is back at a shell; its agent is gone" ;;
+  esac
+  [ -n "$(tmux show-options -pqv -t "$pane" @peon_name 2>/dev/null || true)" ] ||
+    die "pane $pane is not a peon-code agent pane"
+  if [ "$name" = Enter ]; then
+    capture=$(tmux capture-pane -pt "$pane" 2>/dev/null) || die "cannot read pane $pane"
+    pane_has_menu "$capture" || die "no Enter sent: pane $pane is not on a menu"
+  fi
+  pane_takes_keys "$pane" || die "no key sent: pane $pane is in copy mode"
+  pane_identity_matches "$pane" || die "no key sent: agent changed"
+  tmux send-keys -t "$pane" "$name" || die "no key sent: tmux refused the key for $pane"
+}
+
 send_locked() {
   local pane=${1:-} text=${2:-} want box i rc reason
   [ -n "$pane" ] && [ -n "$text" ] || die "usage: peon-code.sh send <pane-id> 'text'|-"

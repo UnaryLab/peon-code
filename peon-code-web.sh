@@ -27,5 +27,9 @@ elif [ "$update_mode" = local ]; then
     if offer_update </dev/null; then exec "$script_path" "$@"; fi
   fi
 fi
-command -v python3 >/dev/null || { echo 'peon-code-web requires Python 3.8 or newer' >&2; exit 1; }
+command -v python3 >/dev/null || { echo 'peon-code-web requires Python 3.10 or newer' >&2; exit 1; }
+if ! python3 -c 'import sys; sys.exit(sys.version_info < (3, 10))'; then
+  echo "peon-code-web requires Python 3.10 or newer (found $(python3 --version))" >&2
+  exit 1
+fi
 exec python3 "$SCRIPT_DIR/web/server.py" "$@"

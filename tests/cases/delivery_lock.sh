@@ -48,14 +48,31 @@ run_delivery server-one %1 first hold & holder=$!
 trap 'kill "$holder" 2>/dev/null || true' EXIT
 wait_holder
 rc=0
-run_delivery server-one %1 competing normal || rc=$?
+SECONDS=0
+run_delivery server-one %1 competing normal 2>"$TEST_DIR/contention.err" || rc=$?
+if [ "$SECONDS" -lt 4 ] || [ "$SECONDS" -gt 10 ]; then
+  fail 'delivery contention did not wait about five seconds'
+fi
 [ "$rc" -eq 75 ] || fail "same-pane contention returned $rc instead of 75"
+assert_contains "$TEST_DIR/contention.err" 'another delivery owns %1'
 assert_not_contains "$TEST_DIR/entered" competing
 run_delivery server-one %2 other-pane normal
 run_delivery server-two %1 other-server normal
 touch "$TEST_DIR/release"
 wait "$holder"
 run_delivery server-one %1 after-release normal
+
+rm "$TEST_DIR/holding" "$TEST_DIR/release"
+run_delivery server-one %1 waiting hold & holder=$!
+wait_holder
+(sleep 1; touch "$TEST_DIR/release") & releaser=$!
+SECONDS=0
+run_delivery server-one %1 after-wait normal
+[ "$SECONDS" -ge 1 ] || fail 'delivery entered before the held lock was released'
+wait "$releaser"
+wait "$holder"
+assert_contains "$TEST_DIR/entered" after-wait
+
 rc=0
 run_delivery server-one %1 failing fail || rc=$?
 [ "$rc" -eq 19 ] || fail 'delivery changed callback failure status'
