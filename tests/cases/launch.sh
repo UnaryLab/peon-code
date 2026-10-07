@@ -513,7 +513,7 @@ test_update_offer() {
   git clone -q "$origin" "$mine"
   git -C "$origin" -c user.name=t -c user.email=t@t commit -q --allow-empty -m two
 
-  offer() { bash -c 'SCRIPT_DIR=$1; source "$2/lib/config.sh"; offer_update' _ "$mine" "$ROOT"; }
+  offer() { PEON_UPDATE_PAUSE=0 bash -c 'SCRIPT_DIR=$1; source "$2/lib/config.sh"; offer_update' _ "$mine" "$ROOT"; }
   if offer </dev/null 2>"$TEST_DIR/update-before.err"; then fail "offered a pull before any fetch"; fi
   assert_not_contains "$TEST_DIR/update-before.err" "pull now"
   # That call's background fetch brings the new commit in; wait for it.
@@ -529,6 +529,7 @@ test_update_offer() {
   [ "$(git -C "$mine" rev-parse HEAD)" != "$(git -C "$origin" rev-parse HEAD)" ] || fail "n pulled anyway"
   echo y | offer 2>"$TEST_DIR/update-yes.err" || fail "y did not report a pull"
   [ "$(git -C "$mine" rev-parse HEAD)" = "$(git -C "$origin" rev-parse HEAD)" ] || fail "y did not pull"
+  assert_contains "$TEST_DIR/update-yes.err" "peon-code: updated; starting"
   if offer </dev/null 2>"$TEST_DIR/update-current.err"; then fail "offered a pull when current"; fi
   assert_not_contains "$TEST_DIR/update-current.err" "pull now"
 }

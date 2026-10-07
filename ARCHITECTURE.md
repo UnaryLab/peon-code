@@ -42,7 +42,7 @@ The launcher backgrounds `peon-code watch <session> <tokens>` with nohup before 
 
 ## Update check
 
-On a start or resume, the launcher compares its own checkout's `HEAD` with the upstream refs the last fetch left and offers a fast-forward pull when it is behind. A `y` pulls and restarts the launcher with the same arguments, because bash reads the script lazily and a file rewritten under it can execute a mix of old and new lines. A current checkout starts a quiet `git fetch` in the background for the next start, so a start never waits on the network and a push shows up one start late. The other subcommands never touch git.
+On a start or resume, the launcher compares its own checkout's `HEAD` with the upstream refs the last fetch left and offers a fast-forward pull when it is behind. A `y` pulls, prints `updated; starting`, waits three seconds (`PEON_UPDATE_PAUSE` overrides it for tests) so the outcome is read before the screen moves on, and restarts the launcher with the same arguments, because bash reads the script lazily and a file rewritten under it can execute a mix of old and new lines. A current checkout starts a quiet `git fetch` in the background for the next start, so a start never waits on the network and a push shows up one start late. The other subcommands never touch git.
 
 ## Task board protocol
 

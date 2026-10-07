@@ -28,7 +28,7 @@ After installation, run `peon-code` from any directory. `install.sh` seeds `~/.c
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
-When a newer version is available, a start or resume asks `pull now? [y/N]`. Answer `y` to update and start on the new version; any other answer starts on the current one and prints the `git pull` command to run later. A new push may take one extra start to show up.
+When a newer version is available, a start or resume asks `pull now? [y/N]`. Answer `y` to update: the launcher reports `updated; starting`, holds it on screen for three seconds, then starts on the new version; any other answer starts on the current one and prints the `git pull` command to run later. A new push may take one extra start to show up.
 
 To uninstall, run `peon-code uninstall [bin-dir]`, which removes the symlink `<bin-dir>/peon-code`, with `bin-dir` defaulting to `~/.local/bin`. The repository itself is left in place. A path that exists but does not point at this `peon-code.sh` is left alone and exits 1. Nothing there at all is reported and exits 0.
 

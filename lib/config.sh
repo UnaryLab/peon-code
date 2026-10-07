@@ -251,7 +251,11 @@ offer_update() {
   printf 'peon-code: %s new commit(s) upstream; pull now? [y/N] ' "$behind" >&2
   read -r reply || reply=n
   case $reply in
-    [yY]|[yY][eE][sS]) git -C "$SCRIPT_DIR" pull -q --ff-only ;;
+    [yY]|[yY][eE][sS])
+      git -C "$SCRIPT_DIR" pull -q --ff-only || return 1
+      # Held on screen so the restart does not wipe the pull's outcome unseen.
+      echo "peon-code: updated; starting" >&2
+      sleep "${PEON_UPDATE_PAUSE:-3}" ;;
     *) echo "peon-code: not updated; later: git -C $SCRIPT_DIR pull" >&2; return 1 ;;
   esac
 }
