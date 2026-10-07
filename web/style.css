@@ -19,12 +19,12 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 6
 #sessions { display: flex; flex-shrink: 0; gap: 8px; overflow-x: auto; border-bottom: 2px solid var(--line); margin-bottom: 4px; padding-bottom: 4px; }
 .workspace { display: flex; flex: 1; min-height: 0; gap: 12px; }
 #agents { display: flex; flex: 0 0 160px; flex-direction: column; gap: 4px; min-width: 0; overflow: auto; }
-.tab { background: transparent; border: 1px solid transparent; color: var(--muted); text-align: left; position: relative; white-space: nowrap; font-size: 15px; padding: 4px 10px; }
+.tab { background: #fff; border: 1px solid var(--line); border-radius: 4px; color: var(--muted); text-align: left; position: relative; white-space: nowrap; font-size: 15px; padding: 4px 10px; }
 #agents .tab { white-space: normal; overflow-wrap: anywhere; }
-.tab:hover { background: #f5f5f5; }
-.tab.active { background: #eef0ec; color: #111; border-color: var(--accent-border); font-weight: 700; }
+.tab.active { background: #eef0ec; color: #111; border-color: var(--accent-border); box-shadow: inset 0 0 0 1px var(--accent-border); }
 .tab.unread { background: #fff2d5; color: #684000; border-color: #d8b068; }
-.tab.unread::after { content: "●"; color: #a65f00; margin-left: 10px; }
+.tab:not(.active):not(.unread):hover { background: #f5f5f5; border-color: var(--accent-border); }
+.tab.unread::after { content: "●"; color: #a65f00; margin-left: 10px; line-height: 1; }
 #panes { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; width: 100%; }
 .pane { display: flex; flex-direction: column; flex: 1; min-height: 0; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; overflow: hidden; width: 100%; }
 .pane-heading { flex-shrink: 0; padding: 6px 12px; display: flex; justify-content: space-between; align-items: center; gap: 12px; border-bottom: 1px solid var(--line); }

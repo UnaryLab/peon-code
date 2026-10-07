@@ -51,6 +51,11 @@ function createCard(pane) {
   el.dataset.key = paneKey(pane);
   const card = {el, id: pane.id, key: paneKey(pane), lines: 1000, scrollTop: 0, fullHistory: false, selected: '', selectionRevision: 0, draftRevision: 0, busy: false, closed: false, unread: false, latest: null, rendered: null};
   el.querySelector('textarea').oninput = () => { card.draftRevision++; };
+  el.querySelector('textarea').onkeydown = event => {
+    if (event.key === 'Enter' && event.shiftKey && !event.isComposing) {
+      event.preventDefault(); el.querySelector('form').requestSubmit();
+    }
+  };
   el.querySelector('h2').textContent = pane.name;
   el.querySelector('.meta').textContent = pane.session + ' / ' + pane.id + ' / ' + pane.command;
   el.querySelector('.explain').onclick = () => send(card, 'explain', card.selected);
@@ -136,7 +141,7 @@ async function refresh() {
     for (const pane of panes) {
       const card = cards.get(paneKey(pane)) || createCard(pane);
       if (card.closed) { card.closed = false; setSelection(card, card.selected); feedback(card, 'Agent reconnected'); }
-      if (card.latest && card.latest.output !== pane.output && card.key !== currentPane()) card.unread = true;
+      if (pane.role === 'manager' && card.latest && card.latest.output !== pane.output && card.key !== currentPane()) card.unread = true;
       card.latest = {...pane, capturedLines: visible && visible.id === pane.id ? lines : 1000};
       card.el.querySelector("h2").textContent = pane.name;
       card.el.querySelector(".meta").textContent = pane.session + " / " + pane.role + " / " + pane.id;
