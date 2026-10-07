@@ -3,6 +3,7 @@ const token = location.hash.slice(1) || sessionStorage.getItem('peon-token') || 
 sessionStorage.setItem('peon-token', token);
 history.replaceState(null, '', location.pathname);
 const cards = new Map();
+const BOX_WAIT_MS = 10000;
 const connection = document.querySelector('#connection');
 let dragging = false;
 let dismissing = false;
@@ -56,10 +57,8 @@ async function send(card, action, text) {
   setSelection(card, card.selected);
   feedback(card, 'Sending to this agent…');
   try {
-    const result = await api('/api/' + action, {pane: card.id, identity: card.latest.identity, ...(action === 'keys' ? {key: text} : {text}), ...(action === 'send' && card.appendNext ? {append: true} : {})});
-    feedback(card, result.message);
-    if (action === 'keys' && text === 'Tab') { card.appendNext = true; card.tabSentAt = performance.now(); }
-    if (action === 'send') card.appendNext = false;
+    const result = await api('/api/' + action, {pane: card.id, identity: card.latest.identity, ...(action === 'keys' ? {key: text} : {text}), ...(action === 'send' ? {append: true} : {})});
+    feedback(card, action === 'keys' && text === 'Enter' ? 'Pressed Enter' : result.message);
     if (action === 'explain') {
       if (card.selected === text && card.selectionRevision === selectionRevision) { setSelection(card, ''); if (card.key === currentPane()) getSelection().removeAllRanges(); }
     } else if (action === 'send' && card.draftRevision === draftRevision && card.el.querySelector('textarea').value === text) card.el.querySelector('textarea').value = '';
@@ -82,7 +81,23 @@ function inputHint(pane) {
   }
   return '';
 }
-function updateKeys(card, captureStarted) {
+function inputBox(pane) {
+  const screen = (pane.screen || '').split('\n');
+  if (screen[screen.length - 1] === '') screen.pop();
+  if (pane.menu || !Number.isInteger(pane.cursorY) || pane.cursorY < 0 || pane.cursorY >= screen.length || !/^ *[❯›]/.test(screen[pane.cursorY])) return '';
+  const styled = pane.output.split('\n');
+  if (styled[styled.length - 1] === '') styled.pop();
+  if (styled.length < screen.length) return '';
+  const parsed = document.createElement('div');
+  let text = '', afterMarker = false;
+  renderAnsi(parsed, styled[styled.length - screen.length + pane.cursorY], '', (span, hinted) => {
+    const marker = span.search(/[❯›]/);
+    if (!afterMarker && marker >= 0) { afterMarker = true; span = span.slice(marker + 1); }
+    if (afterMarker && !hinted) text += span;
+  });
+  return parsed.textContent.trimEnd() === screen[pane.cursorY].trimEnd() ? text.trim() : '';
+}
+function updateKeys(card) {
   const pane = card.latest;
   const labels = [];
   if (pane.menu) {
@@ -99,8 +114,6 @@ function updateKeys(card, captureStarted) {
     labels.push(['Enter', 'Enter'], ['Escape', 'Esc']);
   }
   const hint = inputHint(pane);
-  const markerRow = (pane.screen || '').split('\n').reverse().find(row => /[❯›]/.test(row));
-  if (card.appendNext && !card.busy && captureStarted > card.tabSentAt && !hint && /^\s*[❯›]\s*$/.test(markerRow || '')) card.appendNext = false;
   if (hint) labels.push(['Tab', ('Tab: ' + hint).slice(0, 60)]);
   const signature = JSON.stringify(labels);
   if (signature === card.shortcutsRendered) return;
@@ -123,7 +136,7 @@ function createCard(pane) {
   const el = document.querySelector('#pane-template').content.firstElementChild.cloneNode(true);
   el.dataset.pane = pane.id;
   el.dataset.key = paneKey(pane);
-  const card = {el, id: pane.id, key: paneKey(pane), lines: 1000, scrollTop: 0, fullHistory: false, selected: '', selectionRevision: 0, draftRevision: 0, appendNext: false, tabSentAt: 0, busy: false, closed: false, unread: false, needsAnswer: false, latest: null, rendered: null, keysOpen: false};
+  const card = {el, id: pane.id, key: paneKey(pane), lines: 1000, scrollTop: 0, fullHistory: false, selected: '', selectionRevision: 0, draftRevision: 0, busy: false, closed: false, unread: false, needsAnswer: false, boxText: '', boxSince: 0, waitingText: false, latest: null, rendered: null, keysOpen: false};
   const fallbackKeys = el.querySelector('.key-buttons');
   fallbackKeys.prepend(fallbackKeys.querySelector('[data-key="Up"]'), fallbackKeys.querySelector('[data-key="Down"]'));
   const keysToggle = el.querySelector('.keys-toggle');
@@ -181,7 +194,8 @@ function createCard(pane) {
   el.querySelector('form').onsubmit = event => {
     event.preventDefault();
     const text = el.querySelector('textarea').value;
-    if (text.trim() && !card.busy) send(card, 'send', text);
+    if (!text.trim() && card.latest.menu) return;
+    if (!card.busy) send(card, text.trim() ? 'send' : 'keys', text.trim() ? text : 'Enter');
   };
   document.querySelector('#panes').append(el);
   cards.set(card.key, card);
@@ -225,7 +239,6 @@ async function refresh() {
     const visible = cards.get(currentPane());
     const lines = visible && !visible.closed ? visible.lines : 1000;
     const query = lines > 1000 ? '?pane=' + encodeURIComponent(visible.id) + '&lines=' + lines : '';
-    const captureStarted = performance.now();
     const {panes, initial} = await api("/api/panes" + query);
     connection.textContent = panes.length + " agent" + (panes.length === 1 ? "" : "s") + " connected";
     document.querySelector("#empty").hidden = !!panes.length;
@@ -235,8 +248,13 @@ async function refresh() {
       if (card.closed) { card.closed = false; setSelection(card, card.selected); feedback(card, 'Agent reconnected'); }
       if (pane.role === 'manager' && card.latest && card.latest.output !== pane.output && card.key !== currentPane()) card.unread = true;
       card.needsAnswer = pane.menu;
+      const boxText = inputBox(pane), now = performance.now();
+      if (!boxText) card.boxSince = 0;
+      else if (boxText !== card.boxText || card.latest?.output !== pane.output) card.boxSince = now;
+      card.boxText = boxText;
+      card.waitingText = !!boxText && now - card.boxSince >= BOX_WAIT_MS;
       card.latest = {...pane, capturedLines: visible && visible.id === pane.id ? lines : 1000};
-      updateKeys(card, captureStarted);
+      updateKeys(card);
       card.el.querySelector("h2").textContent = pane.name;
       card.el.querySelector(".meta").textContent = pane.session + " / " + pane.role + " / " + pane.id;
       updateOutput(card);
@@ -246,6 +264,7 @@ async function refresh() {
         if (card.selected || card.el.querySelector('textarea').value || card.busy) {
           if (!card.closed) feedback(card, 'This agent closed. Copy your text or discard it.', true);
           card.closed = true;
+          card.boxText = ''; card.boxSince = 0; card.waitingText = false;
           setSelection(card, card.selected);
           panes.push({...card.latest, closed: true});
         } else { card.el.remove(); cards.delete(key); }

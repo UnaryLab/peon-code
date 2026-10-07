@@ -145,6 +145,8 @@ class Handler(BaseHTTPRequestHandler):
                 args = [str(ROOT / "peon-code.sh"), action]
                 if action == "send" and append:
                     args.append("--append")
+                if action == "key" and key == "Enter":
+                    args.append("--submit")
                 args.append(pane)
                 if action == "key":
                     args.append(key)

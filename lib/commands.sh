@@ -147,19 +147,21 @@ cmd_send() {
 }
 
 cmd_key() {
+  local submit=0
+  if [ "${1:-}" = --submit ]; then submit=1; shift; fi
   local pane=${1:-} name=${2:-}
   if [ $# -ne 2 ] || [ -z "$pane" ]; then
-    die "usage: peon-code.sh key <pane-id> <name>"
+    die "usage: peon-code.sh key [--submit] <pane-id> <name>"
   fi
   case $name in
     Tab|Up|Down|Enter|Escape|1|2|3|4|5|6|7|8|9) ;;
     *) echo "peon-code: allowed keys: Tab, Up, Down, Enter, Escape, 1..9" >&2; return 2 ;;
   esac
-  with_pane_delivery "$pane" key_locked "$@"
+  with_pane_delivery "$pane" key_locked "$pane" "$name" "$submit"
 }
 
 key_locked() {
-  local pane=$1 name=$2 capture cy
+  local pane=$1 name=$2 submit=${3:-0} capture cy box rc=0
   pane_identity_matches "$pane" || die "no key sent: agent changed"
   case $(tmux display -pt "$pane" '#{pane_current_command}' 2>/dev/null || true) in
     "") die "no pane $pane" ;;
@@ -171,7 +173,13 @@ key_locked() {
     cy=$(tmux display -pt "$pane" '#{cursor_y}' 2>/dev/null) || die "cannot read cursor for pane $pane"
     capture=$(tmux capture-pane -pt "$pane" 2>/dev/null && printf '.') || die "cannot read pane $pane"
     capture=${capture%.}
-    pane_has_menu "$capture" "$cy" || die "no Enter sent: pane $pane is not on a menu"
+    pane_has_menu "$capture" "$cy" || rc=$?
+    [ "$rc" -ne 2 ] || die "no Enter sent: cannot read input box in pane $pane"
+    if [ "$rc" -ne 0 ]; then
+      [ "$submit" = 1 ] || die "no Enter sent: pane $pane is not on a menu"
+      box=$(pane_box_text "$pane") || die "no Enter sent: cannot read input box in pane $pane"
+      [ -n "$box" ] || die "no Enter sent: nothing to submit"
+    fi
   fi
   pane_takes_keys "$pane" || die "no key sent: pane $pane is in copy mode"
   pane_identity_matches "$pane" || die "no key sent: agent changed"

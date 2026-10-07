@@ -17,6 +17,81 @@ import launch
 
 
 class LaunchTests(unittest.TestCase):
+    def test_config_requires_directory_and_local_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / "team.conf"
+            config.write_text("codex codex -\n")
+            for options, message in [
+                (["--config", str(config)], "--config requires --dir"),
+                (["--dir", directory, "--config", str(config) + ".missing"], "Config file does not exist"),
+                (["--ssh", "host", "--dir", "/remote/project", "--config", str(config) + ".missing"], "Config file does not exist"),
+                (["--dir", directory, "--config", directory], "Config file does not exist"),
+            ]:
+                with self.subTest(options=options), patch.object(sys, "argv", ["peon-code-web"] + options), contextlib.redirect_stderr(io.StringIO()) as error, self.assertRaises(SystemExit):
+                    launch.arguments()
+                self.assertIn(message, error.getvalue())
+            with patch.dict(os.environ, {"HOME": directory}), patch.object(sys, "argv", ["peon-code-web", "--dir", "/remote/project", "--ssh", "host", "--config", "~/team.conf"]):
+                self.assertEqual(launch.arguments().config, config.resolve())
+
+    def test_config_resolves_before_project_launch_and_existing_team_warns(self):
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory) / "project"
+            project.mkdir()
+            config = Path(directory) / "team.conf"
+            config.write_text("codex codex -\n")
+            relative = os.path.relpath(config)
+            with patch.object(sys, "argv", ["peon-code-web", "--dir", str(project), "--config", relative, "custom"]):
+                args = launch.arguments()
+            self.assertEqual(args.config, config.resolve())
+            outcomes = [subprocess.CompletedProcess([], 1), subprocess.CompletedProcess([], 0, "", ""), subprocess.CompletedProcess([], 0, "1", ""), subprocess.CompletedProcess([], 0, str(project) + "\n", "")]
+            with patch.object(launch.subprocess, "run", side_effect=outcomes) as run, contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(launch.open_project(args, ROOT), "custom")
+            self.assertEqual(run.call_args_list[1].args[0], [str(ROOT / "peon-code.sh"), "-c", str(config.resolve()), "custom"])
+            self.assertEqual(run.call_args_list[1].kwargs["cwd"], str(project))
+            outcomes = [subprocess.CompletedProcess([], 0), subprocess.CompletedProcess([], 0, "1", ""), subprocess.CompletedProcess([], 0, str(project) + "\n", "")]
+            with patch.object(launch.subprocess, "run", side_effect=outcomes) as run, contextlib.redirect_stderr(io.StringIO()) as error:
+                self.assertEqual(launch.open_project(args, ROOT), "custom")
+            self.assertEqual(run.call_count, 3)
+            self.assertEqual(error.getvalue(), "session custom already runs; --config applies only to a new team\n")
+
+    def test_ssh_config_upload_is_private_and_uses_safe_remote_path(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / "team.conf"
+            config.write_bytes(b"codex codex -\n# bytes: \xff\n")
+            for session, project, filename in [
+                (None, "~/project with spaces///", "project_with_spaces.conf"),
+                ("team/name; $x", "/remote/project", "team_name___x.conf"),
+                ("..", "/remote/project", "...conf"),
+                (None, "/", "team.conf"),
+            ]:
+                args = SimpleNamespace(port=9123, session=session, ssh="user@host", directory=project, config=config, no_open=True)
+                with self.subTest(session=session, project=project), patch.object(launch.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, b"", b"")) as run, patch.object(launch.subprocess, "Popen") as popen, contextlib.redirect_stdout(io.StringIO()):
+                    process = popen.return_value
+                    process.stdout = io.StringIO(json.dumps({"url": "http://127.0.0.1:9123/#" + "a" * 43}) + "\n")
+                    process.wait.return_value = 0
+                    process.poll.return_value = 0
+                    self.assertEqual(launch.remote_ui(args), 0)
+                command = f'umask 077; mkdir -p "$HOME/.config/peon-code/uploads" && cat > "$HOME/.config/peon-code/uploads/{filename}" && chmod 600 "$HOME/.config/peon-code/uploads/{filename}"'
+                run.assert_called_once_with(["ssh", "-T", "--", "user@host", command], input=config.read_bytes(), capture_output=True, timeout=30)
+                popen.assert_called_once()
+                self.assertEqual(popen.call_args.args[0][-2], "user@host")
+                remote = popen.call_args.args[0][-1]
+                values = shlex.split(remote.split("exec peon-code-web ", 1)[1].split("; else", 1)[0])
+                self.assertEqual(values[values.index("--config") + 1], "~/.config/peon-code/uploads/" + filename)
+                self.assertEqual(args.config, config)
+
+    def test_failed_config_copy_prevents_ssh_server_start(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / "team.conf"
+            config.write_text("codex codex -\n")
+            args = SimpleNamespace(port=9123, session=None, ssh="host", directory="/remote/project", config=config, no_open=True)
+            with patch.object(launch.subprocess, "run", return_value=subprocess.CompletedProcess([], 1, b"", b"Permission denied\n")), patch.object(launch.subprocess, "Popen") as popen, self.assertRaisesRegex(RuntimeError, "Permission denied"):
+                launch.remote_ui(args)
+            popen.assert_not_called()
+            with patch.object(launch.subprocess, "run", side_effect=subprocess.TimeoutExpired("ssh", 30)), patch.object(launch.subprocess, "Popen") as popen, self.assertRaisesRegex(RuntimeError, "timed out"):
+                launch.remote_ui(args)
+            popen.assert_not_called()
+
     def test_ssh_command_quotes_sessions_and_binds_loopback(self):
         session = "team 'quoted'; $(touch /tmp/nope)"
         args = SimpleNamespace(port=9123, session=session, ssh='user@host', directory=None)

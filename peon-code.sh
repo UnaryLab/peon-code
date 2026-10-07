@@ -7,7 +7,7 @@
 #   ./peon-code.sh dismiss [<session>]
 #   ./peon-code.sh msg <name|all> 'text' [<session>]
 #   ./peon-code.sh send <pane-id> 'text'|-
-#   ./peon-code.sh key <pane-id> <name>
+#   ./peon-code.sh key [--submit] <pane-id> <name>
 #   ./peon-code.sh explain <pane-id> < selected-text
 #   ./peon-code.sh rebrief <name|all> [<session>]
 #   ./peon-code.sh compact [<name|all>] [<session>]
@@ -65,8 +65,8 @@ peon-code.sh send <pane-id> 'text'|-            agent to agent: paste into a pan
                                                 to 10 times over ~10s before exiting
                                                 non-zero (- reads the message from stdin)
 peon-code.sh explain <pane-id>                 explain selected text from stdin in the same pane
-peon-code.sh key <pane-id> <name>              press Tab, Up, Down, Escape, or 1..9;
-                                                Enter is allowed only on a menu
+peon-code.sh key [--submit] <pane-id> <name>   press Tab, Up, Down, Escape, or 1..9;
+                                                Enter answers a menu; --submit also submits box text
 peon-code.sh rebrief <name|all> [<session>]     send an agent its launch brief again,
                                                 for after it compacts its conversation
                                                 (session defaults to the current directory name)

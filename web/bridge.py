@@ -67,4 +67,5 @@ def snapshot(pane, lines=1000):
             "Enter to confirm" in row for row in screen[cy + 1:cy + 4])
     pane["output"], pane["defaultStyle"], pane["history"], pane["menu"] = output, style, int(history), menu
     pane["screen"] = visible
+    pane["cursorY"] = cy
     return pane

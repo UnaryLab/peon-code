@@ -46,6 +46,7 @@ class BridgeTests(unittest.TestCase):
         self.assertIn('-e', tmux.call_args_list[0].args)
         self.assertEqual(tmux.call_args_list[0].args[-2:], ('-S', '-2000'))
         self.assertEqual(pane['history'], 1500)
+        self.assertEqual(pane['cursorY'], 0)
         self.assertTrue(pane['menu'])
         self.assertEqual(pane['screen'], '› 2. Continue\n')
         self.assertEqual(tmux.call_count, 5)
@@ -83,6 +84,7 @@ class BridgeTests(unittest.TestCase):
             self.assertEqual(result['output'], history)
             self.assertEqual(result['screen'], screen)
             self.assertEqual(result['history'], 2000)
+            self.assertEqual(result['cursorY'], cursor_y if isinstance(cursor_y, int) else -1)
 
     def test_real_tmux_inherited_background_and_truecolor(self):
         socket = 'peon-web-style-check-' + str(os.getpid())

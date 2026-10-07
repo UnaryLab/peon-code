@@ -141,7 +141,8 @@ class WebTests(unittest.TestCase):
                 data = dict(pane="%2", identity="server:session:pane", key=key, text="Never send this text")
                 status, body = self.request("POST", "/api/keys", data)
                 self.assertEqual((status, json.loads(body)), (200, {"message": "key sent"}))
-                run.assert_called_with([str(ROOT / "peon-code.sh"), "key", "%2", key], "", "server:session:pane")
+                flags = ["--submit"] if key == "Enter" else []
+                run.assert_called_with([str(ROOT / "peon-code.sh"), "key", *flags, "%2", key], "", "server:session:pane")
             for key in ("Esc", "tab", "0", "10", "a", "C-c", "Tab Enter", "", None, 1, []):
                 with self.subTest(key=key):
                     self.assertEqual(self.request("POST", "/api/keys", dict(pane="%2", identity="server:session:pane", key=key))[0], 400)

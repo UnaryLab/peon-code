@@ -14,17 +14,17 @@ function showPane() {
   if (card) { card.unread = false; if (!card.selected) updateOutput(card); }
   updateNavigation();
 }
-function tab(label, active, unread, onClick, key, needsAnswer) {
+function tab(label, active, unread, onClick, key, needsAnswer, waitingText) {
   const button = document.createElement('button');
   button.type = 'button'; button.textContent = label; button.dataset.key = key;
-  button.className = 'tab' + (active ? ' active' : '') + (unread ? ' unread' : '') + (needsAnswer ? ' needs-answer' : '');
+  button.className = 'tab' + (active ? ' active' : '') + (unread ? ' unread' : '') + (needsAnswer || waitingText ? ' needs-answer' : '');
   button.setAttribute('aria-current', active ? 'true' : 'false');
-  if (unread || needsAnswer) button.setAttribute('aria-label', label + (unread ? ', new output' : '') + (needsAnswer ? ', waiting for an answer' : ''));
+  if (unread || needsAnswer || waitingText) button.setAttribute('aria-label', label + (unread ? ', new output' : '') + (needsAnswer ? ', waiting for an answer' : waitingText ? ', text waiting in the box' : ''));
   button.onclick = onClick;
   return button;
 }
 function replaceTabs(container, buttons) {
-  const signature = JSON.stringify(buttons.map(button => [button.dataset.key, button.textContent, button.className]));
+  const signature = JSON.stringify(buttons.map(button => [button.dataset.key, button.textContent, button.className, button.getAttribute('aria-label')]));
   if (container.dataset.signature === signature) return;
   const focused = container.contains(document.activeElement) ? document.activeElement.dataset.key : null;
   container.replaceChildren(...buttons); container.dataset.signature = signature;
@@ -39,13 +39,14 @@ function updateNavigation() {
     const project = navigation.panes.find(pane => pane.session === session)?.projectDir || '';
     const label = session + (project ? ' · ' + project.split('/').pop() : '');
     const button = tab(label, session === navigation.session, navigation.panes.some(pane => pane.session === session && cards.get(paneKey(pane))?.unread), () => chooseSession(session), session,
-      navigation.panes.some(pane => pane.session === session && cards.get(paneKey(pane))?.needsAnswer));
+      navigation.panes.some(pane => pane.session === session && cards.get(paneKey(pane))?.needsAnswer),
+      navigation.panes.some(pane => pane.session === session && cards.get(paneKey(pane))?.waitingText));
     button.title = project; return button;
   }));
   const project = navigation.panes.find(pane => pane.session === navigation.session)?.projectDir || '';
   document.querySelector('#project-path').textContent = project ? 'Folder: ' + project : '';
   replaceTabs(document.querySelector('#agents'), navigation.panes.filter(pane => pane.session === navigation.session).map(pane =>
-    tab(pane.name + ' · ' + pane.role + (pane.closed ? ' · closed' : ''), paneKey(pane) === currentPane(), cards.get(paneKey(pane))?.unread, () => { navigation.active.set(navigation.session, paneKey(pane)); showPane(); }, paneKey(pane), cards.get(paneKey(pane))?.needsAnswer)));
+    tab(pane.name + ' · ' + pane.role + (pane.closed ? ' · closed' : ''), paneKey(pane) === currentPane(), cards.get(paneKey(pane))?.unread, () => { navigation.active.set(navigation.session, paneKey(pane)); showPane(); }, paneKey(pane), cards.get(paneKey(pane))?.needsAnswer, cards.get(paneKey(pane))?.waitingText)));
 }
 function reconcileNavigation(panes, initial) {
   navigation.panes = panes.slice().sort((a, b) => a.session.localeCompare(b.session) || (roleOrder[a.role] ?? 2) - (roleOrder[b.role] ?? 2) || Number(a.id.slice(1)) - Number(b.id.slice(1)));
