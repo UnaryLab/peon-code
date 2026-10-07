@@ -61,7 +61,7 @@ def remote_ui(args):
                     reply = "n"
                     if sys.stdin.isatty():
                         try:
-                            reply = input(f"Remote peon-code on {event['host']}: {event['update']} new commit(s) upstream; pull now? [y/N] ")
+                            reply = input(f"Remote peon-code on {event['host']}: update available upstream; pull now? [y/N] ")
                         except EOFError:
                             pass
                     process.stdin.write(("y" if reply.lower() in ("y", "yes") else "n") + "\n")

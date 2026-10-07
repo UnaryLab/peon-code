@@ -161,7 +161,7 @@ class LaunchTests(unittest.TestCase):
                     self.assertEqual(launch.remote_ui(args), 0)
                     opened.assert_called_once()
                     if interactive:
-                        self.assertIn('remote-test', prompt.call_args.args[0])
+                        prompt.assert_called_once_with('Remote peon-code on remote-test: update available upstream; pull now? [y/N] ')
                     else:
                         prompt.assert_not_called()
                 self.assertEqual(result.read_text(), reply)

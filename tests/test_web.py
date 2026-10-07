@@ -4,6 +4,8 @@ import importlib.util
 import io
 import json
 import os
+import pty
+import signal
 import subprocess
 import sys
 import threading
@@ -147,6 +149,68 @@ class WebTests(unittest.TestCase):
             self.assertIn("error", json.loads(response.read()))
         finally:
             connection.close()
+
+    def test_clone_fallback_keeps_terminal_credentials_and_caps_headless(self):
+        for interactive in (True, False):
+            with self.subTest(interactive=interactive), tempfile.TemporaryDirectory() as directory:
+                fake = Path(directory) / "git"
+                log = Path(directory) / "git.log"
+                fake.write_text("#!" + sys.executable + "\n" + '''import os, sys, time
+command = sys.argv[3]
+if command == "rev-parse":
+    print("refs/remotes/origin/main" if "--symbolic-full-name" in sys.argv else "1" * 40)
+elif command == "symbolic-ref":
+    print("main")
+elif command == "config":
+    print("origin" if sys.argv[5].endswith(".remote") else "refs/heads/main")
+elif command == "ls-remote":
+    source = sys.argv[5]
+    with open(os.environ["TEST_LOG"], "a") as log:
+        log.write(f"{source}|{os.environ['GIT_TERMINAL_PROMPT']}|{int(os.isatty(0))}\\n")
+    if source != "origin":
+        sys.exit(1)
+    time.sleep(2)
+    print("2" * 40 + "\\trefs/heads/main")
+elif command in ("merge-base", "cat-file"):
+    sys.exit(1)
+elif command == "pull":
+    with open(os.environ["TEST_LOG"], "a") as log:
+        log.write(f"pull|{sys.argv[6]}|{os.environ['GIT_TERMINAL_PROMPT']}\\n")
+''')
+                fake.chmod(0o755)
+                environment = dict(os.environ, PATH=directory + os.pathsep + os.environ.get("PATH", ""),
+                                   TEST_LOG=str(log), PEON_FETCH_TIMEOUT="1", PEON_UPDATE_PAUSE="0",
+                                   PEON_UPDATE_URL="https://public.invalid/repo.git", GIT_TERMINAL_PROMPT="caller")
+                master, slave = pty.openpty()
+                process = None
+                try:
+                    process = subprocess.Popen(["bash", "-c", 'SCRIPT_DIR=$1; source "$1/lib/config.sh"; offer_update || true', "bash", str(ROOT)],
+                                               stdin=slave if interactive else subprocess.PIPE, stdout=subprocess.PIPE,
+                                               stderr=subprocess.PIPE, text=True, env=environment, start_new_session=True)
+                    os.close(slave)
+                    slave = None
+                    if interactive:
+                        os.write(master, b"y\n")
+                    stdout, stderr = process.communicate(None if interactive else "y\n", timeout=6)
+                    self.assertEqual(process.returncode, 0)
+                    self.assertIn("trying origin", stderr)
+                    self.assertEqual(stdout, "")
+                    rows = log.read_text().splitlines()
+                    self.assertEqual(rows[0], "https://public.invalid/repo.git|0|" + str(int(interactive)))
+                    if interactive:
+                        self.assertEqual(rows[1:], ["origin|caller|1", "pull|origin|caller"])
+                        self.assertIn("updated; starting", stderr)
+                    else:
+                        self.assertEqual(rows[1:], ["origin|0|0"])
+                        self.assertIn("starting current version", stderr)
+                        self.assertNotIn("pull now", stderr)
+                finally:
+                    if process is not None and process.poll() is None:
+                        os.killpg(process.pid, signal.SIGKILL)
+                        process.communicate()
+                    if slave is not None:
+                        os.close(slave)
+                    os.close(master)
 
     def test_automatic_browser_open_both_platforms(self):
         for platform, opener in [("darwin", "open"), ("linux", "xdg-open")]:
