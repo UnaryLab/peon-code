@@ -43,8 +43,8 @@ def panes(session=None):
     return sorted(result, key=lambda pane: (pane["session"], {"manager": 0, "reviewer": 1, "worker": 2}[pane["role"]], int(pane["id"][1:])))
 
 
-def snapshot(pane):
-    output = tmux("capture-pane", "-p", "-e", "-N", "-t", pane["id"], "-S", "-1000")
+def snapshot(pane, lines=1000):
+    output = tmux("capture-pane", "-p", "-e", "-N", "-t", pane["id"], "-S", "-" + str(lines))
     try:
         style = tmux("display-message", "-p", "-t", pane["id"], "#{window-style}").strip()
         if tmux("display-message", "-p", "-t", pane["id"], "#{pane_active}").strip() == "1":
@@ -52,8 +52,8 @@ def snapshot(pane):
             style += "," + active
     except subprocess.CalledProcessError:
         style = ""
-    identity = tmux("display-message", "-p", "-t", pane["id"], "#{pid}:#{session_id}:#{pane_pid}").strip()
+    identity, history = tmux("display-message", "-p", "-t", pane["id"], "#{pid}:#{session_id}:#{pane_pid}\t#{history_size}").strip().split("\t")
     if identity != pane["identity"]:
         return None
-    pane["output"], pane["defaultStyle"] = output, style
+    pane["output"], pane["defaultStyle"], pane["history"] = output, style, int(history)
     return pane

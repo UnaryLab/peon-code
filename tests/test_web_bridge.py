@@ -41,9 +41,11 @@ class BridgeTests(unittest.TestCase):
 
     def test_capture_keeps_ansi_and_background(self):
         pane = {'id': '%2', 'identity': '100:$1:202'}
-        with patch.object(bridge, 'tmux', side_effect=['\x1b[38;2;1;2;3mtext\x1b[0m', 'fg=#abcdef,bg=#123456\n', '0', '100:$1:202\n']) as tmux:
-            bridge.snapshot(pane)
+        with patch.object(bridge, 'tmux', side_effect=['\x1b[38;2;1;2;3mtext\x1b[0m', 'fg=#abcdef,bg=#123456\n', '0', '100:$1:202\t1500\n']) as tmux:
+            bridge.snapshot(pane, 2000)
         self.assertIn('-e', tmux.call_args_list[0].args)
+        self.assertEqual(tmux.call_args_list[0].args[-2:], ('-S', '-2000'))
+        self.assertEqual(pane['history'], 1500)
         self.assertEqual(pane['defaultStyle'], 'fg=#abcdef,bg=#123456')
         self.assertIn('\x1b[', pane['output'])
 

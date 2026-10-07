@@ -49,11 +49,21 @@ function createCard(pane) {
   const el = document.querySelector('#pane-template').content.firstElementChild.cloneNode(true);
   el.dataset.pane = pane.id;
   el.dataset.key = paneKey(pane);
-  const card = {el, id: pane.id, key: paneKey(pane), selected: '', selectionRevision: 0, draftRevision: 0, busy: false, closed: false, unread: false, latest: null, rendered: null};
+  const card = {el, id: pane.id, key: paneKey(pane), lines: 1000, scrollTop: 0, fullHistory: false, selected: '', selectionRevision: 0, draftRevision: 0, busy: false, closed: false, unread: false, latest: null, rendered: null};
   el.querySelector('textarea').oninput = () => { card.draftRevision++; };
   el.querySelector('h2').textContent = pane.name;
   el.querySelector('.meta').textContent = pane.session + ' / ' + pane.id + ' / ' + pane.command;
   el.querySelector('.explain').onclick = () => send(card, 'explain', card.selected);
+  el.querySelector('.output').onscroll = event => {
+    const output = event.currentTarget;
+    if (card.el.hidden || card.closed) return;
+    const scrollingUp = output.scrollTop < card.scrollTop;
+    card.scrollTop = output.scrollTop;
+    if (output.scrollHeight - output.scrollTop - output.clientHeight < 40) card.lines = 1000;
+    else if (scrollingUp && output.scrollTop < 200 && !card.selected && getSelection().isCollapsed && card.latest?.history > card.lines && card.latest.capturedLines === card.lines && card.lines < 200000) {
+      card.lines += 1000;
+    }
+  };
   el.querySelector('.output').oncontextmenu = event => {
     if (document.querySelector('#right-click').checked && card.selected.trim() && !card.busy && !card.closed) {
       event.preventDefault(); send(card, 'explain', card.selected);
@@ -98,18 +108,28 @@ document.addEventListener('selectionchange', () => {
   }
 });
 function updateOutput(card) {
-  if (!card.latest || card.selected || dragging || card.el.hidden) return;
+  if (!card.latest || card.latest.capturedLines < card.lines || card.selected || dragging || card.el.hidden) return;
   const key = JSON.stringify([card.latest.output, card.latest.defaultStyle]);
+  const fullHistory = card.latest.history <= card.latest.capturedLines;
+  const preserveTop = card.fullHistory && fullHistory;
+  card.fullHistory = fullHistory;
   if (key === card.rendered) return;
   const output = card.el.querySelector(".output");
   const atEnd = output.scrollHeight - output.scrollTop - output.clientHeight < 40;
+  const oldScrollTop = output.scrollTop;
+  const fromBottom = output.scrollHeight - output.scrollTop;
   renderAnsi(output, card.latest.output, card.latest.defaultStyle);
   card.rendered = key;
   if (atEnd) output.scrollTop = output.scrollHeight;
+  else output.scrollTop = preserveTop ? oldScrollTop : output.scrollHeight - fromBottom;
+  card.scrollTop = output.scrollTop;
 }
 async function refresh() {
   try {
-    const {panes} = await api("/api/panes");
+    const visible = cards.get(currentPane());
+    const lines = visible && !visible.closed ? visible.lines : 1000;
+    const query = lines > 1000 ? '?pane=' + encodeURIComponent(visible.id) + '&lines=' + lines : '';
+    const {panes} = await api("/api/panes" + query);
     connection.textContent = panes.length + " agent" + (panes.length === 1 ? "" : "s") + " connected";
     document.querySelector("#empty").hidden = !!panes.length;
     const keys = new Set(panes.map(paneKey));
@@ -117,7 +137,7 @@ async function refresh() {
       const card = cards.get(paneKey(pane)) || createCard(pane);
       if (card.closed) { card.closed = false; setSelection(card, card.selected); feedback(card, 'Agent reconnected'); }
       if (card.latest && card.latest.output !== pane.output && card.key !== currentPane()) card.unread = true;
-      card.latest = pane;
+      card.latest = {...pane, capturedLines: visible && visible.id === pane.id ? lines : 1000};
       card.el.querySelector("h2").textContent = pane.name;
       card.el.querySelector(".meta").textContent = pane.session + " / " + pane.role + " / " + pane.id;
       updateOutput(card);

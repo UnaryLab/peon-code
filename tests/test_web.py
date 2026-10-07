@@ -66,6 +66,26 @@ class WebTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertIn("日本語", json.loads(body)["panes"][0]["output"])
 
+    def test_scrollback_depth_validation_and_authentication(self):
+        path = "/api/panes?pane=%252&lines="
+        self.assertEqual(self.request("GET", path + "2000", headers={"X-Peon-Token": ""})[0], 403)
+        with patch.object(web, "snapshot") as snapshot:
+            for value in ("999", "200001", "-1", "text", "1000.5", ""):
+                with self.subTest(lines=value):
+                    self.assertEqual(self.request("GET", path + value)[0], 400)
+            snapshot.assert_not_called()
+
+    def test_scrollback_depth_only_applies_to_named_pane(self):
+        panes = [dict(id="%2"), dict(id="%3")]
+        with patch.object(web, "panes", return_value=panes):
+            for lines in (1000, 2000, 200000):
+                with self.subTest(lines=lines), patch.object(web, "snapshot", side_effect=lambda pane, lines=1000: dict(pane, output="terminal", history=2500)) as snapshot:
+                    status, body = self.request("GET", "/api/panes?pane=%252&lines=" + str(lines))
+                    self.assertEqual(status, 200)
+                    self.assertEqual(snapshot.call_args_list[0].args, (panes[0], lines))
+                    self.assertEqual(snapshot.call_args_list[1].args, (panes[1],))
+                    self.assertEqual([pane["history"] for pane in json.loads(body)["panes"]], [2500, 2500])
+
     def test_same_pane_send_and_failures(self):
         text = "It's `quoted` $(touch /tmp/never-run)\n日本語"
         with patch.object(web, "run_delivery", return_value=subprocess.CompletedProcess([], 0, "sent", "")) as run:

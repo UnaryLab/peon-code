@@ -11,6 +11,7 @@ from launch import arguments, open_browser, remote_ui, open_project
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 
 ROOT = Path(__file__).resolve().parent.parent
 ASSETS = {"/": ("index.html", "text/html"), "/app.js": ("app.js", "text/javascript"),
@@ -68,17 +69,28 @@ class Handler(BaseHTTPRequestHandler):
         return True
 
     def do_GET(self):
-        if not self.allowed(self.path == "/api/panes"):
+        parsed = urlsplit(self.path)
+        if not self.allowed(parsed.path == "/api/panes"):
             return
         if self.path in ASSETS:
             filename, mime = ASSETS[self.path]
             self.respond(200, (ROOT / "web" / filename).read_bytes(), mime)
-        elif self.path == "/api/panes":
+        elif parsed.path == "/api/panes":
+            query = parse_qs(parsed.query, keep_blank_values=True)
+            target = query.get("pane", [None])[0]
+            try:
+                lines = int(query.get("lines", ["1000"])[0])
+                # Capture at most 200000 history lines; raise this with the client limit if needed.
+                if not 1000 <= lines <= 200000:
+                    raise ValueError
+            except ValueError:
+                self.respond(400, {"error": "lines must be an integer from 1000 to 200000"})
+                return
             try:
                 result = []
                 for pane in panes(self.server.session):
                     try:
-                        captured = snapshot(pane)
+                        captured = snapshot(pane, lines) if pane["id"] == target else snapshot(pane)
                         if captured is not None:
                             result.append(captured)
                     except subprocess.CalledProcessError:
