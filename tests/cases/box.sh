@@ -18,20 +18,43 @@ assert_box() {
 # Text a TUI draws dim or in a gray foreground is a hint, not typed text, so
 # a box holding only hints measures empty.
 test_box_hint_text() {
-  local bin_dir="$TEST_DIR/box-bin" e tail
+  local bin_dir="$TEST_DIR/box-bin" e tail nbsp cap rc
   mkdir -p "$bin_dir"
   cat >"$bin_dir/tmux" <<'FAKE_TMUX'
 #!/usr/bin/env bash
 case ${1:-} in
-  display) printf '1\n' ;;
+  display)
+    case ${4:-} in
+      '#{pane_in_mode}') printf '0\n' ;;
+      *) printf '1\n' ;;
+    esac ;;
   capture-pane) printf '%s\n' "$FAKE_TMUX_CAPTURE" ;;
 esac
 FAKE_TMUX
   chmod +x "$bin_dir/tmux"
   BOX_BIN=$bin_dir
   e=$(printf '\033')
+  nbsp=$(printf '\302\240')
   tail='
 ────'
+
+  # Claude leaves a non-breaking space after its marker in an empty prompt.
+  cap="output line
+${e}[39m❯${nbsp}$tail"
+  assert_box "an empty Claude prompt with non-breaking padding" "" "$cap"
+  rc=0
+  FAKE_TMUX_CAPTURE="$cap" PATH="$BOX_BIN:$PATH" \
+    bash -c 'source "$1/lib/input.sh"; pane_box_ready %9' _ "$ROOT" || rc=$?
+  [ "$rc" -eq 0 ] || fail "empty Claude prompt returned readiness $rc"
+  cap="output line
+❯${nbsp}日本語 🙂$tail"
+  assert_box "Unicode draft after non-breaking padding" "日本語 🙂" "$cap"
+  rc=0
+  FAKE_TMUX_CAPTURE="$cap" PATH="$BOX_BIN:$PATH" \
+    bash -c 'source "$1/lib/input.sh"; pane_box_ready %9' _ "$ROOT" || rc=$?
+  [ "$rc" -eq 4 ] || fail "Unicode draft returned readiness $rc"
+  assert_box "non-breaking spaces within a message" "日本語 draft" "output line
+❯${nbsp}日本語${nbsp}draft$tail"
 
   assert_box "a dim hint" "" "output line
 ❯ ${e}[2mTry \"fix the bug\"${e}[0m$tail"

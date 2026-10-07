@@ -78,7 +78,9 @@ box_holds_message() {
 # compared, so the box's wrapping and padding do not count as a difference.
 plain_text() {
   local s
-  s=$(LC_ALL=C tr -d '\000-\010\013-\037\177' | LC_ALL=C tr -s '\11\12\40' '\40')
+  # Claude uses U+00A0 as prompt padding. Treat it as a space, keeping all
+  # other UTF-8 bytes so a Unicode draft cannot appear empty.
+  s=$(LC_ALL=C sed $'s/\302\240/ /g' | LC_ALL=C tr -d '\000-\010\013-\037\177' | LC_ALL=C tr -s '\11\12\40' '\40')
   s=${s# }
   s=${s% }
   printf '%s' "$s"

@@ -259,13 +259,14 @@ test_send_refuses
 # Horizontal TUI borders lie outside the prompt-to-cursor rows. They must
 # remain compatible with an empty prompt and with non-ASCII message delivery.
 reset_send_log
+unicode_nbsp=$(printf '\302\240')
 PATH="$SEND_BIN:$PATH" FAKE_TMUX_LOG="$SEND_LOG" \
-  FAKE_BOX='────
-❯
-────' FAKE_CURSOR='2 1' \
-  FAKE_BOX_AFTER='────
-❯ 日本語 🙂
-────' FAKE_CURSOR_AFTER='2 1' \
+  FAKE_BOX="────
+❯$unicode_nbsp
+────" FAKE_CURSOR='2 1' \
+  FAKE_BOX_AFTER="────
+❯${unicode_nbsp}日本語${unicode_nbsp}🙂
+────" FAKE_CURSOR_AFTER='2 1' \
   "$ROOT/peon-code.sh" send %2 '日本語 🙂' >"$TEST_DIR/send-unicode.out"
 assert_contains "$SEND_LOG" 'buffer-content:日本語 🙂'
 assert_contains "$SEND_LOG" 'send-keys -t %2 Enter'
