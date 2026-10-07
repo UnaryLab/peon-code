@@ -26,14 +26,13 @@ load_git_deny() {
   [ "${#GIT_DENY[@]}" -gt 0 ] || fail "no GIT_DENY list found in lib/launch.sh"
 }
 
-# Only the main agent launches with full git: another claude pane adds a
-# --settings deny file, a claude pane that passes its own --settings keeps it,
-# and every pane but main gets the hard git prohibition line in its brief.
+# The main pane gets only renderer settings; other Claude panes add git denies.
+# Own settings win. Every non-main pane gets the hard git prohibition in its brief.
 test_git_deny_settings() {
   local fake_bin=$1 log="$TEST_DIR/tmux-deny.log" home_dir="$TEST_DIR/home-deny"
   local work_dir="$TEST_DIR/deny-work" boss_launch helper_launch own_launch
   local eq_launch yolo_launch
-  local settings rule boss_brief helper_brief impl_brief
+  local settings main_settings rule boss_brief helper_brief impl_brief
   mkdir -p "$home_dir" "$work_dir"
   printf '*boss claude -\nhelper claude -\nown claude --settings /user/own.json -\neq claude --settings=/user/eq.json -\nyolo claude --dangerously-skip-permissions -\nimpl codex -\n' \
     >"$work_dir/peon-code.conf"
@@ -51,9 +50,8 @@ test_git_deny_settings() {
   eq_launch=$(grep -F 'buffer-content:claude' "$log" | sed -n '4p')
   yolo_launch=$(grep -F 'buffer-content:claude' "$log" | sed -n '5p')
   [ -n "$yolo_launch" ] || fail "the deny test did not record all five claude launches"
-  case $boss_launch in
-    *--settings*) fail "the main agent was launched with --settings" ;;
-  esac
+  main_settings=$(settings_path "$boss_launch")
+  [ "$(cat "$main_settings")" = '{"tui":"default"}' ] || fail "the main settings did not contain only the normal renderer"
   case $helper_launch in
     *--settings*) ;;
     *) fail "a non-main claude agent was launched without --settings" ;;
@@ -77,6 +75,8 @@ test_git_deny_settings() {
     "peon-code: own passes its own --settings, so it gets no git deny file"
   assert_contains "$TEST_DIR/deny.err" \
     "peon-code: eq passes its own --settings, so it gets no git deny file"
+  assert_contains "$TEST_DIR/deny.err" "peon-code: own passes its own --settings, so it may stay fullscreen"
+  assert_contains "$TEST_DIR/deny.err" "peon-code: eq passes its own --settings, so it may stay fullscreen"
   assert_contains "$TEST_DIR/deny.err" \
     "peon-code: yolo passes --dangerously-skip-permissions, so the git deny file has no effect"
   assert_not_contains "$TEST_DIR/deny.err" "peon-code: helper passes"
@@ -86,6 +86,7 @@ test_git_deny_settings() {
       fail "the deny settings file is not valid JSON"
   fi
   assert_contains "$settings" '"deny"'
+  assert_contains "$settings" '"tui": "default"'
   # Pinned by name, since the loop below reads the same array it checks.
   assert_contains "$settings" '"Bash(git commit)"'
   assert_contains "$settings" '"Bash(git rm)"'
@@ -136,9 +137,7 @@ test_git_deny_unstarred_main() {
   boss_launch=$(grep -F 'buffer-content:claude' "$log" | sed -n '1p')
   helper_launch=$(grep -F 'buffer-content:claude' "$log" | sed -n '2p')
   [ -n "$helper_launch" ] || fail "the unstarred test did not record both claude launches"
-  case $boss_launch in
-    *--settings*) fail "the fallback main agent was launched with --settings" ;;
-  esac
+  [ "$(cat "$(settings_path "$boss_launch")")" = '{"tui":"default"}' ] || fail "the fallback main settings were not limited to the normal renderer"
   case $helper_launch in
     *--settings*) ;;
     *) fail "a non-main claude agent was launched without --settings" ;;
@@ -156,7 +155,28 @@ test_git_deny_unstarred_main() {
   assert_contains "$front_brief" "Hard prohibition for this pane"
 }
 
+test_main_own_settings() {
+  local fake_bin=$1 work_dir="$TEST_DIR/main-settings-work" home_dir="$TEST_DIR/home-main-settings"
+  local args launch log="$TEST_DIR/main-settings.log"
+  mkdir -p "$work_dir" "$home_dir"
+  for args in '--settings /user/main.json' '--settings=/user/main.json'; do
+    printf '*boss claude %s -\nhelper claude -\n' "$args" >"$work_dir/peon-code.conf"
+    : >"$log"
+    (
+      cd "$work_dir"
+      PATH="$fake_bin:$PATH" HOME="$home_dir" TMPDIR="$TEST_DIR" \
+        FAKE_TMUX_LOG="$log" FAKE_TMUX_MODE=launch FAKE_TMUX_PANES=2 \
+        "$ROOT/peon-code.sh" main-settings
+    ) >"$TEST_DIR/main-settings.out" 2>"$TEST_DIR/main-settings.err" </dev/null || true
+    launch=$(grep -F 'buffer-content:claude' "$log" | sed -n '1p')
+    [ "$launch" = "buffer-content:claude $args" ] || fail "the main pane's own settings were replaced: $launch"
+    assert_contains "$TEST_DIR/main-settings.err" "peon-code: boss passes its own --settings, so it may stay fullscreen"
+    assert_not_contains "$TEST_DIR/main-settings.err" "peon-code: boss passes its own --settings, so it gets no git deny file"
+  done
+}
+
 fake_bin=$(make_fake_commands)
 test_git_deny_settings "$fake_bin"
 test_git_deny_unstarred_main "$fake_bin"
+test_main_own_settings "$fake_bin"
 echo "git_deny: PASS"

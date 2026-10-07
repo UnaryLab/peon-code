@@ -86,12 +86,14 @@ GIT_DENY=(
   "git reflog expire" "git update-ref" "git filter-branch" "git gc"
 )
 
-# Only the main agent launches with full git. Every other claude pane
-# launches with --settings pointing at this deny file; the deny rules bind
-# the pane and every subagent it spawns, which role prose does not.
+# Claude uses the normal screen, with git denied outside the main pane.
+# The deny rules bind the pane and every subagent it spawns, which role prose does not.
+NORMAL_TUI=default
+NORMAL_SETTINGS="$BRIEF_DIR/normal-screen.json"
+printf '{"tui":"%s"}\n' "$NORMAL_TUI" >"$NORMAL_SETTINGS"
 DENY_SETTINGS="$BRIEF_DIR/deny-git.json"
 {
-  printf '{\n  "permissions": {\n    "deny": [\n'
+  printf '{\n  "tui": "%s",\n  "permissions": {\n    "deny": [\n' "$NORMAL_TUI"
   DENY_SEP=""
   for CMD in "${GIT_DENY[@]}"; do
     printf '%s      "Bash(%s)", "Bash(%s:*)"' "$DENY_SEP" "$CMD" "$CMD"
@@ -143,23 +145,33 @@ launch_agents() {
     RID=${RID:+$(printf %q "$RID")}
     case "$BIN" in
       claude)
-        # A claude pane that is not the main agent launches with the deny
-        # settings, unless its own args already pass --settings, which wins:
+        # A pane's own --settings wins over the generated settings:
         # claude reads one --settings and the second would be lost.
         SETTINGS=""
+        case "$ARGS " in
+          *" --settings "*|*" --settings="*)
+            echo "peon-code: ${NAMES[$i]} passes its own --settings, so it may stay fullscreen" >&2
+            if [ "$i" -ne "$MAIN" ]; then
+              echo "peon-code: ${NAMES[$i]} passes its own --settings, so it gets no git deny file" >&2
+            fi ;;
+          *)
+            if [ "$i" -eq "$MAIN" ]; then SETTINGS=" --settings $(printf %q "$NORMAL_SETTINGS")"
+            else SETTINGS=" --settings $(printf %q "$DENY_SETTINGS")"; fi ;;
+        esac
         if [ "$i" -ne "$MAIN" ]; then
-          case "$ARGS " in
-            *" --settings "*|*" --settings="*)
-              echo "peon-code: ${NAMES[$i]} passes its own --settings, so it gets no git deny file" >&2 ;;
-            *) SETTINGS=" --settings $(printf %q "$DENY_SETTINGS")" ;;
-          esac
           case "$ARGS " in
             *" --dangerously-skip-permissions "*)
               echo "peon-code: ${NAMES[$i]} passes --dangerously-skip-permissions, so the git deny file has no effect" >&2 ;;
           esac
         fi
         LAUNCH="$BIN${RID:+ --resume $RID}$ARGS$SETTINGS" ;;  # bare, keeping user args; the brief follows the TUI
-      codex)       LAUNCH="$BIN${RID:+ resume $RID}$ARGS $Q" ;; # positional prompt, stays interactive
+      codex)
+        case "$ARGS " in
+          *" --no-alt-screen "*) ;;
+          *) ARGS="$ARGS --no-alt-screen" ;;
+        esac
+        LAUNCH="$BIN${RID:+ resume $RID}$ARGS $Q" ;; # positional prompt, stays interactive
+      # Other CLIs may use the alternate screen; add their per-CLI flags here to support the normal screen.
       grok)        LAUNCH="$BIN${RID:+ --resume $RID}$ARGS $Q" ;; # positional prompt, stays interactive
       copilot)     LAUNCH="$BIN${RID:+ --resume=$RID}$ARGS -i $Q" ;;  # -i starts the interactive TUI and runs the prompt
       gemini|qwen) LAUNCH="$BIN${RID:+ --resume $RID}$ARGS -i $Q" ;;  # unverified on this machine

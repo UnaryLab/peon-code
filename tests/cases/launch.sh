@@ -123,9 +123,44 @@ test_attached_launch_notes() {
   assert_not_contains <(printf '%s\n' "$block") "kill-session"
 }
 
+test_codex_normal_screen() {
+  local fake_bin=$1 work_dir="$TEST_DIR/codex-normal-work" home_dir="$TEST_DIR/home-codex-normal"
+  local log="$TEST_DIR/codex-normal.log" mode launch plain own
+  mkdir -p "$work_dir" "$home_dir/.codex/sessions"
+  work_dir=$(cd "$work_dir" && pwd)
+  printf 'plain codex -\nown codex --no-alt-screen --model test -\n' >"$work_dir/peon-code.conf"
+  printf '{"cwd":"%s"}\nagent plain of peon-code session codex-normal, in pane\n' "$work_dir" \
+    >"$home_dir/.codex/sessions/rollout-11111111-1111-1111-1111-111111111111.jsonl"
+  printf '{"cwd":"%s"}\nagent own of peon-code session codex-normal, in pane\n' "$work_dir" \
+    >"$home_dir/.codex/sessions/rollout-22222222-2222-2222-2222-222222222222.jsonl"
+  for mode in fresh resume; do
+    : >"$log"
+    (
+      cd "$work_dir"
+      set -- codex-normal
+      [ "$mode" != resume ] || set -- resume codex-normal
+      PATH="$fake_bin:$PATH" HOME="$home_dir" CODEX_HOME="$home_dir/.codex" TMPDIR="$TEST_DIR" \
+        FAKE_TMUX_LOG="$log" FAKE_TMUX_MODE=launch FAKE_TMUX_PANES=2 \
+        "$ROOT/peon-code.sh" "$@"
+    ) >"$TEST_DIR/codex-normal.out" 2>"$TEST_DIR/codex-normal.err" </dev/null || true
+    plain=$(grep -F 'buffer-content:codex' "$log" | sed -n '1p')
+    own=$(grep -F 'buffer-content:codex' "$log" | sed -n '2p')
+    [ -n "$plain" ] && [ -n "$own" ] || fail "both Codex panes were not launched"
+    for launch in "$plain" "$own"; do
+      [ "$(printf '%s\n' "$launch" | grep -o -- '--no-alt-screen' | wc -l | tr -d ' ')" = 1 ] || fail "Codex did not receive --no-alt-screen exactly once: $launch"
+    done
+    assert_contains "$log" '--model test'
+    if [ "$mode" = resume ]; then
+      assert_contains "$log" 'buffer-content:codex resume 11111111-1111-1111-1111-111111111111 --no-alt-screen'
+      assert_contains "$log" 'buffer-content:codex resume 22222222-2222-2222-2222-222222222222 --no-alt-screen --model test'
+    fi
+  done
+}
+
 fake_bin=$(make_fake_commands)
 test_unique_buffers_and_launch_failure "$fake_bin"
 test_launch_with_prompt_box "$fake_bin"
 test_headless_launch_order "$fake_bin"
 test_attached_launch_notes
+test_codex_normal_screen "$fake_bin"
 echo "launch: PASS"
