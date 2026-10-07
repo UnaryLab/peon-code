@@ -13,13 +13,15 @@
   <header class="top">
     <a class="brand" href="/">peon<span>•</span>code</a>
     <span class="tag">Agent workspace</span>
+    <label class="right-click"><input id="right-click" type="checkbox" checked> Right-click to explain</label>
     <span id="connection" role="status">Connecting…</span>
+    <nav class="top-links" aria-label="Project links">
+      <a href="https://github.com/UnaryLab/peon-code" target="_blank" rel="noopener noreferrer">GitHub</a>
+      <a href="/LICENSE" target="_blank" rel="noopener">MIT License</a>
+      <a href="https://www.unarylab.com/" target="_blank" rel="noopener noreferrer">© 2026 UnaryLab</a>
+    </nav>
   </header>
   <main>
-    <div class="intro">
-      <div><h1>Your agents.</h1><p>Select output to copy it or ask its agent for an explanation.</p></div>
-      <label class="right-click"><input id="right-click" type="checkbox" checked> Right-click to explain</label>
-    </div>
     <nav id="sessions" aria-label="Sessions"></nav>
     <p id="project-path"></p>
     <p id="empty" hidden>No agent panes yet. Start a team with <code>peon-code</code>, then return here.</p>
@@ -28,11 +30,6 @@
       <div id="panes"></div>
     </div>
   </main>
-  <footer>
-    <a href="https://github.com/UnaryLab/peon-code" target="_blank" rel="noopener noreferrer">GitHub</a>
-    <a href="/LICENSE" target="_blank" rel="noopener">MIT License</a>
-    <a href="https://www.unarylab.com/" target="_blank" rel="noopener noreferrer">© 2026 UnaryLab</a>
-  </footer>
   <template id="pane-template">
     <article class="pane" hidden>
       <header class="pane-heading"><div><h2></h2><p class="meta"></p></div><span class="state">Live</span></header>

@@ -69,6 +69,20 @@ const assert = require('node:assert/strict');
     assert.equal(await card('%3').locator('script').count(), 0);
     const widths = await card('%3').evaluate(el => [el.getBoundingClientRect().width, el.parentElement.getBoundingClientRect().width]);
     assert.equal(widths[0], widths[1]);
+    assert(await page.evaluate(() => document.documentElement.scrollHeight <= innerHeight));
+    assert(await card('%3').locator('.output').evaluate(el => el.getBoundingClientRect().height > innerHeight * 0.65));
+    const resized = await card('%3').evaluate(el => {
+      const textarea = el.querySelector('textarea'); const original = textarea.style.height;
+      textarea.style.height = '10000px';
+      const result = {
+        outputHeight: el.querySelector('.output').getBoundingClientRect().height,
+        controlsVisible: ['textarea', 'form button', '.feedback'].every(selector => {
+          const rect = el.querySelector(selector).getBoundingClientRect(); return rect.top >= 0 && rect.bottom <= innerHeight;
+        })
+      };
+      textarea.style.height = original; return result;
+    });
+    assert(resized.outputHeight > 0); assert(resized.controlsVisible);
     await paneTab('%5').focus(); revision['%5'] = 1; revision['%10'] = 1;
     await page.waitForSelector('#agents [data-key="%5:first:%5"].unread');
     assert.equal(await page.evaluate(() => document.activeElement.dataset.key), '%5:first:%5');
@@ -169,7 +183,7 @@ const assert = require('node:assert/strict');
     await page.setViewportSize({width: 375, height: 812});
     assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
     await page.screenshot({path: '/tmp/peon-code-web-mobile.png', fullPage: true});
-    assert.equal(await page.locator('footer a').count(), 3);
+    assert.equal(await page.locator('.top-links a').count(), 3);
     await card('%3').locator('textarea').fill('Keep this draft');
     await selectFirstLine();
     empty = true;
@@ -209,6 +223,6 @@ const assert = require('node:assert/strict');
     empty = true;
     await page.waitForFunction(() => !document.querySelector('#empty').hidden);
     assert.equal(errors.length, 0, errors.join('\n'));
-    console.log('browser: PASS (sessions, role order, unread, focus, full width, ANSI colors, selection, same-pane sends, drafts, pane ID reuse, scroll, reload, mobile)');
+    console.log('browser: PASS (sessions, role order, unread, focus, full width, viewport, resize, ANSI colors, selection, same-pane sends, drafts, pane ID reuse, scroll, reload, mobile)');
   } finally { await browser.close(); }
 })().catch(error => { console.error(error); process.exitCode = 1; });
