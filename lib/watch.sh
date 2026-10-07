@@ -56,7 +56,7 @@ cmd_watch() {
   [ "$threshold" -gt 0 ] || return 0
   # A resume recreates the session under the same name, so an older watcher
   # can outlive its session's kill. The newest watcher owns the session; an
-  # older one exits on its next tick, up to 60 s late.
+  # older one exits on its next tick, up to one tick late.
   tmux set-option -t "=$session:" @peon_watch_pid "$$" 2>/dev/null || true
   while tmux has-session -t "=$session" 2>/dev/null; do
     owner=$(tmux show-options -qv -t "=$session:" @peon_watch_pid 2>/dev/null) || owner=""
