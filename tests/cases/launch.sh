@@ -232,6 +232,7 @@ test_brief_rule9_parallel() {
   local git_rule="Any subagent you spawn gets git read-only in its prompt: never checkout, restore, reset, clean, stash"
   local serial_rule="Tasks touching the same files still run one at a time"
   local signal_rule="Never signal a pid list computed from a ps or awk walk, and never send STOP, TERM, or KILL to any process you did not start"
+  local scope_rule="start it as setsid systemd-run --user --scope -q -p OOMPolicy=continue <cmd>: tmux runs each pane in a systemd scope whose default policy stops the whole pane"
   mkdir -p "$home_dir" "$work_dir"
   printf '*boss ./missing-agent -\nhelper ./missing-agent -\n' >"$work_dir/peon-code.conf"
 
@@ -256,11 +257,13 @@ test_brief_rule9_parallel() {
   assert_contains "$boss_brief" "$git_rule"
   assert_contains "$boss_brief" "$serial_rule"
   assert_contains "$boss_brief" "$signal_rule"
+  assert_contains "$boss_brief" "$scope_rule"
   assert_contains "$helper_brief" "$rule9"
   assert_contains "$helper_brief" "$claim_rule"
   assert_contains "$helper_brief" "$git_rule"
   assert_contains "$helper_brief" "$serial_rule"
   assert_contains "$helper_brief" "$signal_rule"
+  assert_contains "$helper_brief" "$scope_rule"
 }
 
 # Rule 7 differs by pane: the main pane's brief carries the manager
