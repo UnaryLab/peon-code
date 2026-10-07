@@ -9,7 +9,7 @@ import sys
 import shutil
 import socket
 import time
-from bridge import menu_letters, panes, snapshot
+from bridge import panes, snapshot
 from launch import arguments, open_browser, remote_ui, open_project
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -132,9 +132,8 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError("append must be a boolean")
             if self.path == "/api/keys":
                 key = data.get("key")
-                letter = isinstance(key, str) and len(key) == 1 and "a" <= key <= "z"
-                if not letter and key not in ("Tab", "Up", "Down", "Enter", "Escape", "1", "2", "3", "4", "5", "6", "7", "8", "9"):
-                    raise ValueError("Allowed keys: Tab, Up, Down, Enter, Escape, 1..9, advertised menu letters")
+                if key not in ("Tab", "Up", "Down", "Enter", "Escape"):
+                    raise ValueError("Allowed keys: Tab, Up, Down, Enter, Escape")
                 text = ""
             elif not isinstance(text, str) or not text.strip():
                 raise ValueError("Select or enter some text first")
@@ -143,14 +142,6 @@ class Handler(BaseHTTPRequestHandler):
                 target = next((p for p in panes(self.server.session) if p["id"] == pane and p.get("identity") == identity), None)
                 if not isinstance(identity, str) or target is None:
                     raise ValueError("Agent changed or closed; refresh before sending")
-                if self.path == "/api/keys" and letter:
-                    try:
-                        captured = snapshot(target)
-                    except subprocess.CalledProcessError:
-                        captured = None
-                    if captured is None or key not in menu_letters(captured["screen"], captured["cursorY"]):
-                        self.respond(409, {"error": "no " + key + " sent: pane " + pane + " is not on a menu"})
-                        return
                 action = "key" if self.path == "/api/keys" else "explain" if self.path == "/api/explain" else "send"
                 args = [str(ROOT / "peon-code.sh"), action]
                 if action == "send" and append:

@@ -32,7 +32,7 @@ Key tables are shared by the tmux server, so the bindings check `@peon_script` a
 
 ## The busy check
 
-A pane's input box is read as everything from the prompt marker (claude draws `❯`, codex `›`) to the end of the cursor's row, with the CLI's hint text left out, so text the cursor was moved back over still counts. `Enter` follows a paste only once the box reads back the pasted text or the CLI's placeholder row for a long paste, such as `[Pasted text #2 +15 lines]`. The shared menu check also recognizes an anchored approval row ending in `(y)`, `(a)`, or `(n)` when its contiguous block has at least two choice rows, with the same cursor and quoted-marker guards. A letter key passes only when a row in that block advertises it; validation runs inside the delivery lock before the key send.
+A pane's input box is read as everything from the prompt marker (claude draws `❯`, codex `›`) to the end of the cursor's row, with the CLI's hint text left out, so text the cursor was moved back over still counts. `Enter` follows a paste only once the box reads back the pasted text or the CLI's placeholder row for a long paste, such as `[Pasted text #2 +15 lines]`. The shared menu check also recognizes an anchored approval row ending in `(y)`, `(a)`, or `(n)` when its contiguous block has at least two choice rows, with the same cursor and quoted-marker guards. This check only decides whether a menu is open; the key command and the browser send only Tab, Up, Down, Enter, and Escape, so a choice is reached by moving the highlight, never by typing its digit or letter. Enter without `--submit` is refused unless the pane is on a menu, a check that runs inside the delivery lock before the key send.
 
 ## Briefs
 

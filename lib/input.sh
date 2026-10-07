@@ -88,9 +88,8 @@ plain_text() {
 
 # Use the cursor row's marker, else the last marker above it. Confirmation
 # footers count within three rows below the cursor. Invalid cursors return 2.
-# An optional letter must appear in the anchored letter-choice block.
 pane_has_menu() {
-  printf '%s' "$1" | LC_ALL=C awk -v cy="${2:-}" -v key="${3:-}" '
+  printf '%s' "$1" | LC_ALL=C awk -v cy="${2:-}" '
     BEGIN { m = "\342\235\257"; m2 = "\342\200\272" }
     { rows[NR] = $0 }
     NR <= cy + 1 && (index($0, m) || index($0, m2)) { anchor = $0; ar = NR }
@@ -105,13 +104,8 @@ pane_has_menu() {
         first = ar; last = ar
         while (first > 1 && letter_choice(rows[first - 1])) first--
         while (last < NR && letter_choice(rows[last + 1])) last++
-        if (last > first) {
-          if (key == "") exit 0
-          for (r = first; r <= last; r++)
-            if (rows[r] ~ ("[(]" key "[)][ \t]*$")) exit 0
-        }
+        if (last > first) exit 0
       }
-      if (key != "") exit 1
       exit (menu || anchor ~ ("^ *" m " [0-9][.]") || anchor ~ ("^ *" m2 " [0-9][.]")) ? 0 : 1
     }'
 }

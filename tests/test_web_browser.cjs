@@ -76,6 +76,10 @@ const assert = require('node:assert/strict');
     await card('%3').locator('.output').press('ArrowDown');
     await page.waitForFunction(() => document.querySelector('.pane:not([hidden]) .feedback').textContent === 'Key sent');
     assert.deepEqual(keyRequest, {pane: '%3', identity: 'first:%3', key: 'Down'});
+    const controlKeyCount = keyCount;
+    await card('%3').locator('.output').press('1');
+    await card('%3').locator('.output').press('y');
+    assert.equal(keyCount, controlKeyCount);
     const colors = await card('%3').locator('.output').evaluate(el => ({
       bg: getComputedStyle(el).backgroundColor, fg: getComputedStyle(el).color,
       spans: [...el.querySelectorAll('span')].slice(0, 8).map(span => ({text: span.textContent, fg: getComputedStyle(span).color, bg: getComputedStyle(span).backgroundColor, bold: getComputedStyle(span).fontWeight, italic: getComputedStyle(span).fontStyle}))
@@ -145,15 +149,13 @@ const assert = require('node:assert/strict');
     await paneTab('%5').click();
     assert(await paneTab('%5').evaluate(el => el.classList.contains('needs-answer')));
     const shortcuts = card('%5').locator('.key-shortcuts button');
-    assert.deepEqual(await shortcuts.allTextContents(), ['1. Accept', ('2. ' + 'Long menu label '.repeat(5)).slice(0, 40), 'Enter', 'Esc']);
-    assert.equal((await shortcuts.nth(1).textContent()).length, 40);
-    assert.deepEqual((await shortcuts.allTextContents()).slice(2), ['Enter', 'Esc']);
+    assert.deepEqual(await shortcuts.allTextContents(), ['Up', 'Down', 'Enter', 'Esc']);
     assert.equal(await card('%5').locator('.keys-toggle').getAttribute('aria-expanded'), 'false');
     assert(await card('%5').locator('.key-shortcuts').evaluate(el => el.previousElementSibling.className === 'key-buttons'));
     await card('%5').locator('.keys-toggle').click();
-    assert.deepEqual(await card('%5').locator('.keys button:visible').allTextContents(), ['Keys', 'Up', 'Down', 'Tab', ...await shortcuts.allTextContents()]);
-    for (const key of ['1', '2', 'Enter', 'Escape']) assert.equal(await card('%5').locator(`.keys button[data-key="${key}"]:visible`).count(), 1);
-    for (const key of ['3', '4', '5', '6', '7', '8', '9']) assert.equal(await card('%5').locator(`.keys button[data-key="${key}"]:visible`).count(), 0);
+    assert.deepEqual(await card('%5').locator('.keys button:visible').allTextContents(), ['Keys', 'Tab', ...await shortcuts.allTextContents()]);
+    for (const key of ['Up', 'Down', 'Enter', 'Escape']) assert.equal(await card('%5').locator(`.keys button[data-key="${key}"]:visible`).count(), 1);
+    assert(await card('%5').locator('.keys button[data-key]').evaluateAll(buttons => buttons.every(button => ['Tab', 'Up', 'Down', 'Enter', 'Escape'].includes(button.dataset.key))));
     const menuKeyCount = keyCount, menuMessageCount = sent.length;
     await card('%5').locator('textarea').fill(' \n'); await card('%5').locator('form button').click();
     await card('%5').locator('textarea').fill(''); await card('%5').locator('textarea').press('Shift+Enter');
@@ -174,69 +176,32 @@ const assert = require('node:assert/strict');
     await shortcuts.first().click();
     await page.waitForFunction(() => [...document.querySelectorAll('.pane[data-pane="%5"] .keys button')].every(button => button.disabled));
     await page.waitForFunction(() => document.querySelector('.pane[data-pane="%5"] .feedback').textContent === 'Key sent');
-    assert.deepEqual(keyRequest, {pane: '%5', identity: 'first:%5', key: '1'});
+    assert.deepEqual(keyRequest, {pane: '%5', identity: 'first:%5', key: 'Up'});
     assert.equal(await card('%5').locator('textarea').inputValue(), 'Keep the shortcut draft');
     assert.equal(await page.evaluate(() => getSelection().toString()), "It's");
     await card('%5').locator('.resume').click();
     await card('%5').locator('textarea').fill('');
     keyDelay = 0;
-    const savedMenu = menu['%5'];
-    const codexRows = ['❯ 1. Old numbered prose', '  2. More prose', '', '  Quoted choice (y)', '  Quoted always (a)', '', '  Yes, proceed (y)', '› Yes, and ' + 'do not ask again '.repeat(4) + '(a)', '  No, tell Codex what to do differently (n)', '  Duplicate yes (y)', '', '  Enter to confirm'];
-    const codexLabels = ['1. Yes, proceed', ('2. Yes, and ' + 'do not ask again '.repeat(4).trim()).slice(0, 40), '3. No, tell Codex what to do differently', 'Enter', 'Esc'];
-    for (const [cursor, footer] of [[7, ''], [11, '\n  Footer capture']]) {
-      screen['%5'] = codexRows.join('\n') + footer + '\n'; cursorY['%5'] = cursor;
-      menu['%5'] = '\n' + screen['%5'];
-      await page.waitForFunction(text => document.querySelector('.pane[data-pane="%5"] .output').textContent.endsWith(text), screen['%5']);
-      assert.deepEqual(await shortcuts.allTextContents(), codexLabels);
-      assert.deepEqual(await card('%5').locator('.keys button:visible').allTextContents(), ['Keys', 'Up', 'Down', 'Tab', ...codexLabels]);
-      for (const key of ['y', 'a', 'n', 'Enter', 'Escape']) assert.equal(await card('%5').locator(`.keys button[data-key="${key}"]:visible`).count(), 1);
-      for (const key of ['y', 'a', 'n']) {
-        await card('%5').locator(`.key-shortcuts button[data-key="${key}"]`).click();
-        await page.waitForFunction(() => document.querySelector('.pane[data-pane="%5"] .feedback').textContent === 'Key sent');
-        assert.deepEqual(keyRequest, {pane: '%5', identity: 'first:%5', key});
-      }
-    }
-    for (const plainInput of ['› fix item (a)', '› Another action (b)\n  Yes, proceed (y)']) {
-      screen['%5'] = plainInput; cursorY['%5'] = 0; menu['%5'] = '\n' + plainInput;
-      await page.waitForFunction(text => document.querySelector('.pane[data-pane="%5"] .output').textContent.endsWith(text), plainInput);
-      assert.deepEqual(await shortcuts.allTextContents(), ['Enter', 'Esc']);
-      assert(await card('%5').locator('.key-buttons button[data-key="1"]').isVisible());
-    }
-    const genericLabels = ['1. Yes, proceed', '2. Another action', 'Enter', 'Esc'];
-    for (const [cursor, footer] of [[0, ''], [3, '\n  Generic footer capture']]) {
-      screen['%5'] = '› Yes, proceed (y)\n  Another action (b)\n\n  Enter to confirm' + footer; cursorY['%5'] = cursor;
-      menu['%5'] = '\n' + screen['%5'];
-      await page.waitForFunction(text => document.querySelector('.pane[data-pane="%5"] .output').textContent.endsWith(text), screen['%5']);
-      assert.deepEqual(await card('%5').locator('.keys button:visible').allTextContents(), ['Keys', 'Up', 'Down', 'Tab', ...genericLabels]);
-      for (const key of ['y', 'b']) {
-        await card('%5').locator(`.key-shortcuts button[data-key="${key}"]`).click();
-        await page.waitForFunction(() => document.querySelector('.pane[data-pane="%5"] .feedback').textContent === 'Key sent');
-        assert.deepEqual(keyRequest, {pane: '%5', identity: 'first:%5', key});
-      }
-    }
-    screen['%5'] = '› Yes, proceed (y)\n  No (n)\n\n› typed text'; cursorY['%5'] = 3;
-    menu['%5'] = '\n' + screen['%5'];
-    await page.waitForFunction(() => document.querySelector('.pane[data-pane="%5"] .output').textContent.endsWith('› typed text'));
-    assert.deepEqual(await shortcuts.allTextContents(), ['Enter', 'Esc']);
-    assert(await card('%5').locator('.key-buttons button[data-key="1"]').isVisible());
-    cursorY['%5'] = -1;
-    menu['%5'] = savedMenu;
-    for (const unparsedMenu of ['Enter to confirm', '    1. Indented choice\n    2. Another choice']) {
-      screen['%5'] = unparsedMenu;
-      menu['%5'] += '\n' + unparsedMenu;
-      await page.waitForFunction(text => document.querySelector('.pane[data-pane="%5"] .output').textContent.endsWith(text), unparsedMenu);
-      await page.waitForFunction(() => document.querySelector('.pane[data-pane="%5"] .key-shortcuts').textContent === 'EnterEsc');
-      assert.deepEqual(await card('%5').locator('.keys button:visible').allTextContents(), ['Keys', 'Up', 'Down', 'Tab', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'Enter', 'Esc']);
-      for (const key of ['Enter', 'Escape']) assert.equal(await card('%5').locator(`.keys button[data-key="${key}"]:visible`).count(), 1);
+    for (const menuScreen of [
+      '❯ 1. Yes\n  2. No\n  3. Type something.\n',
+      '  1. Yes\n  2. No\n❯ 3. Type something.\n',
+      '  1. Yes\n  2. No\n❯ 3. 42333\n',
+      '› Yes, proceed (y)\n  Yes, allow this command (a)\n  No, stop (n)\n',
+      'Enter to confirm']) {
+      screen['%5'] = menuScreen; cursorY['%5'] = 0; menu['%5'] = '\n' + menuScreen;
+      await page.waitForFunction(text => document.querySelector('.pane[data-pane="%5"] .output').textContent.endsWith(text), menuScreen);
+      assert.deepEqual(await shortcuts.allTextContents(), ['Up', 'Down', 'Enter', 'Esc']);
+      assert.deepEqual(await card('%5').locator('.keys button:visible').allTextContents(), ['Keys', 'Tab', 'Up', 'Down', 'Enter', 'Esc']);
+      for (const key of ['Up', 'Down', 'Enter', 'Escape']) assert.equal(await card('%5').locator('.keys button[data-key="' + key + '"]:visible').count(), 1);
     }
     menu['%5'] += '\n' + 'Answered\n'.repeat(6);
     menuShown['%5'] = false;
     screen['%5'] = 'Answered\n';
     await page.waitForFunction(() => !document.querySelector('#agents [data-key="%5:first:%5"]').classList.contains('needs-answer'));
     assert.equal(await sessionTab('alpha').evaluate(el => el.classList.contains('needs-answer')), false);
-    assert((await card('%5').locator('.output').textContent()).includes('❯ 1. Accept'));
+    assert((await card('%5').locator('.output').textContent()).includes('Enter to confirm'));
     assert.equal(await shortcuts.count(), 0);
-    assert.deepEqual(await card('%5').locator('.keys button:visible').allTextContents(), ['Keys', 'Up', 'Down', 'Tab', 'Enter', 'Esc', '1', '2', '3', '4', '5', '6', '7', '8', '9']);
+    assert.deepEqual(await card('%5').locator('.keys button:visible').allTextContents(), ['Keys', 'Up', 'Down', 'Tab', 'Enter', 'Esc']);
     await paneTab('%3').click();
     menu['%3'] = '\n❯ \x1b[2m' + 'Try a hint '.repeat(10) + '\x1b[22m';
     screen['%3'] = '❯ ' + 'Try a hint '.repeat(10);
@@ -246,7 +211,7 @@ const assert = require('node:assert/strict');
     assert.equal((await hintChip.textContent()).length, 60);
     await card('%3').locator('.keys-toggle').click();
     assert.equal(await card('%3').locator('.keys button[data-key="Tab"]:visible').count(), 1);
-    assert.deepEqual(await card('%3').locator('.keys button:visible').allTextContents(), ['Keys', 'Up', 'Down', 'Enter', 'Esc', '1', '2', '3', '4', '5', '6', '7', '8', '9', await hintChip.textContent()]);
+    assert.deepEqual(await card('%3').locator('.keys button:visible').allTextContents(), ['Keys', 'Up', 'Down', 'Enter', 'Esc', await hintChip.textContent()]);
     await hintChip.click();
     await page.waitForFunction(() => document.querySelector('.pane[data-pane="%3"] .feedback').textContent === 'Key sent');
     assert.deepEqual(keyRequest, {pane: '%3', identity: 'first:%3', key: 'Tab'});
@@ -408,7 +373,7 @@ const assert = require('node:assert/strict');
     menu['%3'] = '\n❯ \x1b[2mHint\x1b[0m\n  2. Other'; screen['%3'] = '❯ Hint\n  2. Other'; menuShown['%3'] = true;
     await card('%3').locator('.key-shortcuts button[data-key="Tab"]').waitFor();
     await card('%3').locator('.keys-toggle').click();
-    assert.deepEqual(await card('%3').locator('.keys button:visible').allTextContents(), ['Keys', 'Up', 'Down', '2. Other', 'Enter', 'Esc', 'Tab: Hint']);
+    assert.deepEqual(await card('%3').locator('.keys button:visible').allTextContents(), ['Keys', 'Up', 'Down', 'Enter', 'Esc', 'Tab: Hint']);
     empty = true;
     await page.waitForFunction(() => document.querySelector('.pane:not([hidden]) .state').textContent === 'Closed');
     assert.equal(await card('%3').locator('textarea').inputValue(), 'Keep this draft');
@@ -416,7 +381,7 @@ const assert = require('node:assert/strict');
     assert(await card('%3').locator('form button').isDisabled());
     assert(await card('%3').locator('.keys button').evaluateAll(buttons => buttons.every(button => button.disabled)));
     assert.equal(await card('%3').locator('.keys-toggle').getAttribute('aria-expanded'), 'true');
-    assert.deepEqual(await card('%3').locator('.keys button:visible').allTextContents(), ['Keys', 'Up', 'Down', '2. Other', 'Enter', 'Esc', 'Tab: Hint']);
+    assert.deepEqual(await card('%3').locator('.keys button:visible').allTextContents(), ['Keys', 'Up', 'Down', 'Enter', 'Esc', 'Tab: Hint']);
     assert.equal(await paneTab('%3').textContent(), 'Boss · manager · closed');
     const deliveries = sent.length;
     await card('%3').locator('.output').click({button: 'right'});
@@ -449,6 +414,6 @@ const assert = require('node:assert/strict');
     empty = true;
     await page.waitForFunction(() => !document.querySelector('#empty').hidden);
     assert.equal(errors.length, 0, errors.join('\n'));
-    console.log('browser: PASS (sessions, role order, manager-only unread, focus, full width, viewport, resize, ANSI colors, waiting input text, hint exclusion, menu priority, selection, same-pane sends, digit and letter menu shortcuts, Tab hints, key deduplication, keyboard send, append sends, empty Send menu guard, explicit menu Enter, empty Send presses Enter, drafts, pane ID reuse, scroll, reload, mobile)');
+    console.log('browser: PASS (sessions, role order, manager-only unread, focus, full width, viewport, resize, ANSI colors, waiting input text, hint exclusion, menu priority, selection, same-pane sends, menu navigation, Tab hints, key deduplication, keyboard send, append sends, empty Send menu guard, explicit menu Enter, empty Send presses Enter, drafts, pane ID reuse, scroll, reload, mobile)');
   } finally { await browser.close(); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

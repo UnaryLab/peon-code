@@ -65,7 +65,7 @@ peon-code.sh send <pane-id> 'text'|-            agent to agent: paste into a pan
                                                 to 10 times over ~10s before exiting
                                                 non-zero (- reads the message from stdin)
 peon-code.sh explain <pane-id>                 explain selected text from stdin in the same pane
-peon-code.sh key [--submit] <pane-id> <name>   press Tab, Up, Down, Escape, or 1..9;
+peon-code.sh key [--submit] <pane-id> <name>   press Tab, Up, Down, Enter, or Escape;
                                                 Enter answers a menu; --submit also submits box text
 peon-code.sh rebrief <name|all> [<session>]     send an agent its launch brief again,
                                                 for after it compacts its conversation

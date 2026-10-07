@@ -132,7 +132,7 @@ class WebTests(unittest.TestCase):
             self.assertEqual(run.call_count, 3)
 
     def test_keys_validate_identity_and_only_send_allowed_keys(self):
-        keys = ("Tab", "Up", "Down", "Enter", "Escape", "1", "2", "3", "4", "5", "6", "7", "8", "9")
+        keys = ("Tab", "Up", "Down", "Enter", "Escape")
         def deliver(args, text, identity):
             self.assertTrue(self.server.send_lock.locked())
             return subprocess.CompletedProcess(args, 0, "key sent", "")
@@ -143,7 +143,7 @@ class WebTests(unittest.TestCase):
                 self.assertEqual((status, json.loads(body)), (200, {"message": "key sent"}))
                 flags = ["--submit"] if key == "Enter" else []
                 run.assert_called_with([str(ROOT / "peon-code.sh"), "key", *flags, "%2", key], "", "server:session:pane")
-            for key in ("Esc", "tab", "0", "10", "A", "Y", "aa", "é", "C-c", "Tab Enter", "", None, 1, []):
+            for key in (*"0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ", "Esc", "tab", "10", "aa", "é", "C-c", "Tab Enter", "", None, 1, []):
                 with self.subTest(key=key):
                     self.assertEqual(self.request("POST", "/api/keys", dict(pane="%2", identity="server:session:pane", key=key))[0], 400)
             data = dict(pane="%2", identity="server:session:pane", key="Enter")
@@ -155,57 +155,6 @@ class WebTests(unittest.TestCase):
             self.assertEqual(self.request("POST", "/api/keys", ["Tab"])[0], 400)
             self.assertEqual(run.call_count, len(keys))
             snapshot.assert_not_called()
-
-    def test_keys_send_letters_only_advertised_in_the_current_menu(self):
-        data = dict(pane="%2", identity="server:session:pane", text="Never send this text")
-        screen = '› Yes, proceed (y)\n  Yes, allow this command (a)\n  No, stop (n)\n\nEnter to select\n'
-        def capture(pane):
-            self.assertTrue(self.server.send_lock.locked())
-            self.assertEqual(pane['identity'], data['identity'])
-            return dict(pane, screen=screen, cursorY=4)
-        with patch.object(web, "snapshot", side_effect=capture) as snapshot, \
-                patch.object(web, "run_delivery", return_value=subprocess.CompletedProcess([], 0, "key sent", "")) as run:
-            for key in ('y', 'a', 'n'):
-                status, body = self.request("POST", "/api/keys", dict(data, key=key))
-                self.assertEqual((status, json.loads(body)), (200, {"message": "key sent"}))
-                run.assert_called_with([str(ROOT / "peon-code.sh"), "key", "%2", key], "", data['identity'])
-            status, body = self.request("POST", "/api/keys", dict(data, key='z'))
-            self.assertEqual((status, json.loads(body)), (409, {"error": "no z sent: pane %2 is not on a menu"}))
-            self.assertEqual(run.call_count, 3)
-            self.assertEqual(snapshot.call_count, 4)
-            for headers in ({"X-Peon-Token": "bad"}, {"Host": "evil.test"}, {"Origin": "https://evil.test"}):
-                self.assertEqual(self.request("POST", "/api/keys", dict(data, key='y'), headers)[0], 403)
-            for options in ({"identity": "old:pane"}, {"pane": "%999"}, {"padding": "x" * 262144}):
-                self.assertEqual(self.request("POST", "/api/keys", dict(data, key='y', **options))[0], 400)
-            self.assertEqual(snapshot.call_count, 4)
-        for screen, cy in (('› ordinary text\n', 0), ('› 1. Choice\n', 0),
-                           ('› quoted › Yes, proceed (y)\n', 0),
-                           ('› Yes, proceed (y)\n  No, stop (n)\n› \n', 2),
-                           ('› No, stop (n)\n\n  Yes, proceed (y)\n', 0),
-                           ('› Yes, proceed (y)\n', -1), ('› Yes, proceed (y)\n', 99)):
-            with self.subTest(screen=screen, cy=cy), \
-                    patch.object(web, "snapshot", return_value=dict(screen=screen, cursorY=cy)), \
-                    patch.object(web, "run_delivery") as run:
-                status, body = self.request("POST", "/api/keys", dict(data, key='y'))
-                self.assertEqual((status, json.loads(body)), (409, {"error": "no y sent: pane %2 is not on a menu"}))
-                run.assert_not_called()
-        with patch.object(web, "snapshot", return_value=dict(screen='› Yes, proceed (y)\n  Another action (b)\n', cursorY=1)), \
-                patch.object(web, "run_delivery", return_value=subprocess.CompletedProcess([], 0, "key sent", "")) as run:
-            self.assertEqual(self.request("POST", "/api/keys", dict(data, key='b'))[0], 200)
-            run.assert_called_once_with([str(ROOT / "peon-code.sh"), "key", "%2", 'b'], "", data['identity'])
-        for key in ('y', 'a', 'n'):
-            with self.subTest(singleton=key), \
-                    patch.object(web, "snapshot", return_value=dict(screen='› fix item (' + key + ')\n', cursorY=0)), \
-                    patch.object(web, "run_delivery") as run:
-                status, body = self.request("POST", "/api/keys", dict(data, key=key))
-                self.assertEqual((status, json.loads(body)), (409, {"error": "no " + key + " sent: pane %2 is not on a menu"}))
-                run.assert_not_called()
-        for result in (None, subprocess.CalledProcessError(1, 'tmux')):
-            with self.subTest(result=result), \
-                    patch.object(web, "snapshot", side_effect=result if isinstance(result, Exception) else None, return_value=None), \
-                    patch.object(web, "run_delivery") as run:
-                self.assertEqual(self.request("POST", "/api/keys", dict(data, key='y'))[0], 409)
-                run.assert_not_called()
 
     def test_keys_delivery_failure_and_timeout(self):
         data = dict(pane="%2", identity="server:session:pane", key="Enter")

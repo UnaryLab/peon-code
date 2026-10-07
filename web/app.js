@@ -99,48 +99,15 @@ function inputBox(pane) {
 }
 function updateKeys(card) {
   const pane = card.latest;
-  const labels = [];
-  if (pane.menu) {
-    // Numbered menu rows use their digit shortcuts.
-    const rows = [...(pane.screen || '').matchAll(/^(?:[❯›] | {2})([1-9])\. (.+)$/gm)];
-    let previous = null;
-    for (const match of rows.reverse()) {
-      const digit = Number(match[1]);
-      if (previous !== null && digit !== previous - 1) break;
-      labels.unshift([match[1], (match[1] + '. ' + match[2].trim()).slice(0, 40)]);
-      if (digit === 1) break;
-      previous = digit;
-    }
-    const screen = (pane.screen || '').split('\n');
-    if (screen[screen.length - 1] === '') screen.pop();
-    let anchor = -1;
-    if (Number.isInteger(pane.cursorY) && pane.cursorY >= 0 && pane.cursorY < screen.length) {
-      for (let row = 0; row <= pane.cursorY; row++) if (/[❯›]/.test(screen[row])) anchor = row;
-    }
-    const option = /^(?: *[❯›] | {2,})([^❯›]+) \(([a-z])\)\s*$/;
-    if (anchor >= 0 && /^ *[❯›] .* \([yan]\)\s*$/.test(screen[anchor]) && option.test(screen[anchor])) {
-      let first = anchor, last = anchor;
-      while (first > 0 && option.test(screen[first - 1])) first--;
-      while (last + 1 < screen.length && option.test(screen[last + 1])) last++;
-      if (last > first) {
-        labels.length = 0;
-        for (let row = first; row <= last; row++) {
-          const match = option.exec(screen[row]);
-          if (!labels.some(([key]) => key === match[2])) labels.push([match[2], (labels.length + 1 + '. ' + match[1].trim()).slice(0, 40)]);
-        }
-      }
-    }
-    labels.push(['Enter', 'Enter'], ['Escape', 'Esc']);
-  }
+  const labels = pane.menu ? [['Up', 'Up'], ['Down', 'Down'], ['Enter', 'Enter'], ['Escape', 'Esc']] : [];
   const hint = inputHint(pane);
   if (hint) labels.push(['Tab', ('Tab: ' + hint).slice(0, 60)]);
   const signature = JSON.stringify(labels);
   if (signature === card.shortcutsRendered) return;
   card.shortcutsRendered = signature;
-  const hasChoices = labels.some(([key]) => /^[1-9a-z]$/.test(key));
   for (const button of card.el.querySelectorAll('.key-buttons button')) {
     const key = button.dataset.key;
-    button.hidden = key === 'Tab' ? !!hint : /^[1-9]$/.test(key) ? hasChoices : pane.menu && (key === 'Enter' || key === 'Escape');
+    button.hidden = key === 'Tab' ? !!hint : pane.menu;
   }
   const buttons = labels.map(([key, label]) => {
     const button = document.createElement('button');
@@ -156,8 +123,6 @@ function createCard(pane) {
   el.dataset.pane = pane.id;
   el.dataset.key = paneKey(pane);
   const card = {el, id: pane.id, key: paneKey(pane), lines: 1000, scrollTop: 0, fullHistory: false, selected: '', selectionRevision: 0, draftRevision: 0, busy: false, closed: false, unread: false, needsAnswer: false, boxText: '', boxSince: 0, waitingText: false, latest: null, rendered: null, keysOpen: false};
-  const fallbackKeys = el.querySelector('.key-buttons');
-  fallbackKeys.prepend(fallbackKeys.querySelector('[data-key="Up"]'), fallbackKeys.querySelector('[data-key="Down"]'));
   const keysToggle = el.querySelector('.keys-toggle');
   keysToggle.onclick = () => {
     card.keysOpen = !card.keysOpen;
@@ -189,7 +154,7 @@ function createCard(pane) {
   };
   el.querySelector('.output').onkeydown = event => {
     if (event.ctrlKey || event.altKey || event.metaKey || event.isComposing || card.closed || card.busy) return;
-    const key = {ArrowUp: 'Up', ArrowDown: 'Down', Enter: 'Enter', Escape: 'Escape'}[event.key] || (/^[1-9]$/.test(event.key) ? event.key : null);
+    const key = {ArrowUp: 'Up', ArrowDown: 'Down', Enter: 'Enter', Escape: 'Escape'}[event.key];
     if (typeof key === 'string') { event.preventDefault(); send(card, 'keys', key); }
   };
   el.querySelector('.output').oncontextmenu = event => {
