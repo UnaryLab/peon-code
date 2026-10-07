@@ -105,7 +105,7 @@ Each agent has a scrolling output pane and a message box. In the message box, Sh
 
 Open **Keys** below a pane's actions to send Up, Down, Tab, Enter, Esc, or 1..9 for agent menus and hints. Up and Down appear first; a menu or hint hides the matching fallback keys. Focus the output pane to use arrow keys, Enter, Esc, or 1..9 to answer a menu. Enter works only on a menu. Use tmux for all other terminal controls.
 
-Visible numbered menu choices appear beside **Keys**, with Enter and Esc shortcuts while a menu is open. A **Tab: hint** button sends Tab for a dim or gray hint on the input row. If Send is blocked because the input box holds typed text, **Append and send** adds your message after that text and submits both. This also works after Tab accepts a hint.
+Visible numbered menu choices appear beside **Keys**, with Enter and Esc shortcuts while a menu is open. A **Tab: hint** button sends Tab for a dim or gray hint on the input row. After Tab accepts a hint, **Send** adds your message after that text and submits both.
 
 **Close session**, below the agent tabs, asks for confirmation and stops all agents in the selected team.
 

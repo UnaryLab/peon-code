@@ -43,12 +43,11 @@ function setSelection(card, text) {
   card.el.querySelector('.discard').hidden = !card.closed;
   card.el.querySelector('.discard').disabled = card.busy;
   card.el.querySelector('form button').disabled = card.busy || card.closed;
-  card.el.querySelector('.append').disabled = card.busy || card.closed;
   for (const button of card.el.querySelectorAll('.keys button')) button.disabled = card.busy || card.closed;
   card.el.querySelector('.selection-note').textContent = text ? 'Selection saved · updates paused' : '';
   card.el.querySelector('.state').textContent = card.closed ? 'Closed' : text ? 'Paused' : 'Live';
 }
-async function send(card, action, text, append = false) {
+async function send(card, action, text) {
   if (card.closed || card.busy) return;
   const selectionRevision = card.selectionRevision;
   const draftRevision = card.draftRevision;
@@ -57,19 +56,14 @@ async function send(card, action, text, append = false) {
   setSelection(card, card.selected);
   feedback(card, 'Sending to this agent…');
   try {
-    const result = await api('/api/' + action, {pane: card.id, identity: card.latest.identity, ...(action === 'keys' ? {key: text} : {text}), ...(append ? {append: true} : {})});
+    const result = await api('/api/' + action, {pane: card.id, identity: card.latest.identity, ...(action === 'keys' ? {key: text} : {text}), ...(action === 'send' && card.appendNext ? {append: true} : {})});
     feedback(card, result.message);
-    if (action === 'send') { card.appendText = null; card.el.querySelector('.append-action').hidden = true; }
+    if (action === 'keys' && text === 'Tab') { card.appendNext = true; card.tabSentAt = performance.now(); }
+    if (action === 'send') card.appendNext = false;
     if (action === 'explain') {
       if (card.selected === text && card.selectionRevision === selectionRevision) { setSelection(card, ''); if (card.key === currentPane()) getSelection().removeAllRanges(); }
     } else if (action === 'send' && card.draftRevision === draftRevision && card.el.querySelector('textarea').value === text) card.el.querySelector('textarea').value = '';
-  } catch (error) {
-    feedback(card, error.message, true);
-    if (action === 'send' && error.message.includes('holds typed text') && card.draftRevision === draftRevision && card.el.querySelector('textarea').value === text) {
-      card.appendText = text;
-      card.el.querySelector('.append-action').hidden = false;
-    }
-  }
+  } catch (error) { feedback(card, error.message, true); }
   finally { card.busy = false; setSelection(card, card.selected); }
 }
 function inputHint(pane) {
@@ -88,7 +82,7 @@ function inputHint(pane) {
   }
   return '';
 }
-function updateKeys(card) {
+function updateKeys(card, captureStarted) {
   const pane = card.latest;
   const labels = [];
   if (pane.menu) {
@@ -105,6 +99,8 @@ function updateKeys(card) {
     labels.push(['Enter', 'Enter'], ['Escape', 'Esc']);
   }
   const hint = inputHint(pane);
+  const markerRow = (pane.screen || '').split('\n').reverse().find(row => /[❯›]/.test(row));
+  if (card.appendNext && !card.busy && captureStarted > card.tabSentAt && !hint && /^\s*[❯›]\s*$/.test(markerRow || '')) card.appendNext = false;
   if (hint) labels.push(['Tab', ('Tab: ' + hint).slice(0, 60)]);
   const signature = JSON.stringify(labels);
   if (signature === card.shortcutsRendered) return;
@@ -127,7 +123,7 @@ function createCard(pane) {
   const el = document.querySelector('#pane-template').content.firstElementChild.cloneNode(true);
   el.dataset.pane = pane.id;
   el.dataset.key = paneKey(pane);
-  const card = {el, id: pane.id, key: paneKey(pane), lines: 1000, scrollTop: 0, fullHistory: false, selected: '', selectionRevision: 0, draftRevision: 0, appendText: null, busy: false, closed: false, unread: false, needsAnswer: false, latest: null, rendered: null, keysOpen: false};
+  const card = {el, id: pane.id, key: paneKey(pane), lines: 1000, scrollTop: 0, fullHistory: false, selected: '', selectionRevision: 0, draftRevision: 0, appendNext: false, tabSentAt: 0, busy: false, closed: false, unread: false, needsAnswer: false, latest: null, rendered: null, keysOpen: false};
   const fallbackKeys = el.querySelector('.key-buttons');
   fallbackKeys.prepend(fallbackKeys.querySelector('[data-key="Up"]'), fallbackKeys.querySelector('[data-key="Down"]'));
   const keysToggle = el.querySelector('.keys-toggle');
@@ -140,8 +136,7 @@ function createCard(pane) {
   const shortcuts = document.createElement('div');
   shortcuts.className = 'key-shortcuts';
   el.querySelector('.keys').append(shortcuts);
-  el.querySelector('textarea').oninput = () => { card.draftRevision++; card.appendText = null; el.querySelector('.append-action').hidden = true; };
-  el.querySelector('.append').onclick = () => { if (card.appendText !== null) send(card, 'send', card.appendText, true); };
+  el.querySelector('textarea').oninput = () => { card.draftRevision++; };
   el.querySelector('textarea').onkeydown = event => {
     if (event.key === 'Enter' && event.shiftKey && !event.isComposing) {
       event.preventDefault(); el.querySelector('form').requestSubmit();
@@ -230,6 +225,7 @@ async function refresh() {
     const visible = cards.get(currentPane());
     const lines = visible && !visible.closed ? visible.lines : 1000;
     const query = lines > 1000 ? '?pane=' + encodeURIComponent(visible.id) + '&lines=' + lines : '';
+    const captureStarted = performance.now();
     const {panes, initial} = await api("/api/panes" + query);
     connection.textContent = panes.length + " agent" + (panes.length === 1 ? "" : "s") + " connected";
     document.querySelector("#empty").hidden = !!panes.length;
@@ -240,7 +236,7 @@ async function refresh() {
       if (pane.role === 'manager' && card.latest && card.latest.output !== pane.output && card.key !== currentPane()) card.unread = true;
       card.needsAnswer = pane.menu;
       card.latest = {...pane, capturedLines: visible && visible.id === pane.id ? lines : 1000};
-      updateKeys(card);
+      updateKeys(card, captureStarted);
       card.el.querySelector("h2").textContent = pane.name;
       card.el.querySelector(".meta").textContent = pane.session + " / " + pane.role + " / " + pane.id;
       updateOutput(card);
