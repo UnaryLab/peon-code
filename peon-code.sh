@@ -116,6 +116,8 @@ die() {
   exit 1
 }
 
+# shellcheck source=lib/deps.sh
+source "$SCRIPT_DIR/lib/deps.sh"
 # shellcheck source=lib/tmux.sh
 source "$SCRIPT_DIR/lib/tmux.sh"
 # shellcheck source=lib/input.sh
@@ -140,6 +142,7 @@ source "$SCRIPT_DIR/lib/watch.sh"
 START_ARGS=("$@")
 CONF=""
 CONF_GIVEN=0
+case "${1:-}" in --help) usage; exit 0 ;; esac
 while getopts ":c:h" opt; do
   case $opt in
     c) CONF=$OPTARG; CONF_GIVEN=1 ;;
@@ -149,6 +152,10 @@ while getopts ":c:h" opt; do
   esac
 done
 shift $((OPTIND - 1))
+case "${1:-}" in
+  uninstall) ;;
+  *) tmux_version_ok || exit 1 ;;
+esac
 
 RESUME=0
 case "${1:-}" in

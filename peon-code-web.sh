@@ -9,11 +9,16 @@ while [ -L "$script_path" ]; do
   esac
 done
 SCRIPT_DIR=$(cd -- "$(dirname -- "$script_path")" && pwd)
+# shellcheck source=lib/deps.sh
+source "$SCRIPT_DIR/lib/deps.sh"
 # shellcheck source=lib/config.sh
 source "$SCRIPT_DIR/lib/config.sh"
 update_mode=local
+remote=0
 for arg in "$@"; do
   case "$arg" in
+    --) break ;;
+    --ssh|--ssh=*) remote=1 ;;
     -h|--help) update_mode=skip ;;
     --stdio) [ "$update_mode" = skip ] || update_mode=stdio ;;
   esac
@@ -27,9 +32,6 @@ elif [ "$update_mode" = local ]; then
     if offer_update </dev/null; then exec "$script_path" "$@"; fi
   fi
 fi
-command -v python3 >/dev/null || { echo 'peon-code-web requires Python 3.10 or newer' >&2; exit 1; }
-if ! python3 -c 'import sys; sys.exit(sys.version_info < (3, 10))'; then
-  echo "peon-code-web requires Python 3.10 or newer (found $(python3 --version))" >&2
-  exit 1
-fi
+python_version_ok || exit 1
+[ "$update_mode" = skip ] || [ "$remote" = 1 ] || tmux_version_ok || exit 1
 exec python3 "$SCRIPT_DIR/web/server.py" "$@"

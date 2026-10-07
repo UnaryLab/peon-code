@@ -86,6 +86,30 @@ class BridgeTests(unittest.TestCase):
             self.assertEqual(result['history'], 2000)
             self.assertEqual(result['cursorY'], cursor_y if isinstance(cursor_y, int) else -1)
 
+    def test_letter_menu_uses_only_the_current_choice_block(self):
+        for screen, cy, letters in (
+                ('› Yes, proceed (y)\n  Yes, allow this command (a)\n  No, stop (n)\n\nEnter to select\n', 4, {'y', 'a', 'n'}),
+                ('  Yes, proceed (y)\n  › Yes, allow this command (a)\n  No, stop (n)\n', 1, {'y', 'a', 'n'}),
+                ('  Yes, proceed (y)\n  Yes, allow this command (a)\n› No, stop (n)\n', 2, {'y', 'a', 'n'}),
+                ('› Yes, proceed (y)\t \n\n  No, stop (n)\n', 0, set()),
+                ('› fix item (a)\n', 0, set()),
+                ('› fix item (y)\n', 0, set()),
+                ('› fix item (n)\n', 0, set()),
+                ('› Yes, proceed (y)\n  Another action (b)\n', 1, {'y', 'b'}),
+                ('› Another action (b)\n', 0, set()),
+                ('› Yes, proceed (y)\n  No, stop (n)\n› \n', 2, set()),
+                ('› quote › Yes, proceed (y)\n', 0, set()),
+                ('› first line\nquoted › Yes, proceed (y)\ntail\n', 2, set()),
+                ('  Yes, proceed (y)\n  No, stop (n)\n', 1, set()),
+                ('› Yes, proceed (y)\n', -1, set()),
+                ('› Yes, proceed (y)\n', 99, set())):
+            with self.subTest(screen=screen, cy=cy):
+                self.assertEqual(bridge.menu_letters(screen, cy), letters)
+                pane = dict(id='%2', identity='100:$1:202')
+                with patch.object(bridge, 'tmux', side_effect=['history', screen, '', '0', f'100:$1:202\t0\t{cy}\n']) as tmux:
+                    self.assertEqual(bridge.snapshot(pane)['menu'], bool(letters))
+                self.assertEqual(tmux.call_count, 5)
+
     def test_real_tmux_inherited_background_and_truecolor(self):
         socket = 'peon-web-style-check-' + str(os.getpid())
         def tmux(*args):

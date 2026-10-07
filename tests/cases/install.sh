@@ -4,6 +4,126 @@ CASE_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=tests/helpers.sh
 . "$CASE_DIR/../helpers.sh"
 
+test_install_dependencies() {
+  local tools="$TEST_DIR/dependency-tools" template="$TEST_DIR/dependency-tmux" tool version index=0
+  local home_dir bin_dir out="$TEST_DIR/dependency.out" err="$TEST_DIR/dependency.err" manager manager_bin python_command install_command status option
+  mkdir -p "$tools"
+  for tool in bash dirname mkdir ln cp readlink cat rm; do
+    ln -s "$(command -v "$tool")" "$tools/$tool"
+  done
+  cat >"$template" <<'FAKE_VERSION'
+#!/usr/bin/env bash
+printf '%s\n' "${INSTALL_TMUX_VERSION:-tmux 3.4}"
+FAKE_VERSION
+  chmod +x "$template"
+  cp "$template" "$tools/tmux"
+  for version in 'tmux 3.1' 'tmux invalid'; do
+    index=$((index + 1)); home_dir="$TEST_DIR/dependency-home-$index"; bin_dir="$home_dir/bin"
+    mkdir -p "$home_dir"
+    if PATH="$tools" HOME="$home_dir" INSTALL_TMUX_VERSION="$version" "$ROOT/install.sh" "$bin_dir" >"$out" 2>"$err" </dev/null; then
+      fail "install accepted $version"
+    fi
+    assert_contains "$err" 'tmux 3.2 or newer is required'
+    [ "$(wc -l <"$err")" -eq 1 ] || fail 'bad tmux version produced more than one error line'
+    [[ ! -e "$bin_dir" && ! -e "$home_dir/.config" && ! -e "$home_dir/.tmux.conf" ]] || fail 'tmux refusal installed files'
+  done
+  PATH="$tools" HOME="$home_dir" INSTALL_TMUX_VERSION='tmux 3.1' "$ROOT/peon-code.sh" -h >"$out" 2>"$err" || fail 'help required current tmux'
+  if PATH="$tools" HOME="$home_dir" INSTALL_TMUX_VERSION='tmux 3.1' "$ROOT/peon-code.sh" team >"$out" 2>"$err"; then
+    fail 'terminal launcher accepted old tmux'
+  fi
+  assert_contains "$err" 'tmux 3.2 or newer is required'
+  for version in 'tmux 3.2' 'tmux 3.4' 'tmux 3.3a' 'tmux next-3.5' 'tmux 3.5-rc'; do
+    index=$((index + 1)); home_dir="$TEST_DIR/dependency-home-$index"; bin_dir="$home_dir/bin"
+    mkdir -p "$home_dir"
+    PATH="$tools" HOME="$home_dir" INSTALL_TMUX_VERSION="$version" "$ROOT/install.sh" "$bin_dir" >"$out" 2>"$err" </dev/null || fail "install refused $version"
+    [[ -L "$bin_dir/peon-code" && -L "$bin_dir/peon-code-web" ]] || fail 'install did not link both commands'
+    [ -f "$home_dir/.config/peon-code/peon-code.conf" ] || fail 'install did not seed config'
+    assert_contains "$out" 'note: python3 3.10+ not found; peon-code-web will not run'
+    assert_contains "$out" 'note: no agent CLI found (claude, codex, copilot); install one before launching'
+    assert_contains "$out" 'npm install -g @anthropic-ai/claude-code'
+    assert_contains "$out" 'npm install -g @openai/codex'
+    assert_contains "$out" 'npm install -g @github/copilot'
+  done
+  rm -f "$tools/tmux"
+  home_dir="$TEST_DIR/dependency-home-missing"; mkdir -p "$home_dir"
+  if PATH="$tools" HOME="$home_dir" PEON_INSTALL_ASSUME_YES=0 "$ROOT/install.sh" "$home_dir/bin" >"$out" 2>"$err" </dev/null; then fail 'install accepted missing tmux'; fi
+  [ "$(cat "$err")" = 'install tmux 3.2+ with your package manager' ] || fail 'missing tmux did not print manual install hint'
+  [[ ! -e "$home_dir/bin" && ! -e "$home_dir/.config" ]] || fail 'missing tmux installed files'
+  for option in -h --help; do
+    PATH="$tools" HOME="$home_dir" "$ROOT/peon-code.sh" "$option" >"$out" 2>"$err" || fail 'help required installed tmux'
+    assert_contains "$out" 'peon-code.sh [-c file]'
+  done
+  bin_dir="$home_dir/bin"
+  mkdir -p "$bin_dir"
+  ln -s "$ROOT/peon-code.sh" "$bin_dir/peon-code"
+  ln -s "$ROOT/peon-code-web.sh" "$bin_dir/peon-code-web"
+  PATH="$tools" HOME="$home_dir" "$bin_dir/peon-code" uninstall "$bin_dir" >"$out" 2>"$err" || fail 'uninstall required installed tmux'
+  [[ ! -L "$bin_dir/peon-code" && ! -L "$bin_dir/peon-code-web" ]] || fail 'uninstall without tmux left command links'
+
+  for manager in brew apt-get dnf pacman; do
+    manager_bin="$TEST_DIR/dependency-$manager"; home_dir="$TEST_DIR/dependency-home-$manager"
+    mkdir -p "$manager_bin" "$home_dir"
+    for tool in bash dirname mkdir ln cp readlink cat; do ln -s "$tools/$tool" "$manager_bin/$tool"; done
+    cat >"$manager_bin/$manager" <<'FAKE_MANAGER'
+#!/usr/bin/env bash
+printf '%s %s\n' "${0##*/}" "$*" >>"$INSTALL_MANAGER_LOG"
+[ "${INSTALL_MANAGER_FAIL:-0}" = 0 ] || exit 1
+cp "$INSTALL_TMUX_TEMPLATE" "$INSTALL_TOOL_BIN/tmux"
+FAKE_MANAGER
+    cat >"$manager_bin/sudo" <<'FAKE_SUDO'
+#!/usr/bin/env bash
+printf 'sudo %s\n' "$*" >>"$INSTALL_MANAGER_LOG"
+exec "$@"
+FAKE_SUDO
+    chmod +x "$manager_bin/$manager" "$manager_bin/sudo"
+    case $manager in
+      brew) install_command='brew install tmux'; python_command='brew install python' ;;
+      apt-get) install_command='sudo apt-get install -y tmux'; python_command='sudo apt-get install -y python3' ;;
+      dnf) install_command='sudo dnf install -y tmux'; python_command='sudo dnf install -y python3' ;;
+      pacman) install_command='sudo pacman -S --noconfirm tmux'; python_command='sudo pacman -S --noconfirm python' ;;
+    esac
+    if printf 'y\n' | PATH="$manager_bin" HOME="$home_dir" PEON_INSTALL_ASSUME_YES=0 INSTALL_MANAGER_LOG="$TEST_DIR/dependency-manager-$manager.log" "$ROOT/install.sh" "$home_dir/bin" >"$out" 2>"$err"; then fail 'piped yes counted as a TTY approval'; fi
+    [ "$(cat "$err")" = "$install_command" ] || fail 'declined install did not print the package command'
+    [ ! -e "$TEST_DIR/dependency-manager-$manager.log" ] || fail 'piped yes ran the package manager'
+    [[ ! -e "$home_dir/bin" && ! -e "$home_dir/.config" ]] || fail 'declined install wrote files'
+    if PATH="$manager_bin" HOME="$home_dir" PEON_INSTALL_ASSUME_YES=1 INSTALL_MANAGER_FAIL=1 INSTALL_MANAGER_LOG="$TEST_DIR/dependency-manager-$manager.log" \
+      "$ROOT/install.sh" "$home_dir/bin" >"$out" 2>"$err" </dev/null; then fail 'failed package install succeeded'; fi
+    [[ ! -e "$home_dir/bin" && ! -e "$home_dir/.config" ]] || fail 'failed package install wrote files'
+    if [ "$manager" = brew ]; then
+      if PATH="$manager_bin" HOME="$home_dir" PEON_INSTALL_ASSUME_YES=1 INSTALL_TMUX_VERSION='tmux 3.1' INSTALL_MANAGER_LOG="$TEST_DIR/dependency-manager-$manager.log" \
+        INSTALL_TMUX_TEMPLATE="$template" INSTALL_TOOL_BIN="$manager_bin" "$ROOT/install.sh" "$home_dir/bin" >"$out" 2>"$err" </dev/null; then fail 'install accepted an old tmux from the package manager'; fi
+      assert_contains "$err" 'tmux 3.2 or newer is required'
+      [[ ! -e "$home_dir/bin" && ! -e "$home_dir/.config" ]] || fail 'old package-manager tmux installed files'
+      rm -f "$manager_bin/tmux"
+    fi
+    PATH="$manager_bin" HOME="$home_dir" PEON_INSTALL_ASSUME_YES=1 INSTALL_MANAGER_LOG="$TEST_DIR/dependency-manager-$manager.log" \
+      INSTALL_TMUX_TEMPLATE="$template" INSTALL_TOOL_BIN="$manager_bin" "$ROOT/install.sh" "$home_dir/bin" >"$out" 2>"$err" </dev/null || fail "fake $manager install failed"
+    [[ -L "$home_dir/bin/peon-code" && -L "$home_dir/bin/peon-code-web" ]] || fail 'approved fake install did not link both commands'
+    assert_contains "$out" "$python_command"
+    case $manager in
+      brew) assert_contains "$TEST_DIR/dependency-manager-$manager.log" 'brew install tmux' ;;
+      apt-get|dnf) assert_contains "$TEST_DIR/dependency-manager-$manager.log" "sudo $manager install -y tmux" ;;
+      pacman) assert_contains "$TEST_DIR/dependency-manager-$manager.log" 'sudo pacman -S --noconfirm tmux' ;;
+    esac
+    assert_not_contains "$TEST_DIR/dependency-manager-$manager.log" 'python'
+    assert_not_contains "$TEST_DIR/dependency-manager-$manager.log" 'npm'
+  done
+  cp "$template" "$tools/tmux"
+  cat >"$tools/python3" <<'FAKE_PYTHON'
+#!/usr/bin/env bash
+[ "$*" = '-c import sys; sys.exit(sys.version_info < (3, 10))' ] || exit 2
+exit "${INSTALL_PYTHON_EXIT:-0}"
+FAKE_PYTHON
+  chmod +x "$tools/python3"
+  ln -s "$tools/bash" "$tools/codex"
+  for status in 0 1 2; do
+    home_dir="$TEST_DIR/dependency-python-$status"; mkdir -p "$home_dir"
+    PATH="$tools" HOME="$home_dir" INSTALL_PYTHON_EXIT="$status" "$ROOT/install.sh" "$home_dir/bin" >"$out" 2>"$err" </dev/null || fail 'optional Python failure stopped install'
+    assert_not_contains "$out" 'note: no agent CLI found'
+    if [ "$status" = 0 ]; then assert_not_contains "$out" 'note: python3 3.10+ not found'; else assert_contains "$out" 'note: python3 3.10+ not found; peon-code-web will not run'; fi
+  done
+}
+
 test_install_guard() {
   local home_dir="$TEST_DIR/home-install" bin_dir="$TEST_DIR/bin-install"
   mkdir -p "$home_dir" "$bin_dir"
@@ -234,9 +354,10 @@ test_local_update_before_ssh() {
   mkdir -p "$source/lib" "$source/web" "$bin_dir"
   cp "$ROOT/peon-code-web.sh" "$source/"
   cp "$ROOT/lib/config.sh" "$source/lib/"
+  cp "$ROOT/lib/deps.sh" "$source/lib/"
   cp "$ROOT/web/server.py" "$ROOT/web/bridge.py" "$ROOT/web/launch.py" "$source/web/"
   git init -q -b main "$source"
-  git -C "$source" add peon-code-web.sh lib/config.sh web/server.py web/bridge.py web/launch.py
+  git -C "$source" add peon-code-web.sh lib/config.sh lib/deps.sh web/server.py web/bridge.py web/launch.py
   git -C "$source" -c user.name=t -c user.email=t@t commit -q -m one
   git clone -q --bare "$source" "$origin"
   git clone -q "$origin" "$mine"
@@ -254,6 +375,7 @@ printf 'ssh\n' >>"$SSH_UPDATE_LOG"
 printf '{"url":"http://127.0.0.1:9123/#%043d"}\n' 0
 FAKE_SSH
   chmod +x "$bin_dir/git" "$bin_dir/ssh"
+  # shellcheck disable=SC2094 # Fake SSH reads the update stderr after the launcher writes it.
   printf 'n\n' | PATH="$bin_dir:$PATH" REAL_GIT="$real_git" PEON_UPDATE_URL="$origin" \
     SSH_UPDATE_LOG="$TEST_DIR/ssh-update.log" SSH_UPDATE_ERR="$TEST_DIR/ssh-update.err" \
     "$mine/peon-code-web.sh" --ssh host --no-open --port 9123 \
@@ -265,6 +387,7 @@ FAKE_SSH
 }
 
 fake_bin=$(make_fake_commands)
+test_install_dependencies
 test_install_guard
 test_install_tmux_conf
 test_update_offer

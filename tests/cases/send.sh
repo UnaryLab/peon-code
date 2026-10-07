@@ -370,6 +370,14 @@ test_send_menu_region() (
     assert_send_refused 'a draft with menu instructions' 'target box busy' \
       FAKE_BOX="$cap" FAKE_CURSOR="2 $cy"
   done
+  assert_send_refused 'a draft ending with a letter suffix' 'target box busy' \
+    FAKE_BOX='› fix item (a)' FAKE_CURSOR='2 0'
+  reset_send_log
+  PATH="$SEND_BIN:$PATH" FAKE_TMUX_LOG="$SEND_LOG" \
+    FAKE_BOX='›' FAKE_CURSOR='2 0' FAKE_BOX_AFTER='› fix item (a)' FAKE_CURSOR_AFTER='14 0' \
+    "$ROOT/peon-code.sh" send %2 'fix item (a)' >"$TEST_DIR/send-letter-suffix.out"
+  assert_contains "$SEND_LOG" 'buffer-content:fix item (a)'
+  [ "$(grep -c -Fx 'send-keys -t %2 Enter' "$SEND_LOG")" = 1 ] || fail 'letter-suffix message did not submit once'
   assert_send_refused 'a Codex menu with its cursor on the footer' 'is on a dialog or a menu' \
     FAKE_BOX='Choose a model
 › 1. Model A

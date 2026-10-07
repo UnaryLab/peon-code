@@ -180,6 +180,47 @@ const assert = require('node:assert/strict');
     await card('%5').locator('.resume').click();
     await card('%5').locator('textarea').fill('');
     keyDelay = 0;
+    const savedMenu = menu['%5'];
+    const codexRows = ['❯ 1. Old numbered prose', '  2. More prose', '', '  Quoted choice (y)', '  Quoted always (a)', '', '  Yes, proceed (y)', '› Yes, and ' + 'do not ask again '.repeat(4) + '(a)', '  No, tell Codex what to do differently (n)', '  Duplicate yes (y)', '', '  Enter to confirm'];
+    const codexLabels = ['1. Yes, proceed', ('2. Yes, and ' + 'do not ask again '.repeat(4).trim()).slice(0, 40), '3. No, tell Codex what to do differently', 'Enter', 'Esc'];
+    for (const [cursor, footer] of [[7, ''], [11, '\n  Footer capture']]) {
+      screen['%5'] = codexRows.join('\n') + footer + '\n'; cursorY['%5'] = cursor;
+      menu['%5'] = '\n' + screen['%5'];
+      await page.waitForFunction(text => document.querySelector('.pane[data-pane="%5"] .output').textContent.endsWith(text), screen['%5']);
+      assert.deepEqual(await shortcuts.allTextContents(), codexLabels);
+      assert.deepEqual(await card('%5').locator('.keys button:visible').allTextContents(), ['Keys', 'Up', 'Down', 'Tab', ...codexLabels]);
+      for (const key of ['y', 'a', 'n', 'Enter', 'Escape']) assert.equal(await card('%5').locator(`.keys button[data-key="${key}"]:visible`).count(), 1);
+      for (const key of ['y', 'a', 'n']) {
+        await card('%5').locator(`.key-shortcuts button[data-key="${key}"]`).click();
+        await page.waitForFunction(() => document.querySelector('.pane[data-pane="%5"] .feedback').textContent === 'Key sent');
+        assert.deepEqual(keyRequest, {pane: '%5', identity: 'first:%5', key});
+      }
+    }
+    for (const plainInput of ['› fix item (a)', '› Another action (b)\n  Yes, proceed (y)']) {
+      screen['%5'] = plainInput; cursorY['%5'] = 0; menu['%5'] = '\n' + plainInput;
+      await page.waitForFunction(text => document.querySelector('.pane[data-pane="%5"] .output').textContent.endsWith(text), plainInput);
+      assert.deepEqual(await shortcuts.allTextContents(), ['Enter', 'Esc']);
+      assert(await card('%5').locator('.key-buttons button[data-key="1"]').isVisible());
+    }
+    const genericLabels = ['1. Yes, proceed', '2. Another action', 'Enter', 'Esc'];
+    for (const [cursor, footer] of [[0, ''], [3, '\n  Generic footer capture']]) {
+      screen['%5'] = '› Yes, proceed (y)\n  Another action (b)\n\n  Enter to confirm' + footer; cursorY['%5'] = cursor;
+      menu['%5'] = '\n' + screen['%5'];
+      await page.waitForFunction(text => document.querySelector('.pane[data-pane="%5"] .output').textContent.endsWith(text), screen['%5']);
+      assert.deepEqual(await card('%5').locator('.keys button:visible').allTextContents(), ['Keys', 'Up', 'Down', 'Tab', ...genericLabels]);
+      for (const key of ['y', 'b']) {
+        await card('%5').locator(`.key-shortcuts button[data-key="${key}"]`).click();
+        await page.waitForFunction(() => document.querySelector('.pane[data-pane="%5"] .feedback').textContent === 'Key sent');
+        assert.deepEqual(keyRequest, {pane: '%5', identity: 'first:%5', key});
+      }
+    }
+    screen['%5'] = '› Yes, proceed (y)\n  No (n)\n\n› typed text'; cursorY['%5'] = 3;
+    menu['%5'] = '\n' + screen['%5'];
+    await page.waitForFunction(() => document.querySelector('.pane[data-pane="%5"] .output').textContent.endsWith('› typed text'));
+    assert.deepEqual(await shortcuts.allTextContents(), ['Enter', 'Esc']);
+    assert(await card('%5').locator('.key-buttons button[data-key="1"]').isVisible());
+    cursorY['%5'] = -1;
+    menu['%5'] = savedMenu;
     for (const unparsedMenu of ['Enter to confirm', '    1. Indented choice\n    2. Another choice']) {
       screen['%5'] = unparsedMenu;
       menu['%5'] += '\n' + unparsedMenu;
@@ -408,6 +449,6 @@ const assert = require('node:assert/strict');
     empty = true;
     await page.waitForFunction(() => !document.querySelector('#empty').hidden);
     assert.equal(errors.length, 0, errors.join('\n'));
-    console.log('browser: PASS (sessions, role order, manager-only unread, focus, full width, viewport, resize, ANSI colors, waiting input text, hint exclusion, menu priority, selection, same-pane sends, menu shortcuts, Tab hints, key deduplication, keyboard send, append sends, empty Send menu guard, explicit menu Enter, empty Send presses Enter, drafts, pane ID reuse, scroll, reload, mobile)');
+    console.log('browser: PASS (sessions, role order, manager-only unread, focus, full width, viewport, resize, ANSI colors, waiting input text, hint exclusion, menu priority, selection, same-pane sends, digit and letter menu shortcuts, Tab hints, key deduplication, keyboard send, append sends, empty Send menu guard, explicit menu Enter, empty Send presses Enter, drafts, pane ID reuse, scroll, reload, mobile)');
   } finally { await browser.close(); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

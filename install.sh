@@ -6,6 +6,10 @@ set -euo pipefail
 
 BIN_DIR=${1:-"$HOME/.local/bin"}
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=lib/deps.sh
+source "$SCRIPT_DIR/lib/deps.sh"
+offer_tmux_install || exit 1
+tmux_version_ok || exit 1
 mkdir -p "$BIN_DIR"
 # Check both commands before installing either one.
 for command_name in peon-code peon-code-web; do
@@ -24,6 +28,20 @@ for command_name in peon-code peon-code-web; do
   [ -L "$LINK" ] || ln -s "$SCRIPT_DIR/$command_name.sh" "$LINK"
   echo "installed: $LINK -> $SCRIPT_DIR/$command_name.sh"
 done
+if ! python_version_ok >/dev/null 2>&1; then
+  echo "note: python3 3.10+ not found; peon-code-web will not run"
+  case $(package_manager || true) in
+    brew) echo "brew install python" ;;
+    apt-get) echo "sudo apt-get install -y python3" ;;
+    dnf) echo "sudo dnf install -y python3" ;;
+    pacman) echo "sudo pacman -S --noconfirm python" ;;
+    *) echo "install Python 3.10+ with your package manager" ;;
+  esac
+fi
+if ! command -v claude >/dev/null && ! command -v codex >/dev/null && ! command -v copilot >/dev/null; then
+  echo "note: no agent CLI found (claude, codex, copilot); install one before launching"
+  printf '%s\n' 'npm install -g @anthropic-ai/claude-code' 'npm install -g @openai/codex' 'npm install -g @github/copilot'
+fi
 
 # Seed the fallback config, used when a directory has no ./peon-code.conf.
 FALLBACK_CONF="$HOME/.config/peon-code/peon-code.conf"

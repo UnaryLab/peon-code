@@ -5,6 +5,7 @@ Bash launcher that builds a tmux session of side-by-side AI coding agent CLIs (c
 ## Layout
 
 - `peon-code.sh`: entry point, option parsing, and subcommand dispatch
+- `lib/deps.sh`: shared tmux and Python version checks, installer package offer
 - `lib/launch.sh`: session build, agent startup, and watcher launch
 - `lib/config.sh`: config file and team parsing, update check
 - `lib/resume.sh`: transcript and resume-id lookup

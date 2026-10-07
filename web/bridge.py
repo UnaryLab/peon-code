@@ -43,6 +43,29 @@ def panes(session=None):
     return sorted(result, key=lambda pane: (pane["session"], {"manager": 0, "reviewer": 1, "worker": 2}[pane["role"]], int(pane["id"][1:])))
 
 
+def menu_letters(visible, cy):
+    rows = visible.split("\n")
+    if visible.endswith("\n"):
+        rows.pop()
+    if not 0 <= cy < len(rows):
+        return set()
+    anchor = next((i for i in range(cy, -1, -1) if re.search(r"[❯›]", rows[i])), -1)
+    if anchor < 0 or not re.match(r" *[❯›] ", rows[anchor]):
+        return set()
+    choices = [re.fullmatch(r"  [^❯›]+ \(([a-z])\)[ \t]*", re.sub(r"^ *[❯›] ", "  ", row))
+               for row in rows]
+    if not choices[anchor] or choices[anchor][1] not in "yan":
+        return set()
+    first = last = anchor
+    while first > 0 and choices[first - 1]:
+        first -= 1
+    while last + 1 < len(rows) and choices[last + 1]:
+        last += 1
+    if first == last:
+        return set()
+    return {choice[1] for choice in choices[first:last + 1]}
+
+
 def snapshot(pane, lines=1000):
     output = tmux("capture-pane", "-p", "-e", "-N", "-t", pane["id"], "-S", "-" + str(lines))
     visible = tmux("capture-pane", "-p", "-t", pane["id"])
@@ -63,7 +86,7 @@ def snapshot(pane, lines=1000):
     menu = False
     if 0 <= cy < len(screen):
         anchor = next((screen[i] for i in range(cy, -1, -1) if re.search(r"[❯›]", screen[i])), "")
-        menu = re.match(r" *[❯›] [0-9]\.", anchor) is not None or any(
+        menu = bool(menu_letters(visible, cy)) or re.match(r" *[❯›] [0-9]\.", anchor) is not None or any(
             "Enter to confirm" in row for row in screen[cy + 1:cy + 4])
     pane["output"], pane["defaultStyle"], pane["history"], pane["menu"] = output, style, int(history), menu
     pane["screen"] = visible

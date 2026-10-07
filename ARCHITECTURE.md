@@ -2,6 +2,8 @@
 
 How peon-code works inside. For what it does from the user's side, see [README.md](README.md).
 
+`lib/deps.sh` shares tmux 3.2+ and Python 3.10+ version checks across the installer and launchers. Only `install.sh` offers a package-manager command when tmux is missing; runtime checks never install packages.
+
 ## Pane identity
 
 Each agent pane carries its name in the `@peon_name` tmux pane option and its brief file path in `@peon_brief`, both set at launch; an app cannot overwrite a pane option, unlike the pane title, so the pane border shows `@peon_name` too. Every subcommand acts only on panes carrying `@peon_name`, and the session-scoped ones only on sessions marked `@peon_code`.
@@ -30,7 +32,7 @@ Key tables are shared by the tmux server, so the bindings check `@peon_script` a
 
 ## The busy check
 
-A pane's input box is read as everything from the prompt marker (claude draws `❯`, codex `›`) to the end of the cursor's row, with the CLI's hint text left out, so text the cursor was moved back over still counts. `Enter` follows a paste only once the box reads back the pasted text or the CLI's placeholder row for a long paste, such as `[Pasted text #2 +15 lines]`.
+A pane's input box is read as everything from the prompt marker (claude draws `❯`, codex `›`) to the end of the cursor's row, with the CLI's hint text left out, so text the cursor was moved back over still counts. `Enter` follows a paste only once the box reads back the pasted text or the CLI's placeholder row for a long paste, such as `[Pasted text #2 +15 lines]`. The shared menu check also recognizes an anchored approval row ending in `(y)`, `(a)`, or `(n)` when its contiguous block has at least two choice rows, with the same cursor and quoted-marker guards. A letter key passes only when a row in that block advertises it; validation runs inside the delivery lock before the key send.
 
 ## Briefs
 

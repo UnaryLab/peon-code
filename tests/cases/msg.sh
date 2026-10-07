@@ -12,6 +12,7 @@ test_msg() {
   cat >"$bin_dir/tmux" <<'FAKE_TMUX'
 #!/usr/bin/env bash
 set -u
+if [ "${1:-}" = -V ]; then printf 'tmux 3.4\n'; exit 0; fi
 printf '%s\n' "$*" >>"$FAKE_TMUX_LOG"
 pane=%1
 case "$*" in *%2*) pane=%2 ;; esac

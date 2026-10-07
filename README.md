@@ -20,7 +20,7 @@ Each pane runs one agent CLI, launched with a brief that names the pane's own id
 ./install.sh <bin-dir>  # symlink into another directory
 ```
 
-Installation adds both `peon-code` and `peon-code-web` command symlinks. Run either from any directory. `install.sh` seeds `~/.config/peon-code/peon-code.conf` from the example if it is missing, installs [`tmux.conf`](tmux.conf) to `~/.tmux.conf` (asking before overwriting an existing one), and prints a note when the bin directory is not on your `PATH`. The shipped config enables extended keys so Shift+Enter adds a new line in agent panes. If your terminal does not send modified keys, use your agent's own terminal setup.
+Installation adds both `peon-code` and `peon-code-web` command symlinks. Run either from any directory. Installation and startup require tmux 3.2 or newer; the installer offers to install missing tmux with a detected package manager and prints install commands for missing Python 3.10+ or agent CLIs without installing them. `install.sh` seeds `~/.config/peon-code/peon-code.conf` from the example if it is missing, installs [`tmux.conf`](tmux.conf) to `~/.tmux.conf` (asking before overwriting an existing one), and prints a note when the bin directory is not on your `PATH`. The shipped config enables extended keys so Shift+Enter adds a new line in agent panes. If your terminal does not send modified keys, use your agent's own terminal setup.
 
 `~/.local/bin` is not on the default `PATH` on macOS. If the note appears, add this line to your shell profile (`~/.zshrc` or `~/.bashrc`) and open a new shell:
 
@@ -106,7 +106,7 @@ Each agent has a scrolling output pane and a message box. In the message box, Sh
 
 Open **Keys** below a pane's actions to send Up, Down, Tab, Enter, Esc, or 1..9 for agent menus and hints. Up and Down appear first; a menu or hint hides the matching fallback keys. Focus the output pane to use arrow keys, Enter, Esc, or 1..9 to answer a menu. **Enter** under **Keys** submits text in the agent input box or answers an open menu. Use tmux for all other terminal controls.
 
-Visible numbered menu choices appear beside **Keys**, with Enter and Esc shortcuts while a menu is open. A **Tab: hint** button sends Tab for a dim or gray hint on the input row. A tab also shows the ? mark when text sits unsubmitted in the agent box; an empty Send presses Enter for it.
+Visible numbered menu choices appear beside **Keys**, with Enter and Esc shortcuts while a menu is open. Letter approval choices also use numbered buttons, which send the advertised letter such as `y`, `a`, or `n`. A **Tab: hint** button sends Tab for a dim or gray hint on the input row. A tab also shows the ? mark when text sits unsubmitted in the agent box; an empty Send presses Enter for it.
 
 **Close session**, below the agent tabs, asks for confirmation and stops all agents in the selected team.
 

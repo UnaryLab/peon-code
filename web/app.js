@@ -101,7 +101,7 @@ function updateKeys(card) {
   const pane = card.latest;
   const labels = [];
   if (pane.menu) {
-    // Claude's numbered menu rows are recognized; Codex and Copilot use the folded Keys controls.
+    // Numbered menu rows use their digit shortcuts.
     const rows = [...(pane.screen || '').matchAll(/^(?:[❯›] | {2})([1-9])\. (.+)$/gm)];
     let previous = null;
     for (const match of rows.reverse()) {
@@ -111,6 +111,25 @@ function updateKeys(card) {
       if (digit === 1) break;
       previous = digit;
     }
+    const screen = (pane.screen || '').split('\n');
+    if (screen[screen.length - 1] === '') screen.pop();
+    let anchor = -1;
+    if (Number.isInteger(pane.cursorY) && pane.cursorY >= 0 && pane.cursorY < screen.length) {
+      for (let row = 0; row <= pane.cursorY; row++) if (/[❯›]/.test(screen[row])) anchor = row;
+    }
+    const option = /^(?: *[❯›] | {2,})([^❯›]+) \(([a-z])\)\s*$/;
+    if (anchor >= 0 && /^ *[❯›] .* \([yan]\)\s*$/.test(screen[anchor]) && option.test(screen[anchor])) {
+      let first = anchor, last = anchor;
+      while (first > 0 && option.test(screen[first - 1])) first--;
+      while (last + 1 < screen.length && option.test(screen[last + 1])) last++;
+      if (last > first) {
+        labels.length = 0;
+        for (let row = first; row <= last; row++) {
+          const match = option.exec(screen[row]);
+          if (!labels.some(([key]) => key === match[2])) labels.push([match[2], (labels.length + 1 + '. ' + match[1].trim()).slice(0, 40)]);
+        }
+      }
+    }
     labels.push(['Enter', 'Enter'], ['Escape', 'Esc']);
   }
   const hint = inputHint(pane);
@@ -118,7 +137,7 @@ function updateKeys(card) {
   const signature = JSON.stringify(labels);
   if (signature === card.shortcutsRendered) return;
   card.shortcutsRendered = signature;
-  const hasChoices = labels.some(([key]) => /^[1-9]$/.test(key));
+  const hasChoices = labels.some(([key]) => /^[1-9a-z]$/.test(key));
   for (const button of card.el.querySelectorAll('.key-buttons button')) {
     const key = button.dataset.key;
     button.hidden = key === 'Tab' ? !!hint : /^[1-9]$/.test(key) ? hasChoices : pane.menu && (key === 'Enter' || key === 'Escape');
