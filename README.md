@@ -71,6 +71,16 @@ Every `[<session>]` argument defaults to the current directory's base name, with
 | gemini, qwen | `-i <prompt>` (unverified on this machine) | `--resume <id>` |
 | anything else | command as given, brief appended as a positional prompt | not supported |
 
+peon-code reads each pane's input box with the prompt marker and paste placeholder of that pane's own CLI. `send`, `rebrief`, `compact`, and `clear` skip or refuse a pane that draws no prompt marker peon-code knows.
+
+To add a CLI:
+
+1. Copy a file in `lib/cli/` to `<name>.sh`, where `<name>` is the bare command name, such as `foo`; a path such as `/opt/bin/foo` in the agent command matches no provider.
+2. Rename its functions to the `<name>_` prefix and fill in the launch, resume, prompt marker, and paste placeholder for your CLI.
+3. Run `tests/test_peon_code.sh`.
+
+[ARCHITECTURE.md](ARCHITECTURE.md#adding-a-cli) lists what each function must print.
+
 ### Start and attach
 
 `peon-code [-c file] [<session>] [<cmd> ...]` builds the session, or attaches it if it already exists. The team resolves as described under [Config file](#config-file).

@@ -32,12 +32,32 @@ cli_call() {
   esac
 }
 
-CLI_PROMPT_MARKERS=""
-CLI_PASTE_PLACEHOLDERS=()
+CLI_ALL_PROMPT_MARKERS=""
+CLI_ALL_PASTE_PLACEHOLDERS=()
 for cli_bin in "${CLI_PROVIDERS[@]}"; do
   cli_marker=$(cli_call "$cli_bin" prompt_marker)
-  [ -z "$cli_marker" ] || CLI_PROMPT_MARKERS="${CLI_PROMPT_MARKERS:+$CLI_PROMPT_MARKERS|}$cli_marker"
+  [ -z "$cli_marker" ] || CLI_ALL_PROMPT_MARKERS="${CLI_ALL_PROMPT_MARKERS:+$CLI_ALL_PROMPT_MARKERS|}$cli_marker"
   cli_pattern=$(cli_call "$cli_bin" paste_placeholder)
-  [ -z "$cli_pattern" ] || CLI_PASTE_PLACEHOLDERS+=("$cli_pattern")
+  [ -z "$cli_pattern" ] || CLI_ALL_PASTE_PLACEHOLDERS+=("$cli_pattern")
 done
 unset cli_bin cli_marker cli_pattern
+
+CLI_PROMPT_MARKERS=$CLI_ALL_PROMPT_MARKERS
+CLI_PASTE_PLACEHOLDERS=(${CLI_ALL_PASTE_PLACEHOLDERS[@]+"${CLI_ALL_PASTE_PLACEHOLDERS[@]}"})
+
+# Per-call globals let the input awk helpers use the selected pane's provider.
+# shellcheck disable=SC2034 # Input and tmux helpers read these globals.
+cli_select_pane() {
+  local bin marker="" pattern=""
+  bin=$(tmux show-options -pqv -t "$1" @peon_bin 2>/dev/null) || bin=""
+  CLI_PANE_HAS_PROMPT_MARKER=1
+  if [ -n "$bin" ]; then
+    marker=$(cli_call "$bin" prompt_marker) || marker=""
+    pattern=$(cli_call "$bin" paste_placeholder) || pattern=""
+    [ -n "$marker" ] || CLI_PANE_HAS_PROMPT_MARKER=0
+  fi
+  CLI_PROMPT_MARKERS=${marker:-$CLI_ALL_PROMPT_MARKERS}
+  CLI_PASTE_PLACEHOLDERS=(${CLI_ALL_PASTE_PLACEHOLDERS[@]+"${CLI_ALL_PASTE_PLACEHOLDERS[@]}"})
+  [ -z "$pattern" ] || CLI_PASTE_PLACEHOLDERS=("$pattern")
+  return 0
+}

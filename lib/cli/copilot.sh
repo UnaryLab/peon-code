@@ -33,5 +33,5 @@ copilot_paste_placeholder() {
 }
 
 copilot_prompt_marker() {
-  :
+  printf '❯'
 }

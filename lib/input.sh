@@ -151,6 +151,7 @@ pane_takes_keys() {
 # 3 on a dialog or a menu, 4 when its box holds typed text.
 pane_box_ready() {
   local box rc=0
+  cli_select_pane "$1"
   pane_takes_keys "$1" || return 1
   box=$(pane_box_text "$1") || rc=$?
   [ "$rc" -ne 2 ] || return 2

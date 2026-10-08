@@ -1,5 +1,8 @@
 # shellcheck shell=bash
 
+# shellcheck source=lib/cli.sh
+declare -F cli_call >/dev/null || source "$(dirname -- "${BASH_SOURCE[0]}")/cli.sh"
+
 pane_identity_matches() {
   [ -n "${PEON_EXPECTED_IDENTITY:-}" ] || return 0
   [ "$(tmux display-message -p -t "$1" '#{pid}:#{session_id}:#{pane_pid}' 2>/dev/null)" = "$PEON_EXPECTED_IDENTITY" ] && return 0
@@ -13,6 +16,7 @@ pane_identity_matches() {
 # require manual cleanup after confirming all delivery processes stopped.
 with_pane_delivery() (
   local pane=$1 identity key root lock holder connection tries=0
+  cli_select_pane "$pane"
   shift
   identity=$(tmux display-message -p -t "$pane" '#{socket_path}:#{pane_id}' 2>/dev/null) || {
     echo "peon-code: cannot deliver to pane $pane: tmux cannot find it" >&2

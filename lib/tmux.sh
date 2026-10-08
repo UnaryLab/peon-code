@@ -68,6 +68,7 @@ wait_agent_ready() {
 # another marker waits the full cap when it shows no dialog.
 answer_dialog() {
   local pane=$1 pattern=$2 i cur cy rc markers
+  cli_select_pane "$pane"
   markers=$CLI_PROMPT_MARKERS
   for ((i = 0; i < 50; i++)); do
     cur=$(tmux capture-pane -pt "$pane" 2>/dev/null && printf '.') || cur=""
@@ -94,11 +95,13 @@ answer_dialog() {
 # matches the capture 0.3s before. A menu such as the folder-trust dialog
 # draws the same marker on its selected row, so a capture holding a menu
 # is never settled: the wait continues until the user answers it.
+# A CLI without a marker needs three unchanged, nonblank captures instead.
 # The tries cap, 30s by default, ends the wait when a spinner keeps redrawing,
 # the prompt never shows, or the dialog goes unanswered; the caller then
 # skips the paste rather than typing into whatever is on screen.
 wait_pane_settled() {
-  local pane=$1 tries=${2:-100} i prev="" cur cy rc markers
+  local pane=$1 tries=${2:-100} i prev="" cur cy rc markers stable=0
+  cli_select_pane "$pane"
   markers=$CLI_PROMPT_MARKERS
   for ((i = 0; i < tries; i++)); do
     cur=$(tmux capture-pane -pt "$pane" 2>/dev/null && printf '.') || cur=""
@@ -109,8 +112,15 @@ wait_pane_settled() {
     if [ "$rc" -ne 1 ]; then
       cur=""  # a menu, not the input line
     fi
-    if [ -n "$markers" ] && [[ $cur =~ $markers ]] && [ "$cur" = "$prev" ]; then
-      return 0
+    if [ "$CLI_PANE_HAS_PROMPT_MARKER" -eq 1 ]; then
+      if [ -n "$markers" ] && [[ $cur =~ $markers ]] && [ "$cur" = "$prev" ]; then
+        return 0
+      fi
+    elif [ -n "${cur//[[:space:]]/}" ]; then
+      if [ "$cur" = "$prev" ]; then stable=$((stable + 1)); else stable=1; fi
+      [ "$stable" -lt 3 ] || return 0
+    else
+      stable=0
     fi
     prev=$cur
     sleep 0.3

@@ -30,7 +30,7 @@ let tipOwner;
 let tipTimer;
 function updateTip(event) {
   const owner = event.target?.matches?.('[data-tip]') ? event.target : null;
-  const starting = event.type === 'mouseenter' || event.type === 'focus';
+  const starting = event.type === 'mouseenter' || (event.type === 'focus' && owner?.matches(':focus-visible'));
   if (starting && !owner?.dataset.tip) return;
   if ((event.type === 'mouseleave' || event.type === 'blur') && owner !== tipOwner) return;
   clearTimeout(tipTimer);

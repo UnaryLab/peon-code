@@ -28,6 +28,10 @@ test_cli_provider_functions() (
       }
     done
     marker=$(cli_call "$bin" prompt_marker)
+    case $bin in
+      claude|codex|copilot)
+        [ -n "$marker" ] || { echo "FAIL: $provider has no prompt marker" >&2; exit 1; } ;;
+    esac
     for char in '.' '[' ']' '(' ')' '{' '}' '*' '+' '?' '^' '$' "\\" '|'; do
       case $marker in
         *"$char"*) echo "FAIL: $provider prompt marker contains $char" >&2; exit 1 ;;
@@ -56,25 +60,26 @@ test_cli_provider_parsers() (
   # shellcheck disable=SC2317 # cli_call invokes these functions by name.
   extra_paste_placeholder() { printf '%s\n' '^\[Extra paste\]$'; }
   CLI_PROVIDERS+=(extra)
-  CLI_PROMPT_MARKERS="$CLI_PROMPT_MARKERS|$(extra_prompt_marker)"
-  CLI_PASTE_PLACEHOLDERS+=("$(extra_paste_placeholder)")
+  CLI_ALL_PROMPT_MARKERS="$CLI_ALL_PROMPT_MARKERS|$(extra_prompt_marker)"
+  CLI_ALL_PASTE_PLACEHOLDERS+=("$(extra_paste_placeholder)")
   # shellcheck disable=SC2317 # A cached parser must not query a provider again.
   extra_prompt_marker() { echo 'FAIL: prompt marker read after load' >&2; return 1; }
   # shellcheck disable=SC2317 # A cached parser must not query a provider again.
   extra_paste_placeholder() { echo 'FAIL: paste placeholder read after load' >&2; return 1; }
   # shellcheck source=lib/cli.sh
   source "$ROOT/lib/cli.sh"
-  box_is_paste_placeholder '[Extra paste]' || exit 1
-  box_holds_message '[Extra paste]' 'draft text' || exit 1
-  pane_has_menu '» 1. Yes' 0 || exit 1
-  [ "$(pane_free_text_number '» 2. Type something.')" = 2 ] || exit 1
-  [ "$(printf '\033[2m» hint\033[0m typed\n' | strip_styles 1)" = '»      typed' ] || exit 1
   tmux() {
     case $1 in
       display) printf '0\n' ;;
       capture-pane) printf '» draft\n' ;;
     esac
   }
+  cli_select_pane %9
+  box_is_paste_placeholder '[Extra paste]' || exit 1
+  box_holds_message '[Extra paste]' 'draft text' || exit 1
+  pane_has_menu '» 1. Yes' 0 || exit 1
+  [ "$(pane_free_text_number '» 2. Type something.')" = 2 ] || exit 1
+  [ "$(printf '\033[2m» hint\033[0m typed\n' | strip_styles 1)" = '»      typed' ] || exit 1
   [ "$(pane_box_text %9)" = draft ] || exit 1
   cli_call claude context_tokens || exit 1
   if cli_call copilot context_tokens; then exit 1; fi
@@ -84,6 +89,146 @@ test_cli_provider_parsers
 
 # shellcheck source=tests/helpers.sh
 source "$ROOT/tests/helpers.sh"
+
+test_copilot_captured_input() (
+  local capture box rc=0
+  # shellcheck source=lib/input.sh
+  source "$ROOT/lib/input.sh"
+  # Copilot 1.0.63 input rows captured at 120 columns, with their SGR styles.
+  local rows=$'\033[2m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n\033[0m❯\n\033[2m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────'
+  tmux() {
+    case $1 in
+      show-options) printf 'copilot\n' ;;
+      display)
+        case $4 in
+          '#{pane_in_mode}') printf '0\n' ;;
+          '#{cursor_y}') printf '1\n' ;;
+        esac ;;
+      capture-pane) printf '%s\n' "$capture" ;;
+    esac
+  }
+  cli_select_pane %9
+  capture=$rows
+  box=$(pane_box_text %9) || fail 'Copilot idle input could not be read'
+  [ -z "$box" ] || fail 'Copilot idle input is not empty'
+  pane_box_ready %9 || fail 'Copilot idle input is not ready'
+  capture=${rows/❯/❯ copilot capture draft}
+  [ "$(pane_box_text %9)" = 'copilot capture draft' ] || fail 'Copilot held text could not be read'
+  pane_box_ready %9 || rc=$?
+  [ "$rc" -eq 4 ] || fail 'Copilot held text is not busy'
+  capture=${rows/❯/❯ [Paste #1 - 24 lines]}
+  box=$(pane_box_text %9) || fail 'Copilot pasted input could not be read'
+  [ "$box" = '[Paste #1 - 24 lines]' ] || fail 'Copilot paste placeholder changed'
+  box_is_paste_placeholder "$box" || fail 'Copilot paste placeholder was not recognized'
+  box_holds_message "$box" 'harmless multiline capture text' || fail 'Copilot paste was not recognized as held text'
+  if box_is_paste_placeholder 'draft [Paste #1 - 24 lines]'; then fail 'Copilot placeholder accepted typed text'; fi
+)
+test_copilot_captured_input
+
+test_cli_pane_selection() (
+  local pane_bin=codex capture='❯ ' rc=0
+  # shellcheck source=lib/input.sh
+  source "$ROOT/lib/input.sh"
+  # shellcheck source=lib/tmux.sh
+  source "$ROOT/lib/tmux.sh"
+  # shellcheck source=lib/delivery.sh
+  source "$ROOT/lib/delivery.sh"
+  tmux() {
+    case $1 in
+      show-options) printf '%s\n' "$pane_bin" ;;
+      display) printf '0\n' ;;
+      capture-pane) printf '%s\n' "$capture" ;;
+      display-message) printf 'provider-test:%%9\n' ;;
+    esac
+  }
+  sleep() { :; }
+  pane_box_ready %9 || rc=$?
+  [ "$rc" -eq 2 ] || fail 'Codex readiness accepts a Claude marker'
+  [ "$CLI_PROMPT_MARKERS" = '›' ] || fail 'Codex did not select its own marker'
+  box_is_paste_placeholder '[Pasted Content 20 chars]' || fail 'Codex placeholder was not selected'
+  if box_is_paste_placeholder '[Pasted text #2]'; then fail 'Codex accepts a Claude placeholder'; fi
+  capture='› '
+  pane_box_ready %9 || fail 'Codex readiness rejects its own marker'
+  CLI_PROMPT_MARKERS='❯'
+  answer_dialog %9 '*Resume from summary*'
+  [ "$CLI_PROMPT_MARKERS" = '›' ] || fail 'dialog check did not select its pane'
+  CLI_PASTE_PLACEHOLDERS=('^unrelated$')
+  with_pane_delivery %9 box_is_paste_placeholder '[Pasted Content 20 chars]' ||
+    fail 'delivery did not select its pane'
+  pane_bin=''
+  cli_select_pane %9
+  [ "$CLI_PROMPT_MARKERS" = "$CLI_ALL_PROMPT_MARKERS" ] || fail 'pane without a bin lost merged markers'
+  for capture in '› ' '❯ '; do
+    pane_box_ready %9 || fail 'pane without a bin rejects a merged marker'
+  done
+  pane_bin=gemini
+  cli_select_pane %9
+  [ "$CLI_PROMPT_MARKERS" = "$CLI_ALL_PROMPT_MARKERS" ] || fail 'empty marker did not use merged markers'
+  box_is_paste_placeholder '[Pasted text #2]' || fail 'empty placeholder did not use merged placeholders'
+  # shellcheck disable=SC2317 # cli_call invokes the provider by name.
+  codex_paste_placeholder() { :; }
+  pane_bin=codex
+  cli_select_pane %9
+  [ "$CLI_PROMPT_MARKERS" = '›' ] || fail 'empty placeholder changed the selected marker'
+  box_is_paste_placeholder '[Pasted text #2]' || fail 'empty placeholder did not fall back independently'
+)
+test_cli_pane_selection
+
+test_cli_pane_settled() (
+  local pane_bin=codex capture='❯ ' reads="$TEST_DIR/provider-reads" invalid_read=0 invalid_capture='' redraw=0
+  # shellcheck source=lib/tmux.sh
+  source "$ROOT/lib/tmux.sh"
+  # shellcheck source=lib/input.sh
+  source "$ROOT/lib/input.sh"
+  tmux() {
+    local n
+    case $1 in
+      show-options) printf '%s\n' "$pane_bin" ;;
+      display) printf '0\n' ;;
+      capture-pane)
+        n=$(cat "$reads"); n=$((n + 1)); printf '%s\n' "$n" >"$reads"
+        if [ "$n" -eq "$invalid_read" ]; then printf '%s\n' "$invalid_capture"
+        else printf '%s\n' "$capture"; fi
+        [ "$redraw" -eq 0 ] || printf 'redrawing %s\n' "$n"
+        return 0 ;;
+    esac
+  }
+  sleep() { :; }
+  check_settled() {
+    local want=$1 tries=$2 expected_reads=$3 rc=0
+    printf '0\n' >"$reads"
+    wait_pane_settled %9 "$tries" || rc=$?
+    [ "$rc" -eq "$want" ] || fail "settle for $pane_bin returned $rc, expected $want"
+    [ "$(cat "$reads")" -eq "$expected_reads" ] || fail "settle for $pane_bin used the wrong capture count"
+  }
+  check_settled 1 3 3
+  capture='› '
+  check_settled 0 3 2
+  pane_bin=''
+  capture='❯ '
+  check_settled 0 3 2
+  capture='Ready without a marker'
+  check_settled 1 3 3
+  pane_bin=gemini
+  check_settled 1 2 2
+  check_settled 0 3 3
+  invalid_read=3
+  check_settled 0 6 6
+  invalid_capture=$'Choose an option\nEnter to confirm'
+  check_settled 0 6 6
+  invalid_read=0
+  capture=' '
+  check_settled 1 3 3
+  capture=$'Choose an option\nEnter to confirm'
+  check_settled 1 3 3
+  capture='Ready without a marker'
+  redraw=1
+  check_settled 1 3 3
+  redraw=0
+  pane_bin=custom-agent
+  check_settled 0 3 3
+)
+test_cli_pane_settled
 
 test_version() {
   local missing="$TEST_DIR/version-no-file" option
