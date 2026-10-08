@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Each commit bumps the patch number.
+set -euo pipefail
+
+[ -f VERSION ] || exit 0
+version=$(cat VERSION)
+[[ $version =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || {
+  echo 'VERSION must contain major.minor.patch numbers' >&2
+  exit 1
+}
+IFS=. read -r major minor patch <<<"$version"
+tmp=$(mktemp VERSION.XXXXXX)
+trap 'rm -f "$tmp"' EXIT
+printf '%s.%s.%s\n' "$major" "$minor" "$((patch + 1))" >"$tmp"
+mv "$tmp" VERSION
+git add VERSION

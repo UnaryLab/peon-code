@@ -1,5 +1,59 @@
 # shellcheck shell=bash
 
+print_usage() {
+  local session=$1 panes id name bin path file tokens input cache_read cache_write output
+  local totals=""
+  printf 'peon-code: token usage for session %s\n' "$session"
+  panes=$(list_agent_panes "$session") || true
+  while read -r id name; do
+    [ -n "$id" ] || continue
+    bin=$(tmux show-options -pqv -t "$id" @peon_bin 2>/dev/null) || bin=""
+    if ! cli_call "$bin" usage_tokens; then
+      printf '  %-10s %-8s no usage logged\n' "$name" "${bin:-unknown}"
+      continue
+    fi
+    path=$(tmux display -pt "$id" '#{pane_current_path}' 2>/dev/null) || path=""
+    file=$([ -n "$path" ] && cd -- "$path" 2>/dev/null && last_thread_file "agent $name of peon-code session $session," "$bin") || file=""
+    if [ -z "$path" ] || [ -z "$file" ] || [ ! -r "$file" ]; then
+      printf '  %-10s %-8s no transcript\n' "$name" "$bin"
+      continue
+    fi
+    if ! tokens=$(cli_call "$bin" usage_tokens "$file") ||
+      ! [[ $tokens =~ ^[0-9]+\ [0-9]+\ [0-9]+\ [0-9]+$ ]]; then
+      printf '  %-10s %-8s no usage logged\n' "$name" "$bin"
+      continue
+    fi
+    read -r input cache_read cache_write output <<<"$tokens"
+    printf '  %-10s %-8s input %s cache read %s cache write %s output %s total %s\n' \
+      "$name" "$bin" "$input" "$cache_read" "$cache_write" "$output" "$((input + cache_read + cache_write + output))"
+    totals="$totals$bin $tokens"$'\n'
+  done <<<"$panes"
+  printf '%s' "$totals" | awk '
+    NF == 5 {
+      if (!seen[$1]++) order[++count] = $1
+      input[$1] += $2; read_cache[$1] += $3; write_cache[$1] += $4; output[$1] += $5
+    }
+    END {
+      for (i = 1; i <= count; i++) {
+        cli = order[i]
+        printf "  %-8s total: input %.0f cache read %.0f cache write %.0f output %.0f total %.0f\n", \
+          cli, input[cli], read_cache[cli], write_cache[cli], output[cli], \
+          input[cli] + read_cache[cli] + write_cache[cli] + output[cli]
+      }
+    }'
+}
+
+cmd_usage() {
+  local session
+  session=$(session_name "${1:-}")
+  if ! tmux has-session -t "=$session" 2>/dev/null; then
+    echo "peon-code: no session $session"
+    exit 0
+  fi
+  is_peon_session "$session" || die "session $session was not created by peon-code"
+  print_usage "$session"
+}
+
 cmd_dismiss() {
   local session
   session=$(session_name "${1:-}")
@@ -8,6 +62,7 @@ cmd_dismiss() {
     exit 0
   fi
   is_peon_session "$session" || die "session $session was not created by peon-code"
+  print_usage "$session"
   echo "peon-code: killing session $session"
   tmux kill-session -t "=$session"
 }

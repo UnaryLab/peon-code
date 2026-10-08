@@ -22,7 +22,14 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 6
 #dismiss { background: #fff0ed; color: #9c241b; border-color: #b96c65; }
 #agents { display: flex; flex-direction: column; gap: 4px; min-width: 0; overflow: auto; }
 .tab { background: #fff; border: 1px solid var(--line); border-radius: 4px; color: var(--muted); text-align: left; position: relative; white-space: nowrap; font-size: 15px; padding: 4px 10px; }
-#agents .tab { white-space: normal; overflow-wrap: anywhere; }
+#agents .tab { display: flex; min-width: 0; max-width: 100%; }
+#agents .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#agents .name > span { display: inline-block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; transition: transform 1s; }
+#agents .figure { flex-shrink: 0; white-space: pre; }
+#agents .tab:hover .name > span, #agents .tab:focus-visible .name > span { max-width: none; transform: translateX(calc(-1 * var(--name-overflow, 0px))); }
+@media (prefers-reduced-motion: reduce) {
+  #agents .name > span { transition: none; }
+}
 .tab.active { background: #eef0ec; color: #111; border-color: var(--accent-border); box-shadow: inset 0 0 0 1px var(--accent-border); }
 .tab.unread { background: #fff2d5; color: #684000; border-color: #d8b068; }
 .tab:not(.active):not(.unread):not(.needs-answer):hover { background: #f5f5f5; border-color: var(--accent-border); }
@@ -67,6 +74,7 @@ textarea { resize: vertical; min-height: 44px; max-height: 40vh; width: 100%; fo
 form button { align-self: center; white-space: nowrap; }
 .feedback { flex-shrink: 0; min-height: 16px; margin: 4px 0; font-size: 12px; color: var(--muted); padding: 0 12px; overflow-wrap: anywhere; }
 .feedback.error { color: #9c241b; }
+#tip { position: fixed; z-index: 10; max-width: calc(100vw - 16px); padding: 4px 8px; border-radius: 4px; background: var(--text); color: var(--bg); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; pointer-events: none; }
 #empty { padding: 32px; border: 1px dashed var(--line); border-radius: 6px; color: var(--muted); }
 .top-links { display: flex; margin-left: auto; gap: 12px; font-size: 12px; color: var(--muted); white-space: nowrap; }
 @media (max-width: 650px) {
@@ -77,7 +85,7 @@ form button { align-self: center; white-space: nowrap; }
   .workspace { flex-direction: column; gap: 8px; }
   .sidebar { flex: none; }
   #agents { flex: none; flex-direction: row; overflow-x: auto; }
-  #agents .tab { white-space: nowrap; }
+  #agents .tab { flex-shrink: 0; }
   .output { flex: none; height: 70vh; height: 70dvh; }
 }
 #project-path { flex-shrink: 0; margin: 0 0 4px; font: 13px ui-monospace, monospace; color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; }

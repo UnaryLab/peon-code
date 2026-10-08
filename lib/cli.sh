@@ -27,6 +27,7 @@ cli_call() {
       id=${id%.jsonl}
       [ -z "$id" ] || printf '%s\n' "$id" ;;
     context_tokens) [ $# -gt 0 ] ;;
+    usage_tokens|weekly_limit) return 1 ;;
     *) : ;;
   esac
 }

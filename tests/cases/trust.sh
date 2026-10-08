@@ -11,7 +11,9 @@ TRUST_TEST_PYTHON=$(command -v python3)
 fake_bin=$(make_fake_commands)
 cat >"$fake_bin/python3" <<'PYTHON_WRAPPER'
 #!/usr/bin/env bash
-printf 'trust-python\n' >>"$FAKE_TMUX_LOG"
+case ${2:-} in
+  */.claude.json) printf 'trust-python\n' >>"$FAKE_TMUX_LOG" ;;
+esac
 exec "$TRUST_TEST_PYTHON" "$@"
 PYTHON_WRAPPER
 printf '#!/usr/bin/env bash\nexit 1\n' >"$fake_bin/git"

@@ -89,11 +89,31 @@ GIT_DENY=(
 # Claude uses the normal screen, with git denied outside the main pane.
 # The deny rules bind the pane and every subagent it spawns, which role prose does not.
 NORMAL_TUI=default
+STATUSLINE_SETTINGS=""
+if command -v python3 >/dev/null 2>&1; then
+  # Only the user's global settings are read; merge other scopes if needed.
+  STATUSLINE_SETTINGS=$(python3 -c '
+import json
+import shlex
+import sys
+
+command = shlex.quote(sys.argv[2]) + " statusline"
+try:
+    with open(sys.argv[1], encoding="utf-8") as file:
+        user_command = json.load(file).get("statusLine", {}).get("command", "")
+    if isinstance(user_command, str) and user_command:
+        command += " " + shlex.quote(user_command)
+except (OSError, ValueError, AttributeError):
+    pass
+print(", \"statusLine\": " + json.dumps({"type": "command", "command": command}), end="")
+' "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json" "$SCRIPT_DIR/peon-code.sh" 2>/dev/null
+  ) || STATUSLINE_SETTINGS=""
+fi
 NORMAL_SETTINGS="$BRIEF_DIR/normal-screen.json"
-printf '{"tui":"%s"}\n' "$NORMAL_TUI" >"$NORMAL_SETTINGS"
+printf '{"tui":"%s"%s}\n' "$NORMAL_TUI" "$STATUSLINE_SETTINGS" >"$NORMAL_SETTINGS"
 DENY_SETTINGS="$BRIEF_DIR/deny-git.json"
 {
-  printf '{\n  "tui": "%s",\n  "permissions": {\n    "deny": [\n' "$NORMAL_TUI"
+  printf '{\n  "tui": "%s"%s,\n  "permissions": {\n    "deny": [\n' "$NORMAL_TUI" "$STATUSLINE_SETTINGS"
   DENY_SEP=""
   for CMD in "${GIT_DENY[@]}"; do
     printf '%s      "Bash(%s)", "Bash(%s:*)"' "$DENY_SEP" "$CMD" "$CMD"

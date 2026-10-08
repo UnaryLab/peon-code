@@ -95,31 +95,94 @@ test_watch_launch() {
   assert_contains "$TEST_DIR/watch-bad.err" "watch takes a number of tokens"
 }
 
-# One watch tick per pane: the transcript is looked up once and then kept, so
-# the second tick reads the cached path, and the lookup itself writes no
-# error (a pane id like %0 must survive the sed that reads the cache).
-test_watch_loop() {
-  local claude="$TEST_DIR/claude.jsonl" lookups="$TEST_DIR/lookups" err="$TEST_DIR/watch-loop.err" ticks=0
-  local session="peon-watch-loop-$$"
-  : >"$lookups"
+# Changed transcripts wait for each pane's read interval. Missing paths use
+# the same interval for lookup, while known paths stay cached.
+test_watch_loop() (
+  local claude="$TEST_DIR/watch transcript.jsonl" lookup_log="$TEST_DIR/lookups" err="$TEST_DIR/watch-loop.err" ticks=0
+  local session="peon-watch-loop-$$" read_log="$TEST_DIR/watch-reads" owners="$TEST_DIR/watch-owners" PEON_WATCH_MIN=60
+  local usage_log="$TEST_DIR/watch-usage-reads"
+  : >"$claude"
+  : >"$lookup_log"
+  : >"$read_log"
+  : >"$owners"
+  : >"$usage_log"
   tmux() {
     case $1 in
-      has-session) ticks=$((ticks + 1)); [ "$ticks" -le 2 ] ;;
-      show-options) case $* in *@peon_bin*) echo claude ;; esac ;;
+      has-session)
+        ticks=$((ticks + 1))
+        case $ticks in 3|8) printf 'change\n' >>"$claude" ;; esac
+        [ "$ticks" -le 8 ] ;;
+      show-options)
+        case $* in
+          *@peon_bin*) echo claude ;;
+          *@peon_watch_pid*) printf '%s\n' "$ticks" >>"$owners" ;;
+        esac ;;
       *) return 0 ;;
     esac
   }
   session_name() { echo "$1"; }
-  list_agent_panes() { printf '%%0 lead\n'; }
-  last_thread_file() { echo x >>"$lookups"; echo "$claude"; }
-  sleep() { :; }
+  list_agent_panes() { printf '%%0 lead\n%%1 late\n'; }
+  last_thread_file() {
+    printf '%s %s\n' "$ticks" "$1" >>"$lookup_log"
+    case $1 in *'agent late '*) [ "$ticks" -ge 5 ] || return 0 ;; esac
+    echo "$claude"
+  }
+  context_tokens() { printf '%s\n' "$ticks" >>"$read_log"; echo 100; }
+  # shellcheck disable=SC2317 # cli_call invokes the provider by name.
+  claude_usage_tokens() { printf '%s\n' "$ticks" >>"$usage_log"; echo '1 2 3 4'; }
+  date() {
+    [ "$1" = +%s ] || fail 'watch used a non-portable date flag'
+    case $ticks in
+      1) echo 100 ;; 2) echo 105 ;; 3) echo 110 ;; 4) echo 159 ;;
+      5) echo 160 ;; 6) echo 165 ;; 7) echo 220 ;; 8) echo 225 ;;
+    esac
+  }
+  sleep() { [ "$1" = 5 ] || fail "watch scan interval was $1, expected 5"; }
   cmd_watch "$session" 1000000 2>"$err" || fail "watch loop exited non-zero"
-  [ "$ticks" -eq 3 ] || fail "watch loop ran $ticks has-session checks, expected 3"
-  [ "$(wc -l <"$lookups")" -eq 1 ] || fail "transcript looked up $(wc -l <"$lookups") times, expected 1 (cache missed)"
+  [ "$ticks" -eq 9 ] || fail "watch loop ran $ticks has-session checks, expected 9"
+  [ "$(cat "$read_log")" = "$(printf '1\n5\n5\n8\n8\n')" ] || fail "watch read unchanged transcripts or missed a pane's read interval: $(cat "$read_log")"
+  [ "$(cat "$usage_log")" = "$(cat "$read_log")" ] || fail 'watch read usage outside a full transcript read'
+  [ "$(cat "$lookup_log")" = "$(printf '1 agent lead of peon-code session %s,\n1 agent late of peon-code session %s,\n5 agent late of peon-code session %s,\n' "$session" "$session" "$session")" ] || fail "watch missed the cached path or repeated a missing lookup inside its interval: $(cat "$lookup_log")"
+  [ "$(wc -l <"$owners")" -eq 8 ] || fail 'watch skipped an ownership check'
   [ ! -s "$err" ] || fail "watch loop wrote to stderr: $(cat "$err")"
   [ ! -e "/tmp/peon-code-watch-$UID/$session.pid" ] || fail "watch loop left its PID file"
-  unset -f tmux session_name list_agent_panes last_thread_file sleep
-}
+)
+
+# Invalid or unavailable usage leaves the pane's last valid option intact.
+test_watch_usage() (
+  local transcript="$TEST_DIR/watch-usage.jsonl" log="$TEST_DIR/watch-usage-options"
+  local session="peon-watch-usage-$$" ticks=0 PEON_WATCH_MIN=0
+  : >"$transcript"
+  : >"$log"
+  tmux() {
+    case $1 in
+      has-session)
+        ticks=$((ticks + 1))
+        printf 'change\n' >>"$transcript"
+        [ "$ticks" -le 10 ]; return ;;
+      show-options) case $* in *@peon_bin*) echo claude ;; esac ;;
+      set) [ "$4" != @peon_usage ] || printf '%s\n' "$*" >>"$log" ;;
+    esac
+    return 0
+  }
+  session_name() { echo "$1"; }
+  list_agent_panes() { printf '%%0 lead\n'; }
+  last_thread_file() { echo "$transcript"; }
+  context_tokens() { :; }
+  # shellcheck disable=SC2317 # cli_call invokes the provider by name.
+  claude_usage_tokens() {
+    case $ticks in
+      1) echo '12 34 56 78' ;; 2) : ;; 3) echo '-1 2 3 4' ;;
+      4) echo '1.5 2 3 4' ;; 5) echo '1 2 3 4 5' ;; 6) echo '1 2 3' ;;
+      7) echo '1  2 3 4' ;; 8) printf '1\t2 3 4\n' ;;
+      9) echo '1 2 3 4'; return 1 ;; 10) echo '0 0 0 0' ;;
+    esac
+  }
+  sleep() { :; }
+  cmd_watch "$session" 1000000 || fail 'usage watch failed without context tokens'
+  [ "$(cat "$log")" = "$(printf 'set -pt %%0 @peon_usage 12 34 56 78\nset -pt %%0 @peon_usage 0 0 0 0\n')" ] ||
+    fail "watch wrote invalid usage or missed valid usage: $(cat "$log")"
+)
 
 # Launch only signals a recorded watcher for this exact session. All process
 # checks and signals here are mocks, including malformed or foreign PIDs.
@@ -207,6 +270,7 @@ test_watch_owner() (
 fake_bin=$(make_fake_commands)
 test_context_tokens
 test_watch_loop
+test_watch_usage
 test_watch_launch_pid
 test_watch_owner
 test_compact_at_directive

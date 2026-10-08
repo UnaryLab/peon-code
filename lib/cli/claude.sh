@@ -9,6 +9,7 @@ claude_launch_command() {
   case "$ARGS " in
     *" --settings "*|*" --settings="*)
       echo "peon-code: ${NAMES[$i]} passes its own --settings, so it may stay fullscreen" >&2
+      echo "peon-code: ${NAMES[$i]} passes its own --settings, so its weekly limit is not recorded" >&2
       if [ "$i" -ne "$MAIN" ]; then
         echo "peon-code: ${NAMES[$i]} passes its own --settings, so it gets no git deny file" >&2
       fi ;;
@@ -96,6 +97,40 @@ claude_context_tokens() {
   c=$(printf '%s' "$rec" | sed -n 's/.*"cache_read_input_tokens":\([0-9]*\).*/\1/p')
   [ -n "$a" ] || return 0
   echo $((a + ${b:-0} + ${c:-0}))
+}
+
+claude_usage_tokens() {
+  [ $# -gt 0 ] || return 0
+  [ -f "$1" ] && [ -r "$1" ] || return 0
+  awk '
+    function token(record, key, value) {
+      if (!match(record, "\"" key "\"[[:space:]]*:[[:space:]]*[0-9]+[[:space:]]*[,}]")) return ""
+      value = substr(record, RSTART, RLENGTH)
+      sub(/^[^:]*:[[:space:]]*/, "", value)
+      sub(/[[:space:]]*[,}]$/, "", value)
+      return value
+    }
+    match($0, /"requestId"[[:space:]]*:[[:space:]]*"[^"]+"/) {
+      id = substr($0, RSTART, RLENGTH)
+      sub(/^[^:]*:[[:space:]]*"/, "", id)
+      sub(/"$/, "", id)
+      if (!match($0, /"usage"[[:space:]]*:[[:space:]]*\{/)) next
+      record = substr($0, RSTART)
+      a = token(record, "input_tokens"); d = token(record, "output_tokens")
+      if (a == "" || d == "") next
+      inputs[id] = a; outputs[id] = d
+      reads[id] = token(record, "cache_read_input_tokens")
+      writes[id] = token(record, "cache_creation_input_tokens")
+      found = 1
+    }
+    END {
+      if (!found) exit
+      for (id in inputs) {
+        input += inputs[id]; read += reads[id]; write += writes[id]; output += outputs[id]
+      }
+      printf "%.0f %.0f %.0f %.0f\n", input, read, write, output
+    }
+  ' "$1" 2>/dev/null || true
 }
 
 claude_paste_placeholder() {

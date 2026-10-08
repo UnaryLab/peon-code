@@ -126,6 +126,7 @@ FAKE_PYTHON
 
 test_install_guard() {
   local home_dir="$TEST_DIR/home-install" bin_dir="$TEST_DIR/bin-install"
+  local PATH="$fake_bin:$PATH"
   mkdir -p "$home_dir" "$bin_dir"
   printf 'keep me\n' >"$bin_dir/peon-code"
   if HOME="$home_dir" "$ROOT/install.sh" "$bin_dir" >"$TEST_DIR/install.out" 2>"$TEST_DIR/install.err"; then
@@ -177,6 +178,7 @@ test_install_guard() {
 
 test_install_tmux_conf() {
   local home_dir="$TEST_DIR/home-tmuxconf" bin_dir="$TEST_DIR/bin-tmuxconf"
+  local PATH="$fake_bin:$PATH"
   mkdir -p "$home_dir" "$bin_dir"
 
   # Fresh home: the config is installed.
@@ -189,6 +191,35 @@ test_install_tmux_conf() {
   HOME="$home_dir" "$ROOT/install.sh" "$bin_dir" >"$TEST_DIR/tmuxconf-keep.out" </dev/null
   [ "$(cat "$home_dir/.tmux.conf")" = "my own config" ] ||
     fail "install overwrote an existing ~/.tmux.conf"
+}
+
+test_install_git_hooks() {
+  local repo="$TEST_DIR/install-repo" home_dir="$TEST_DIR/install-repo-home" bin_dir="$TEST_DIR/install-repo-bin"
+  local nested="$repo/archive" alias_dir="$TEST_DIR/install-repo-link" hooks_path
+  mkdir -p "$repo/lib" "$home_dir"
+  cp "$ROOT/install.sh" "$ROOT/tmux.conf" "$ROOT/peon-code.conf.example" "$repo/"
+  cp "$ROOT/lib/deps.sh" "$repo/lib/"
+  git init -q -b main "$repo"
+  HOME="$home_dir" "$repo/install.sh" "$bin_dir" >"$TEST_DIR/install-hooks.out" </dev/null
+  [ "$(git -C "$repo" config --get core.hooksPath)" = .githooks ] || fail 'install did not set the hook path'
+  assert_contains "$TEST_DIR/install-hooks.out" 'installed Git hooks: .githooks'
+  for hooks_path in .githooks '' custom-hooks; do
+    git -C "$repo" config core.hooksPath "$hooks_path"
+    cp "$repo/.git/config" "$TEST_DIR/install-parent-config"
+    HOME="$home_dir" "$repo/install.sh" "$bin_dir" >"$TEST_DIR/install-hooks.out" </dev/null
+    cmp "$repo/.git/config" "$TEST_DIR/install-parent-config" || fail 'install changed an existing hook path'
+    assert_contains "$TEST_DIR/install-hooks.out" "kept Git hooks: $hooks_path"
+  done
+  ln -s "$repo" "$alias_dir"
+  HOME="$home_dir" "$alias_dir/install.sh" "$TEST_DIR/install-symlink-bin" >"$TEST_DIR/install-symlink.out" </dev/null
+  cmp "$repo/.git/config" "$TEST_DIR/install-parent-config" || fail 'symlink install changed an existing hook path'
+  assert_contains "$TEST_DIR/install-symlink.out" 'kept Git hooks: custom-hooks'
+  mkdir -p "$nested"
+  cp "$repo/install.sh" "$repo/tmux.conf" "$repo/peon-code.conf.example" "$nested/"
+  cp -R "$repo/lib" "$nested/"
+  HOME="$home_dir" "$nested/install.sh" "$TEST_DIR/install-nested-bin" >"$TEST_DIR/install-nested.out" </dev/null
+  cmp "$repo/.git/config" "$TEST_DIR/install-parent-config" || fail 'nested install changed its parent Git config'
+  assert_not_contains "$TEST_DIR/install-nested.out" 'Git hooks:'
 }
 
 # The public check offers on the first start and leaves cached refs alone.
@@ -387,9 +418,13 @@ FAKE_SSH
 }
 
 fake_bin=$(make_fake_commands)
+# Root installer tests must leave this checkout's Git settings intact.
+printf '#!/bin/sh\nexit 1\n' >"$fake_bin/git"
+chmod +x "$fake_bin/git"
 test_install_dependencies
 test_install_guard
 test_install_tmux_conf
+test_install_git_hooks
 test_update_offer
 test_public_pull_keeps_fork_tracking
 test_update_probe_timeout

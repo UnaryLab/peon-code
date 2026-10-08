@@ -5,6 +5,8 @@
 #   ./peon-code.sh [-c file] [<session>] [<cmd> ...]
 #   ./peon-code.sh resume [<session>] [<cmd> ...]
 #   ./peon-code.sh dismiss [<session>]
+#   ./peon-code.sh usage [<session>]
+#   ./peon-code.sh statusline [<user-command>]
 #   ./peon-code.sh msg <name|all> 'text' [<session>]
 #   ./peon-code.sh send <pane-id> 'text'|-
 #   ./peon-code.sh key [--submit] <pane-id> <name>
@@ -41,19 +43,25 @@ while [ -L "$script_path" ]; do
   esac
 done
 SCRIPT_DIR=$(cd -- "$(dirname -- "$script_path")" && pwd)
+PEON_VERSION=$(cat "$SCRIPT_DIR/VERSION" 2>/dev/null || echo unknown)
 DEFAULT_CONF=peon-code.conf
 TASK_BOARD=.peon-code-task.md
 WRITER_DIR=innovation_summary
 
 usage() {
+  printf 'peon-code %s\n' "$PEON_VERSION"
   cat <<'USAGE'
 peon-code.sh [-c file] [<session>] [<cmd> ...]  start or attach a team
                                                 (session defaults to the current directory name)
 peon-code.sh resume [<session>] [<cmd> ...]     same, each agent reopening its last
                                                 conversation (claude, codex, copilot,
                                                 grok, gemini, qwen)
-peon-code.sh dismiss [<session>]                kill one session
+peon-code.sh dismiss [<session>]                print token usage, then kill one session
                                                 (session defaults to the current directory name)
+peon-code.sh usage [<session>]                  print token usage for one session
+                                                (session defaults to the current directory name)
+peon-code.sh statusline [<user-command>]        internal: the claude status line wrapper
+                                                the launch installs
 peon-code.sh detach [<session>]                 detach every client of one session, leaving
                                                 it and its agents running
                                                 (session defaults to the current directory name)
@@ -82,13 +90,14 @@ peon-code.sh clear [<name|all>] [<session>]     send /clear to an agent pane, th
                                                 (name and session default to all and the
                                                 current directory name)
 peon-code.sh watch [<session>] [<tokens>]      compact an agent pane whose context reaches
-                                                <tokens> (default 250000), checked once a
-                                                minute from its transcript; started by
-                                                every launch, so run it by hand only
-                                                after killing that one
+                                                <tokens> (default 250000); reads its
+                                                transcript when it changes, at most once
+                                                a minute; every launch starts it, so run
+                                                it by hand only after killing that one
 peon-code.sh list                               agent panes of every session
 peon-code.sh uninstall [bin-dir]                remove both installed command symlinks
 peon-code.sh -h                                 this help
+peon-code.sh --version                          print the version
 
   -c file   agent config file (default ./peon-code.conf, then
             ~/.config/peon-code/peon-code.conf, if present)
@@ -142,7 +151,10 @@ source "$SCRIPT_DIR/lib/watch.sh"
 START_ARGS=("$@")
 CONF=""
 CONF_GIVEN=0
-case "${1:-}" in --help) usage; exit 0 ;; esac
+case "${1:-}" in
+  --help) usage; exit 0 ;;
+  --version) printf '%s\n' "$PEON_VERSION"; exit 0 ;;
+esac
 while getopts ":c:h" opt; do
   case $opt in
     c) CONF=$OPTARG; CONF_GIVEN=1 ;;
@@ -153,7 +165,7 @@ while getopts ":c:h" opt; do
 done
 shift $((OPTIND - 1))
 case "${1:-}" in
-  uninstall) ;;
+  uninstall|statusline) ;;
   *) tmux_version_ok || exit 1 ;;
 esac
 
@@ -161,6 +173,8 @@ RESUME=0
 case "${1:-}" in
   resume) RESUME=1; shift ;;
   dismiss) shift; cmd_dismiss "$@"; exit 0 ;;
+  usage) shift; cmd_usage "$@"; exit 0 ;;
+  statusline) shift; cmd_statusline "$@"; exit $? ;;
   detach) shift; cmd_detach "$@"; exit 0 ;;
   msg)  shift; cmd_msg "$@"; exit 0 ;;
   send) shift; cmd_send "$@"; exit 0 ;;

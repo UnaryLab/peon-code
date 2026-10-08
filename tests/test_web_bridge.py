@@ -16,7 +16,7 @@ class BridgeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             brief = Path(directory) / 'brief.md'
             brief.write_text('Your role: archie, type reviewer: check the work\n')
-            rows = f'team\t%5\timpl\t1\tcodex\tworker\t\t100:$1:205\nteam\t%2\tarchie\t1\tclaude\t\t{brief}\t100:$1:202\nteam\t%3\tboss\t1\tclaude\tmanager\t\t100:$1:203\nother\t%4\tone\t1\tcodex\t\t\t100:$2:204\nforeign\t%9\tx\t\tcodex\t\t\t100:$3:209\n'
+            rows = f'team\t%5\timpl\t1\tcodex\tworker\t\t100:$1:205\t\t\t\nteam\t%2\tarchie\t1\tclaude\t\t{brief}\t100:$1:202\t\t\t\nteam\t%3\tboss\t1\tclaude\tmanager\t\t100:$1:203\t\t\t\nother\t%4\tone\t1\tcodex\t\t\t100:$2:204\t\t\t\nforeign\t%9\tx\t\tcodex\t\t\t100:$3:209\t\t\t\n'
             with patch.object(bridge, 'tmux', return_value=rows):
                 panes = bridge.panes('team')
                 self.assertEqual([p['id'] for p in panes], ['%3', '%2', '%5'])
@@ -24,20 +24,45 @@ class BridgeTests(unittest.TestCase):
                 self.assertEqual(len(bridge.panes()), 4)
 
     def test_roleless_default_order(self):
-        rows = 'team\t%3\tthree\t1\tcodex\t\t\t100:$1:203\nteam\t%1\tone\t1\tcodex\t\t\t100:$1:201\nteam\t%2\ttwo\t1\tcodex\t\t\t100:$1:202\n'
+        rows = 'team\t%3\tthree\t1\tcodex\t\t\t100:$1:203\t\t\t\nteam\t%1\tone\t1\tcodex\t\t\t100:$1:201\t\t\t\nteam\t%2\ttwo\t1\tcodex\t\t\t100:$1:202\t\t\t\n'
         with patch.object(bridge, 'tmux', return_value=rows):
             self.assertEqual([(p['id'], p['role']) for p in bridge.panes()], [('%1', 'manager'), ('%2', 'reviewer'), ('%3', 'worker')])
 
     def test_project_directory_preserves_whitespace(self):
         project = '/work/project with spaces\tand\nnewlines '
-        rows = 'team\t%1\tone\t1\tcodex\tmanager\t\t100:$1:201\n'
+        rows = 'team\t%1\tone\t1\tcodex\tmanager\t\t100:$1:201\t\t\t\n'
         with patch.object(bridge, 'tmux', side_effect=[rows, project + '\n']):
             self.assertEqual(bridge.panes()[0]['projectDir'], project)
 
     def test_closed_pane_during_discovery_is_skipped(self):
-        rows = 'team\t%1\tone\t1\tcodex\tmanager\t\t100:$1:201\nteam\t%2\ttwo\t1\tcodex\tworker\t\t100:$1:202\n'
+        rows = 'team\t%1\tone\t1\tcodex\tmanager\t\t100:$1:201\t\t\t\nteam\t%2\ttwo\t1\tcodex\tworker\t\t100:$1:202\t\t\t\n'
         with patch.object(bridge, 'tmux', side_effect=[rows, subprocess.CalledProcessError(1, 'tmux'), '/work/project\n']):
             self.assertEqual([pane['id'] for pane in bridge.panes()], ['%2'])
+
+    def test_pane_usage_values(self):
+        for text, expected in (
+                ('14 130 26 16', dict(input=14, cacheRead=130, cacheWrite=26, output=16)),
+                ('0 0 0 0', dict(input=0, cacheRead=0, cacheWrite=0, output=0)),
+                ('  001  2 3 4 ', dict(input=1, cacheRead=2, cacheWrite=3, output=4)),
+                ('', None), ('malformed', None), ('1 2 3', None), ('1 2 3 4 5', None),
+                ('-1 2 3 4', None), ('+1 2 3 4', None), ('1.5 2 3 4', None),
+                ('1 2 true 4', None), ('1 2 3 ٤', None), ('1 2 3 4x', None)):
+            rows = 'team\t%2\tworker\t1\tcodex\tworker\t\t100:$1:202\t\t' + text + '\t\n'
+            with self.subTest(text=text), patch.object(bridge, 'tmux', side_effect=[rows, '/work/project\n']) as tmux:
+                pane = bridge.panes()[0]
+            self.assertEqual(pane['usage'], expected)
+            self.assertEqual(tmux.call_count, 2)
+            self.assertTrue(tmux.call_args_list[0].args[-1].endswith('\t#{@peon_weekly}\t#{@peon_usage}\t#{@peon_bin}'))
+            if expected is not None:
+                self.assertTrue(all(isinstance(count, int) for count in pane['usage'].values()))
+
+    def test_pane_cli_is_populated_or_empty(self):
+        for cli in ('codex', ''):
+            rows = 'team\t%2\tworker\t1\tbash\tworker\t\t100:$1:202\t\t\t' + cli + '\n'
+            with self.subTest(cli=cli), patch.object(bridge, 'tmux', side_effect=[rows, '/work/project\n']) as tmux:
+                self.assertEqual(bridge.panes()[0]['cli'], cli)
+            self.assertEqual(tmux.call_count, 2)
+            self.assertEqual(len(tmux.call_args_list[0].args[-1].split('\t')), 11)
 
     def test_capture_keeps_ansi_and_background(self):
         pane = {'id': '%2', 'identity': '100:$1:202'}

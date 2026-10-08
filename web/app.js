@@ -25,6 +25,40 @@ let lastCols;
 let lastRows;
 let resizedAt = -Infinity;
 let fontSize = 13;
+const tip = document.querySelector('#tip');
+let tipOwner;
+let tipTimer;
+function updateTip(event) {
+  const owner = event.target?.matches?.('[data-tip]') ? event.target : null;
+  const starting = event.type === 'mouseenter' || event.type === 'focus';
+  if (starting && !owner?.dataset.tip) return;
+  if ((event.type === 'mouseleave' || event.type === 'blur') && owner !== tipOwner) return;
+  clearTimeout(tipTimer);
+  tip.hidden = true;
+  if (tipOwner) {
+    const descriptions = (tipOwner.getAttribute('aria-describedby') || '').split(/\s+/).filter(id => id && id !== 'tip');
+    if (descriptions.length) tipOwner.setAttribute('aria-describedby', descriptions.join(' '));
+    else tipOwner.removeAttribute('aria-describedby');
+  }
+  tipOwner = starting ? owner : null;
+  if (!tipOwner) return;
+  tipTimer = setTimeout(() => {
+    if (!owner.isConnected || !owner.getClientRects().length || !owner.dataset.tip) { tipOwner = null; return; }
+    tip.textContent = owner.dataset.tip;
+    tip.hidden = false;
+    tip.style.left = '0px';
+    const rect = owner.getBoundingClientRect();
+    tip.style.left = Math.max(8, Math.min(rect.left, innerWidth - tip.offsetWidth - 8)) + 'px';
+    tip.style.top = Math.max(8, Math.min(rect.bottom + 4, innerHeight - tip.offsetHeight - 8)) + 'px';
+    const descriptions = (owner.getAttribute('aria-describedby') || '').split(/\s+/).filter(id => id && id !== 'tip');
+    owner.setAttribute('aria-describedby', [...descriptions, 'tip'].join(' '));
+  }, 2000);
+}
+for (const type of ['mouseenter', 'focus', 'mouseleave', 'blur', 'click', 'keydown']) document.addEventListener(type, updateTip, true);
+window.addEventListener('resize', updateTip);
+new MutationObserver(() => {
+  if (tipOwner && (!tipOwner.isConnected || !tipOwner.getClientRects().length)) updateTip({type: 'blur', target: tipOwner});
+}).observe(document.body, {childList: true, subtree: true, attributes: true, attributeFilter: ['hidden', 'class', 'style']});
 try {
   const saved = parseInt(localStorage.getItem('peon-font'), 10);
   if (Number.isFinite(saved)) fontSize = Math.max(8, Math.min(32, saved));
@@ -121,7 +155,8 @@ document.querySelector('#dismiss').onclick = async () => {
   status.classList.remove('error');
   status.textContent = 'Closing session ' + session;
   try {
-    status.textContent = (await api('/api/dismiss', {session})).message;
+    await api('/api/dismiss', {session});
+    status.hidden = true;
     dismissed = session;
   }
   catch (error) { status.textContent = error.message; status.classList.add('error'); }
@@ -130,7 +165,8 @@ document.querySelector('#dismiss').onclick = async () => {
 function renderButtons(card) {
   card.el.querySelector('.prompt-buttons').replaceChildren(...actionButtons.map(action => {
     const button = document.createElement('button');
-    button.type = 'button'; button.textContent = action.name; button.title = action.description;
+    button.type = 'button'; button.textContent = action.name;
+    if (action.description) button.dataset.tip = action.description;
     button.disabled = card.busy || card.closed;
     button.onclick = () => send(card, 'send', action.prompt, false);
     return button;
@@ -218,6 +254,7 @@ function updateKeys(card) {
   const buttons = labels.map(([key, label]) => {
     const button = document.createElement('button');
     button.type = 'button'; button.dataset.key = key; button.textContent = label;
+    button.dataset.tip = 'Send ' + (key === 'Escape' ? 'Esc' : key) + ' to the agent';
     button.disabled = card.busy || card.closed;
     button.onclick = () => send(card, 'keys', key);
     return button;
@@ -380,7 +417,8 @@ async function refresh() {
       }
     }
     const parameters = query.toString();
-    const {panes, initial} = await api("/api/panes" + (parameters ? '?' + parameters : ''));
+    const {panes, initial, version} = await api("/api/panes" + (parameters ? '?' + parameters : ''));
+    document.querySelector('#version').textContent = version ? 'v' + version : '';
     const cols = query.get('cols'), rows = query.get('rows');
     if (cols && rows && (cols !== lastCols || rows !== lastRows)) {
       resizedAt = performance.now();
@@ -404,7 +442,8 @@ async function refresh() {
       card.latest = {...pane, capturedLines: visible && visible.id === pane.id ? lines : 1000};
       updateKeys(card);
       card.el.querySelector("h2").textContent = pane.name;
-      card.el.querySelector(".meta").textContent = pane.session + " / " + pane.role + " / " + pane.id;
+      const weekly = pane.weekly ? " / " + (pane.cli ? pane.cli + " " : "") + "weekly " + (100 - pane.weekly.usedPercent).toFixed(1) + "% left, resets " + new Date(pane.weekly.resetsAt * 1000).toLocaleString(undefined, {month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit'}) : "";
+      card.el.querySelector(".meta").textContent = pane.session + " / " + pane.role + " / " + pane.id + weekly;
       updateOutput(card);
     }
     for (const [key, card] of cards) {
@@ -422,7 +461,6 @@ async function refresh() {
     if (dismissed && !panes.some(pane => pane.session === dismissed && !pane.closed)) {
       if (navigation.session === dismissed) navigation.session = undefined;
       dismissed = null;
-      document.querySelector('#dismiss-status').hidden = true;
     }
     if (openedSession && panes.some(pane => pane.session === openedSession && !pane.closed)) {
       navigation.session = openedSession;

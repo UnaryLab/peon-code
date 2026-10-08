@@ -94,6 +94,59 @@ codex_context_tokens() {
   echo "${rec##*:}"
 }
 
+codex_usage_tokens() {
+  [ $# -gt 0 ] || return 0
+  [ -f "$1" ] && [ -r "$1" ] || return 0
+  awk '
+    function token(record, key, value) {
+      if (!match(record, "\"" key "\"[[:space:]]*:[[:space:]]*[0-9]+[[:space:]]*[,}]")) return ""
+      value = substr(record, RSTART, RLENGTH)
+      sub(/^[^:]*:[[:space:]]*/, "", value)
+      sub(/[[:space:]]*[,}]$/, "", value)
+      return value
+    }
+    match($0, /"total_token_usage"[[:space:]]*:[[:space:]]*\{[^}]*\}/) {
+      record = substr($0, RSTART, RLENGTH)
+    }
+    END {
+      input = token(record, "input_tokens"); output = token(record, "output_tokens")
+      if (input == "" || output == "") exit
+      read = token(record, "cached_input_tokens") + 0
+      if (read > input + 0) exit
+      printf "%.0f %.0f %.0f %.0f\n", input - read, read, token(record, "cache_write_input_tokens"), output
+    }
+  ' "$1" 2>/dev/null || true
+}
+
+codex_weekly_limit() {
+  [ $# -gt 0 ] || return 0
+  [ -f "$1" ] && [ -r "$1" ] || return 0
+  LC_ALL=C awk '
+    function number(record, key, value) {
+      if (!match(record, "\"" key "\"[[:space:]]*:[[:space:]]*[0-9]+([.][0-9]+)?[[:space:]]*[,}]")) return ""
+      value = substr(record, RSTART, RLENGTH)
+      sub(/^[^:]*:[[:space:]]*/, "", value)
+      sub(/[[:space:]]*[,}]$/, "", value)
+      return value
+    }
+    /"type"[[:space:]]*:[[:space:]]*"token_count"/ { last = $0 }
+    END {
+      if (!match(last, /"rate_limits"[[:space:]]*:[[:space:]]*\{/)) exit
+      limits = substr(last, RSTART)
+      for (i = 1; i <= 2; i++) {
+        key = i == 1 ? "primary" : "secondary"
+        if (!match(limits, "\"" key "\"[[:space:]]*:[[:space:]]*\\{[^}]*\\}")) continue
+        record = substr(limits, RSTART, RLENGTH)
+        if (number(record, "window_minutes") != "10080") continue
+        used = number(record, "used_percent"); resets = number(record, "resets_at")
+        if (used == "" || resets !~ /^[0-9]+$/) continue
+        printf "%.1f %.0f\n", (used + 0 > 100 ? 100 : used), resets
+        exit
+      }
+    }
+  ' "$1" 2>/dev/null || true
+}
+
 codex_paste_placeholder() {
   printf '%s\n' '^\[Pasted Content [0-9]+ chars\]$'
 }

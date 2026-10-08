@@ -30,17 +30,18 @@
     <p id="new-session-status" class="feedback" role="status" hidden></p>
     <div class="session-row">
       <nav id="sessions" aria-label="Sessions"></nav>
-      <button id="new-session" type="button" aria-label="New session" aria-expanded="false" aria-controls="new-session-form">+</button>
-      <button type="button" class="font-smaller" aria-label="A- smaller text">A-</button>
-      <button type="button" class="font-larger" aria-label="A+ larger text">A+</button>
+      <button id="new-session" type="button" aria-label="New session" aria-expanded="false" aria-controls="new-session-form" data-tip="Start a new session">+</button>
+      <button type="button" class="font-smaller" aria-label="A- smaller text" data-tip="Smaller output text">A-</button>
+      <button type="button" class="font-larger" aria-label="A+ larger text" data-tip="Larger output text">A+</button>
       <span id="connection" role="status">Connecting…</span>
+      <span id="version" class="meta"></span>
     </div>
     <p id="project-path"></p>
     <p id="empty" hidden>No agent panes yet. Start a team with <code>peon-code</code>, then return here.</p>
     <div class="workspace">
       <div class="sidebar">
         <nav id="agents" aria-label="Agents in this session"></nav>
-        <button id="dismiss" type="button" hidden>Close session</button>
+        <button id="dismiss" type="button" data-tip="Stop all agents in this session" hidden>Close session</button>
         <p id="dismiss-status" class="feedback" role="status" hidden></p>
       </div>
       <div id="panes"></div>
@@ -50,12 +51,12 @@
     <article class="pane" hidden>
       <header class="pane-heading"><div><h2></h2><p class="meta"></p></div><span class="state">Live</span></header>
       <pre tabindex="0" class="output" aria-label="Agent output"></pre>
-      <form class="message-form"><textarea rows="2" placeholder="Ask this agent something… (Shift+Enter to send)" aria-label="Message this agent"></textarea><button type="submit">Send ↗</button></form>
+      <form class="message-form"><textarea rows="2" placeholder="Ask this agent something… (Shift+Enter to send)" aria-label="Message this agent"></textarea><button type="submit" data-tip="Send the message to this agent">Send ↗</button></form>
       <div class="actions">
-        <button class="explain" disabled>Explain selection</button>
+        <button class="explain" data-tip="Ask this agent to explain the selected output" disabled>Explain selection</button>
         <span class="prompt-buttons"></span>
-        <button class="discard" hidden>Discard saved text</button>
-        <button type="button" class="add-button" aria-label="Add button">+</button>
+        <button class="discard" data-tip="Discard the saved draft" hidden>Discard saved text</button>
+        <button type="button" class="add-button" aria-label="Add button" data-tip="Add a saved prompt button">+</button>
         <span class="selection-note"></span>
       </div>
       <form class="button-form" hidden>
@@ -66,18 +67,19 @@
         <button type="button" class="cancel">Cancel</button>
       </form>
       <div class="keys">
-        <button type="button" class="keys-toggle" aria-expanded="false">Keys</button>
+        <button type="button" class="keys-toggle" aria-expanded="false" data-tip="Show keys to send">Keys</button>
         <div class="key-buttons" hidden>
-          <button type="button" data-key="Up">Up</button>
-          <button type="button" data-key="Down">Down</button>
-          <button type="button" data-key="Tab">Tab</button>
-          <button type="button" data-key="Enter">Enter</button>
-          <button type="button" data-key="Escape">Esc</button>
-          <button type="button" data-key="Backspace">Backspace</button>
+          <button type="button" data-key="Up" data-tip="Send Up to the agent">Up</button>
+          <button type="button" data-key="Down" data-tip="Send Down to the agent">Down</button>
+          <button type="button" data-key="Tab" data-tip="Send Tab to the agent">Tab</button>
+          <button type="button" data-key="Enter" data-tip="Send Enter to the agent">Enter</button>
+          <button type="button" data-key="Escape" data-tip="Send Esc to the agent">Esc</button>
+          <button type="button" data-key="Backspace" data-tip="Send Backspace to the agent">Backspace</button>
         </div>
       </div>
       <p class="feedback" role="status"></p>
     </article>
   </template>
+  <div id="tip" role="tooltip" hidden></div>
 </body>
 </html>

@@ -51,7 +51,8 @@ test_git_deny_settings() {
   yolo_launch=$(grep -F 'buffer-content:claude' "$log" | sed -n '5p')
   [ -n "$yolo_launch" ] || fail "the deny test did not record all five claude launches"
   main_settings=$(settings_path "$boss_launch")
-  [ "$(cat "$main_settings")" = '{"tui":"default"}' ] || fail "the main settings did not contain only the normal renderer"
+  assert_contains "$main_settings" '"tui":"default"'
+  assert_not_contains "$main_settings" '"permissions"'
   case $helper_launch in
     *--settings*) ;;
     *) fail "a non-main claude agent was launched without --settings" ;;
@@ -137,7 +138,8 @@ test_git_deny_unstarred_main() {
   boss_launch=$(grep -F 'buffer-content:claude' "$log" | sed -n '1p')
   helper_launch=$(grep -F 'buffer-content:claude' "$log" | sed -n '2p')
   [ -n "$helper_launch" ] || fail "the unstarred test did not record both claude launches"
-  [ "$(cat "$(settings_path "$boss_launch")")" = '{"tui":"default"}' ] || fail "the fallback main settings were not limited to the normal renderer"
+  assert_contains "$(settings_path "$boss_launch")" '"tui":"default"'
+  assert_not_contains "$(settings_path "$boss_launch")" '"permissions"'
   case $helper_launch in
     *--settings*) ;;
     *) fail "a non-main claude agent was launched without --settings" ;;

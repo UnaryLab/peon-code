@@ -76,6 +76,19 @@ class WebTests(unittest.TestCase):
             status, body = self.request("GET", "/api/panes")
         self.assertEqual(status, 200)
         self.assertIn("日本語", json.loads(body)["panes"][0]["output"])
+        self.assertEqual(json.loads(body)["version"], (ROOT / "VERSION").read_text(encoding="utf-8").strip())
+
+    def test_version_is_read_once_at_startup_and_missing_is_empty(self):
+        for contents, expected in ((" 2.3.4\n", "2.3.4"), (FileNotFoundError(), "")):
+            with self.subTest(expected=expected), patch.object(Path, "read_text", **({"side_effect": contents} if isinstance(contents, OSError) else {"return_value": contents})) as read:
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)
+                self.assertEqual(module.VERSION, expected)
+                read.assert_called_once_with(encoding="utf-8")
+            with patch.object(web, "VERSION", module.VERSION), patch.object(web, "snapshot", side_effect=lambda pane: pane):
+                status, body = self.request("GET", "/api/panes")
+            self.assertEqual(status, 200)
+            self.assertEqual(json.loads(body)["version"], expected)
 
     def test_browser_size_stacks_detached_panes_and_skips_matching_windows(self):
         group = [dict(id="%" + str(index), session="team") for index in range(4)]
@@ -137,7 +150,7 @@ class WebTests(unittest.TestCase):
             self.skipTest("Chrome or Chromium is required for browser measurement")
         source = (ROOT / "web/app.js").read_text()
         span = source[source.index("const cellMeasure ="):source.index("let dragging =")]
-        measure = source[source.index("async function refresh() {"):source.index('    const {panes, initial} = await api("/api/panes"')]
+        measure = source[source.index("async function refresh() {"):source.index('    const {panes, initial, version} = await api("/api/panes"')]
         script = '''const output = document.querySelector('.output');
 const cards = new Map([['active', {id: '%2', lines: 1000, el: {hidden: false, querySelector: () => output}}]]);
 let refreshTimer, refreshing = false, refreshRequested = false;
@@ -618,6 +631,33 @@ refresh().then(parameters => {document.querySelector('#result').textContent = JS
         self.assertEqual(result["cursorY"], 1)
         self.assertFalse(result["menu"])
 
+    def test_panes_weekly_limit_values(self):
+        for text, expected in (
+                ("25.5 1700000000", {"usedPercent": 25.5, "resetsAt": 1700000000}),
+                ("0 1700000000", {"usedPercent": 0.0, "resetsAt": 1700000000}),
+                ("100.0 1700000000", {"usedPercent": 100.0, "resetsAt": 1700000000}),
+                ("", None), ("malformed", None), ("25 1700000000 extra", None),
+                ("NaN 1700000000", None), ("inf 1700000000", None),
+                ("1e999 1700000000", None), ("-1 1700000000", None),
+                ("101 1700000000", None), ("true 1700000000", None),
+                ("25 true", None), ("25 1700000000.5", None),
+                ("25 -1", None), ('"25" 1700000000', None)):
+            rows = "team\t%2\tworker\t1\tcodex\tworker\t\t100:$1:202\t" + text + "\t\t\n"
+            with self.subTest(text=text), patch.object(bridge.time, "time", return_value=1699999999), patch.object(bridge, "tmux", side_effect=[rows, "/work/project\n"]) as tmux:
+                pane = bridge.panes()[0]
+            self.assertEqual(pane["weekly"], expected)
+            self.assertTrue(tmux.call_args_list[0].args[-1].endswith("\t#{@peon_weekly}\t#{@peon_usage}\t#{@peon_bin}"))
+            if expected:
+                self.assertIsInstance(pane["weekly"]["usedPercent"], float)
+                self.assertIsInstance(pane["weekly"]["resetsAt"], int)
+
+    def test_panes_weekly_reset_time(self):
+        for resets, expected_used in ((1699999999, 0.0), (1700000000, 25.5), (1700000001, 25.5)):
+            rows = "team\t%2\tworker\t1\tcodex\tworker\t\t100:$1:202\t25.5 " + str(resets) + "\t\t\n"
+            with self.subTest(resets=resets), patch.object(bridge.time, "time", return_value=1700000000), patch.object(bridge, "tmux", side_effect=[rows, "/work/project\n"]):
+                pane = bridge.panes()[0]
+            self.assertEqual(pane["weekly"], {"usedPercent": expected_used, "resetsAt": resets})
+
     def test_closed_or_replaced_snapshot_is_omitted(self):
         for result in (None, subprocess.CalledProcessError(1, 'tmux')):
             with self.subTest(result=result), patch.object(web, 'snapshot', side_effect=result if isinstance(result, Exception) else None, return_value=None):
@@ -742,7 +782,7 @@ elif command == "pull":
                 panes.assert_called_with(expected_filter)
                 self.assertEqual(json.loads(body), {
                     "panes": [pane for pane in all_panes if expected_filter is None or pane["session"] == expected_filter],
-                    "initial": expected_initial})
+                    "initial": expected_initial, "version": web.VERSION})
 
     def test_failed_creation_closes_reserved_server(self):
         args = SimpleNamespace(ssh=None, directory='/project', port=0)

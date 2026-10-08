@@ -28,6 +28,14 @@ for command_name in peon-code peon-code-web; do
   [ -L "$LINK" ] || ln -s "$SCRIPT_DIR/$command_name.sh" "$LINK"
   echo "installed: $LINK -> $SCRIPT_DIR/$command_name.sh"
 done
+if [ "$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null)" = "$(cd "$SCRIPT_DIR" && pwd -P)" ]; then
+  if hooks_path=$(git -C "$SCRIPT_DIR" config --get core.hooksPath); then
+    printf 'kept Git hooks: %s\n' "$hooks_path"
+  else
+    git -C "$SCRIPT_DIR" config core.hooksPath .githooks
+    echo 'installed Git hooks: .githooks'
+  fi
+fi
 if ! python_version_ok >/dev/null 2>&1; then
   echo "note: python3 3.10+ not found; peon-code-web will not run"
   case $(package_manager || true) in

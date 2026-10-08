@@ -15,12 +15,12 @@ const assert = require('node:assert/strict');
     const errors = []; page.on('pageerror', error => errors.push(error.message));
     page.on('console', message => { if (message.type() === 'error' && /Content Security|Refused|unsafe/i.test(message.text())) errors.push(message.text()); });
     const roles = [
-      {id: '%5', name: 'Builder', role: 'worker', session: 'alpha'},
-      {id: '%2', name: 'Reviewer', role: 'reviewer', session: 'alpha'},
-      {id: '%3', name: 'Boss', role: 'manager', session: 'alpha'},
-      {id: '%8', name: 'Lead', role: 'manager', session: 'zeta'},
-      {id: '%9', name: 'Check', role: 'reviewer', session: 'zeta'},
-      {id: '%10', name: 'Build', role: 'worker', session: 'zeta'}
+      {id: '%5', name: 'Builder', role: 'worker', session: 'alpha', usage: {input: 0, cacheRead: 0, cacheWrite: 0, output: 0}},
+      {id: '%2', name: 'Reviewer', role: 'reviewer', session: 'alpha', usage: {input: 10000, cacheRead: 2000, cacheWrite: 300, output: 45}},
+      {id: '%3', name: 'Boss', role: 'manager', session: 'alpha', weekly: {usedPercent: 34, resetsAt: 2000000000}, usage: {input: 1000000, cacheRead: 200000, cacheWrite: 30000, output: 4567}},
+      {id: '%8', name: 'Lead', role: 'manager', session: 'zeta', usage: null},
+      {id: '%9', name: 'Check', role: 'reviewer', session: 'zeta', usage: null},
+      {id: '%10', name: 'Build', role: 'worker', session: 'zeta', usage: null}
     ];
     for (const pane of roles) pane.identity = 'first:' + pane.id;
     let empty = false, blocked = true, explainDelay = 0, sendError = null, dismissedSession = null;
@@ -55,7 +55,7 @@ const assert = require('node:assert/strict');
     const output = "\x1b[38;2;200;30;40mIt's \x1b[38;5;46;48;2;10;20;30mquoted 日本語 <script>alert('x')</script>.\x1b[0m\n" +
       '\x1b[91mBright\x1b[48;5;17mBlue bg\x1b[38:2::1:2:3mColon RGB\x1b[1;3;4mStyle\x1b[0mAfter\n' + 'A line of agent output.\n'.repeat(70);
     let joinedHistory = false;
-    let paneGets = 0, paneDelay = 0;
+    let paneGets = 0, paneDelay = 0, responseVersion = '2.3.4';
     const historyRequests = [];
     const joinedLines = Array.from({length: 60}, (_, i) => 'Logical ' + i + ' ' + 'x'.repeat(3000));
     await page.route('**/api/panes*', async route => {
@@ -64,9 +64,9 @@ const assert = require('node:assert/strict');
       const query = new URL(route.request().url()).searchParams;
       const lines = Number(query.get('lines') || 1000);
       if (joinedHistory) historyRequests.push({pane: query.get('pane'), lines});
-      const panes = empty ? [] : roles.filter(pane => pane.session !== dismissedSession).map(pane => ({...pane, projectDir: '/work/' + pane.session + ' project', command: 'codex', output: joinedHistory && pane.id === '%3' ? joinedLines.slice(-lines / 50).join('\n') : output + revision[pane.id] + (menu[pane.id] || ''), history: joinedHistory && pane.id === '%3' ? 3000 : undefined, screen: screen[pane.id] || '', styledScreen: styledScreen[pane.id] ?? screen[pane.id] ?? '', cursorY: cursorY[pane.id] ?? -1, menu: !!menuShown[pane.id], defaultStyle: 'fg=#abcdef,bg=#123456'}));
+      const panes = empty ? [] : roles.filter(pane => pane.session !== dismissedSession).map(pane => ({...pane, cli: pane.cli ?? 'codex', projectDir: '/work/' + pane.session + ' project', command: 'codex', output: joinedHistory && pane.id === '%3' ? joinedLines.slice(-lines / 50).join('\n') : output + revision[pane.id] + (menu[pane.id] || ''), history: joinedHistory && pane.id === '%3' ? 3000 : undefined, screen: screen[pane.id] || '', styledScreen: styledScreen[pane.id] ?? screen[pane.id] ?? '', cursorY: cursorY[pane.id] ?? -1, menu: !!menuShown[pane.id], defaultStyle: 'fg=#abcdef,bg=#123456'}));
       if (paneDelay) await new Promise(resolve => setTimeout(resolve, paneDelay));
-      return route.fulfill({json: {panes}});
+      return route.fulfill({json: {panes, version: responseVersion}});
     });
     await page.route('**/api/dismiss', route => {
       assert.deepEqual(route.request().postDataJSON(), {session: 'zeta'});
@@ -117,6 +117,18 @@ const assert = require('node:assert/strict');
       assert.equal(keyCount, before, 'Focus navigation stays in the browser');
     }
     await page.goto(url); await page.waitForSelector('.pane:not([hidden])');
+    const weeklyReset = await page.evaluate(() => new Date(2000000000 * 1000).toLocaleString(undefined, {month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit'}));
+    assert.equal(await card('%3').locator('.meta').textContent(), 'alpha / manager / %3 / codex weekly 66.0% left, resets ' + weeklyReset);
+    roles.find(pane => pane.id === '%3').cli = '';
+    await page.waitForFunction(reset => document.querySelector('.pane[data-pane="%3"] .meta').textContent === 'alpha / manager / %3 / weekly 66.0% left, resets ' + reset, weeklyReset);
+    roles.find(pane => pane.id === '%3').cli = 'codex';
+    await page.waitForFunction(reset => document.querySelector('.pane[data-pane="%3"] .meta').textContent === 'alpha / manager / %3 / codex weekly 66.0% left, resets ' + reset, weeklyReset);
+    assert.equal(await page.locator('#version').textContent(), 'v2.3.4');
+    responseVersion = undefined;
+    await page.waitForFunction(() => document.querySelector('#version').textContent === '');
+    responseVersion = '2.3.4';
+    await page.waitForFunction(() => document.querySelector('#version').textContent === 'v2.3.4');
+    assert(await page.locator('#version').evaluate(el => el.classList.contains('meta') && el.previousElementSibling.id === 'connection' && el === el.parentElement.lastElementChild), 'Version is muted text at the end of the connection row');
     await promptButton('%3', 'Code summary').waitFor();
     assert.equal(buttonGets, 1);
     assert(await page.locator('.top-links').evaluate(el => {
@@ -124,34 +136,136 @@ const assert = require('node:assert/strict');
       return Math.abs(el.getBoundingClientRect().right - (header.getBoundingClientRect().right - parseFloat(getComputedStyle(header).paddingRight))) <= 1;
     }), 'Project links stay right aligned in the desktop header');
     assert.deepEqual(await card('%3').locator('.prompt-buttons button').allTextContents(), ['Code summary', 'Commit all', 'Push all']);
-    assert.equal(await promptButton('%3', 'Code summary').getAttribute('title'), buttons[0].description);
+    const summaryTip = promptButton('%3', 'Code summary');
+    const tooltip = page.locator('#tip');
+    assert.equal(await summaryTip.getAttribute('data-tip'), buttons[0].description);
+    assert.equal(await summaryTip.getAttribute('title'), null);
+    await summaryTip.hover();
+    await page.waitForTimeout(1500);
+    assert(await tooltip.isHidden(), 'Hover help waits two seconds');
+    await tooltip.waitFor({state: 'visible'});
+    assert.equal(await tooltip.textContent(), buttons[0].description);
+    assert.equal(await summaryTip.getAttribute('aria-describedby'), 'tip');
+    await page.evaluate(() => chooseSession('zeta'));
+    await tooltip.waitFor({state: 'hidden'});
+    assert.equal(await summaryTip.getAttribute('aria-describedby'), null, 'A render that hides the tooltip owner removes help');
+    await page.evaluate(() => chooseSession('alpha'));
+    await page.mouse.move(0, 0);
+    assert(await tooltip.isHidden(), 'Leaving the button hides help');
+    assert.equal(await summaryTip.getAttribute('aria-describedby'), null);
+    const focusedTip = page.locator('.font-larger');
+    await focusedTip.evaluate(el => el.setAttribute('aria-describedby', 'config-help'));
+    await focusedTip.focus();
+    await tooltip.waitFor({state: 'visible'});
+    assert.equal(await tooltip.textContent(), 'Larger output text');
+    assert.equal(await focusedTip.getAttribute('aria-describedby'), 'config-help tip');
+    await focusedTip.press('Escape');
+    assert(await tooltip.isHidden(), 'A key hides help');
+    assert.equal(await focusedTip.getAttribute('aria-describedby'), 'config-help');
+    await focusedTip.evaluate(el => el.removeAttribute('aria-describedby'));
     assert.equal(await page.locator('.pane:not([hidden])').getAttribute('data-pane'), '%3');
-    assert.deepEqual(await page.locator('#agents button').allTextContents(), ['Boss · manager', 'Reviewer · reviewer', 'Builder · worker']);
+    const agentTabs = page.locator('#agents button');
+    assert.deepEqual(await page.locator('#sessions button').allTextContents(), ['alpha', 'zeta'], 'Session labels contain only session names');
+    assert(await page.locator('#sessions button').evaluateAll(buttons => buttons.every(button => !button.hasAttribute('title'))), 'Session tabs have no folder tooltip');
+    assert.deepEqual(await agentTabs.allTextContents(), ['Boss · 1.23M', 'Reviewer · 12.3K', 'Builder · 0'], 'Usage sums all fields in roster order');
+    assert.deepEqual(await paneTab('%3').locator('.name > span').allTextContents(), ['Boss']);
+    assert.deepEqual(await paneTab('%3').locator('.figure').allTextContents(), [' · 1.23M']);
+    assert.equal(await paneTab('%3').evaluate(el => el.style.getPropertyValue('--name-overflow')), '', 'Fitting names do not scroll');
+    const longName = 'A'.repeat(60);
+    roles.find(pane => pane.id === '%3').name = longName;
+    await page.waitForFunction(name => document.querySelector('#agents .name').textContent === name, longName);
+    const overflowDistance = await paneTab('%3').evaluate(el => el.style.getPropertyValue('--name-overflow'));
+    assert(parseFloat(overflowDistance) > 0, 'Overflow names have a scroll distance');
+    assert(await paneTab('%3').locator('.name > span').evaluate(el => {
+      const style = getComputedStyle(el);
+      return style.maxWidth === '100%' && style.overflow === 'hidden' && style.textOverflow === 'ellipsis' && style.whiteSpace === 'nowrap' && el.scrollWidth > el.clientWidth && el.clientWidth <= el.parentElement.clientWidth;
+    }), 'Resting long names clip with an ellipsis on the text span');
+    assert(await paneTab('%3').locator('.figure').evaluate(el => {
+      const space = document.createRange();
+      space.setStart(el.firstChild, 0); space.setEnd(el.firstChild, 1);
+      return space.getBoundingClientRect().width > 0;
+    }), 'Desktop usage keeps a rendered leading space beside a full name box');
+    await paneTab('%3').hover();
+    await page.waitForFunction(() => getComputedStyle(document.querySelector('#agents .name > span')).transform !== 'none');
+    await page.waitForTimeout(1100);
+    await page.waitForResponse('**/api/panes*');
+    await page.waitForFunction(() => !refreshing);
+    assert.equal(await paneTab('%3').evaluate(el => el.style.getPropertyValue('--name-overflow')), overflowDistance, 'A poll preserves the hover scroll distance');
+    await paneTab('%3').click();
+    await page.mouse.move(0, 0);
+    assert(await paneTab('%3').evaluate(el => document.activeElement === el && !el.matches(':focus-visible')), 'A mouse click keeps focus without keyboard focus styling');
+    await page.waitForFunction(() => {
+      const transform = getComputedStyle(document.querySelector('#agents .name > span')).transform;
+      return transform === 'none' || new DOMMatrixReadOnly(transform).m41 === 0;
+    });
+    assert.equal(await paneTab('%3').locator('.name > span').evaluate(el => getComputedStyle(el).maxWidth), '100%', 'A mouse-focused name returns to its resting clip after leaving');
+    await paneTab('%2').focus();
+    await page.keyboard.press('Shift+Tab');
+    assert(await paneTab('%3').evaluate(el => el.matches(':focus-visible')), 'Keyboard focus shows the full name');
+    await page.waitForFunction(distance => {
+      const text = document.querySelector('#agents .name > span'), style = getComputedStyle(text);
+      return style.maxWidth === 'none' && new DOMMatrixReadOnly(style.transform).m41 <= -parseFloat(distance) + 1;
+    }, overflowDistance);
+    await page.emulateMedia({reducedMotion: 'reduce'});
+    assert.equal(await paneTab('%3').locator('.name > span').evaluate(el => getComputedStyle(el).transitionProperty), 'none', 'Reduced motion disables name transitions');
+    await page.keyboard.press('Tab');
+    await page.emulateMedia({reducedMotion: 'no-preference'});
+    roles.find(pane => pane.id === '%3').name = 'Boss';
+    await page.waitForFunction(() => document.querySelector('#agents .name').textContent === 'Boss');
+    assert.equal(await paneTab('%3').evaluate(el => el.style.getPropertyValue('--name-overflow')), '', 'Restored fitting names remove the scroll distance');
+    assert.equal(await page.locator('#usage').count(), 0, 'Usage appears only in agent tabs');
+    roles.find(pane => pane.id === '%5').usage.input = 999;
+    roles.find(pane => pane.id === '%3').usage = {input: 1000000, cacheRead: 0, cacheWrite: 0, output: 0};
+    roles.find(pane => pane.id === '%2').usage = null;
+    await page.waitForFunction(() => document.querySelector('#agents').textContent === 'Boss · 1.00MReviewerBuilder · 999');
+    assert.deepEqual(await agentTabs.allTextContents(), ['Boss · 1.00M', 'Reviewer', 'Builder · 999'], 'Null usage shows only the name; live totals keep decimal places');
+    roles.find(pane => pane.id === '%2').usage = {input: 1000, cacheRead: 0, cacheWrite: 0, output: 0};
+    await page.waitForFunction(() => document.querySelector('#agents').textContent === 'Boss · 1.00MReviewer · 1.0KBuilder · 999');
+    assert.deepEqual(await agentTabs.allTextContents(), ['Boss · 1.00M', 'Reviewer · 1.0K', 'Builder · 999']);
+    roles.find(pane => pane.id === '%3').usage.input = 999949;
+    await page.waitForFunction(() => document.querySelector('#agents button').textContent === 'Boss · 999.9K');
+    roles.find(pane => pane.id === '%3').usage.input = 999950;
+    await page.waitForFunction(() => document.querySelector('#agents button').textContent === 'Boss · 1.00M');
+    roles.find(pane => pane.id === '%3').usage.input = 1234567890;
+    await page.waitForFunction(() => document.querySelector('#agents button').textContent === 'Boss · 1.23B');
+    roles.find(pane => pane.id === '%3').usage.input = 999994999;
+    await page.waitForFunction(() => document.querySelector('#agents button').textContent === 'Boss · 999.99M');
+    roles.find(pane => pane.id === '%3').usage.input = 999995000;
+    await page.waitForFunction(() => document.querySelector('#agents button').textContent === 'Boss · 1.00B');
+    roles.find(pane => pane.id === '%3').usage.input = 999950;
+    await page.waitForFunction(() => document.querySelector('#agents button').textContent === 'Boss · 1.00M');
     assert.equal(await page.locator('.tab.unread').count(), 0);
     assert.equal(await page.locator('#project-path').textContent(), 'Folder: /work/alpha project');
     assert.equal(await card('%3').locator('.right-click').count(), 0);
     assert.equal(await page.locator('#connection').textContent(), '2 sessions connected with total 6 agents');
-    assert(await page.locator('#connection').evaluate(el => el.parentElement.matches('.session-row') && el === el.parentElement.lastElementChild));
+    assert(await page.locator('#connection').evaluate(el => el.parentElement.matches('.session-row') && el.nextElementSibling.id === 'version'));
     assert(await page.locator('#new-session').evaluate(el => {
       const gap = el.getBoundingClientRect().left - document.querySelector('#sessions .tab:last-child').getBoundingClientRect().right;
       return gap >= 0 && gap <= 16;
     }), 'Session + stays beside the last tab without overlap');
     const dismissStatus = page.locator('#dismiss-status');
-    await sessionTab('zeta').click();
+    assert.deepEqual(await sessionTab('zeta').evaluate(el => {
+      el.click();
+      return [...document.querySelectorAll('#agents button')].map(button => button.textContent);
+    }), ['Lead', 'Check', 'Build'], 'A session without usage shows names immediately');
     page.once('dialog', dialog => dialog.accept());
     await page.locator('#dismiss').click();
-    await page.waitForFunction(() => document.querySelector('#dismiss-status').textContent === 'peon-code: killing session zeta' && !document.querySelector('#dismiss').disabled);
+    await page.waitForFunction(() => document.querySelector('#dismiss-status').hidden && !document.querySelector('#dismiss').disabled);
+    assert(await page.locator('#dismiss').isEnabled(), 'Completed dismiss enables the button');
     await sessionTab('zeta').click();
-    assert(await dismissStatus.isVisible(), 'Same session keeps dismiss status');
-    await sessionTab('alpha').click();
+    assert(await dismissStatus.isHidden(), 'Completed dismiss hides success status');
+    assert.deepEqual(await sessionTab('alpha').evaluate(el => {
+      el.click();
+      return [...document.querySelectorAll('#agents button')].map(button => button.textContent);
+    }), ['Boss · 1.00M', 'Reviewer · 1.0K', 'Builder · 999'], 'Session switch restores usage in the click handler');
     assert(await dismissStatus.isHidden(), 'Another session hides dismiss status');
     await sessionTab('zeta').click();
     page.once('dialog', dialog => dialog.accept());
     await page.locator('#dismiss').click();
-    await page.waitForFunction(() => document.querySelector('#dismiss-status').textContent === 'peon-code: killing session zeta' && !document.querySelector('#dismiss').disabled);
+    await page.waitForFunction(() => document.querySelector('#dismiss-status').hidden && !document.querySelector('#dismiss').disabled);
     dismissedSession = 'zeta';
     await sessionTab('zeta').waitFor({state: 'detached'});
-    assert(await dismissStatus.isHidden(), 'Refresh hides completed dismiss status');
+    assert(await dismissStatus.isHidden(), 'Completed dismiss stays hidden after refresh');
     assert(await card('%3').isVisible());
     dismissedSession = null;
     await sessionTab('zeta').waitFor();
@@ -312,6 +426,7 @@ const assert = require('node:assert/strict');
     assert.deepEqual(await card('%5').locator('.keys button:visible').allTextContents(), ['Keys', 'Tab', ...await shortcuts.allTextContents()]);
     for (const key of ['Up', 'Down', 'Enter', 'Escape']) assert.equal(await card('%5').locator(`.keys button[data-key="${key}"]:visible`).count(), 1);
     assert(await card('%5').locator('.keys button[data-key]').evaluateAll(buttons => buttons.every(button => ['Tab', 'Up', 'Down', 'Enter', 'Escape', 'Backspace'].includes(button.dataset.key))));
+    assert(await card('%5').locator('.keys button[data-key]').evaluateAll(buttons => buttons.every(button => button.dataset.tip === 'Send ' + (button.dataset.key === 'Escape' ? 'Esc' : button.dataset.key) + ' to the agent')), 'Static and dynamic keys share hover help');
     const menuKeyCount = keyCount, menuMessageCount = sent.length;
     await card('%5').locator('.message-form textarea').fill(' \n'); await card('%5').locator('.message-form button').click();
     await card('%5').locator('.message-form textarea').fill(''); await card('%5').locator('.message-form textarea').press('Shift+Enter');
@@ -534,7 +649,7 @@ const assert = require('node:assert/strict');
     assert.deepEqual(createdButtons, [addedButton]);
     for (const pane of roles) {
       assert.equal(await promptButton(pane.id, addedButton.name).count(), 1);
-      assert.equal(await promptButton(pane.id, addedButton.name).getAttribute('title'), addedButton.description);
+      assert.equal(await promptButton(pane.id, addedButton.name).getAttribute('data-tip'), addedButton.description);
     }
     assert.equal(await card('%3').locator('.message-form textarea').inputValue(), 'Keep summary draft');
     assert.equal(await card('%3').locator('.state').textContent(), 'Live');
@@ -549,6 +664,9 @@ const assert = require('node:assert/strict');
     buttons.push(handAdded); buttons.sort((a, b) => a.name.localeCompare(b.name));
     await promptButton('%3', handAdded.name).waitFor();
     for (const pane of roles) assert.equal(await promptButton(pane.id, handAdded.name).count(), 1);
+    await promptButton('%3', handAdded.name).hover();
+    await tooltip.waitFor({state: 'visible'});
+    assert.equal(await tooltip.textContent(), handAdded.description);
     const feedbackBeforePollError = await card('%3').locator('.feedback').textContent();
     buttons.splice(buttons.indexOf(handAdded), 1);
     buttonError = 'Button list unavailable';
@@ -557,6 +675,7 @@ const assert = require('node:assert/strict');
     for (const pane of roles) assert.equal(await promptButton(pane.id, handAdded.name).count(), 1);
     buttonError = null;
     await promptButton('%3', handAdded.name).waitFor({state: 'detached'});
+    assert(await tooltip.isHidden(), 'Deleting the tooltip owner hides help');
     for (const pane of roles) assert.equal(await promptButton(pane.id, handAdded.name).count(), 0);
     assert.equal(await card('%3').locator('.feedback').textContent(), feedbackBeforePollError);
     for (const [name, value] of Object.entries(buttonDraft)) assert.equal(await buttonForm.locator('[name="' + name + '"]').inputValue(), value);
@@ -672,9 +791,12 @@ const assert = require('node:assert/strict');
     await page.screenshot({path: '/tmp/peon-code-web-desktop.png', fullPage: true});
     const fontOutput = card('%3').locator('.output');
     const fontSize = await fontOutput.evaluate(el => parseFloat(getComputedStyle(el).fontSize));
+    await page.locator('.session-row .font-larger').hover();
+    await tooltip.waitFor({state: 'visible'});
     const originalGrid = new URL((await page.waitForRequest('**/api/panes*')).url()).searchParams;
     const fontRequest = page.waitForRequest('**/api/panes*', {timeout: 800});
     await page.locator('.session-row .font-larger').click();
+    assert(await tooltip.isHidden(), 'A click hides help');
     revision['%8']++;
     assert.equal(await fontOutput.evaluate(el => parseFloat(getComputedStyle(el).fontSize)), fontSize + 1);
     assert(await page.locator('.output').evaluateAll((outputs, size) => outputs.every(el => parseFloat(getComputedStyle(el).fontSize) === size), fontSize + 1), 'All panes share the font size');
@@ -690,11 +812,29 @@ const assert = require('node:assert/strict');
     await page.locator('.brand').click(); await page.waitForSelector('.pane:not([hidden])');
     const desktopGrid = new URL((await page.waitForRequest('**/api/panes*')).url()).searchParams;
     const resizeRequest = page.waitForRequest('**/api/panes*', {timeout: 800});
-    await page.setViewportSize({width: 375, height: 812});
+    await page.setViewportSize({width: 390, height: 812});
     const mobileGrid = new URL((await resizeRequest).url()).searchParams;
     assert(Number(mobileGrid.get('cols')) > 0 && Number(mobileGrid.get('rows')) > 0);
     assert(mobileGrid.get('cols') !== desktopGrid.get('cols') || mobileGrid.get('rows') !== desktopGrid.get('rows'), 'Viewport resize requests new terminal dimensions');
     assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+    roles.find(pane => pane.id === '%3').name = longName;
+    await page.waitForFunction(name => document.querySelector('#agents .name').textContent === name, longName);
+    assert(await paneTab('%3').evaluate(el => {
+      const figure = el.querySelector('.figure'), rect = figure.getBoundingClientRect(), tab = el.getBoundingClientRect();
+      const space = document.createRange();
+      space.setStart(figure.firstChild, 0); space.setEnd(figure.firstChild, 1);
+      return space.getBoundingClientRect().width > 0 && parseFloat(el.style.getPropertyValue('--name-overflow')) > 0 && figure.scrollWidth === figure.clientWidth && rect.left >= tab.left && rect.right <= tab.right && rect.right <= innerWidth;
+    }), 'Mobile long names keep a rendered leading space and the full usage figure visible');
+    roles.find(pane => pane.id === '%3').name = 'Boss';
+    await page.waitForFunction(() => document.querySelector('#agents .name').textContent === 'Boss');
+    await promptButton('%3', 'Push all').hover();
+    await tooltip.waitFor({state: 'visible'});
+    assert(await tooltip.evaluate(el => {
+      const rect = el.getBoundingClientRect();
+      return rect.left >= 0 && rect.right <= innerWidth && rect.top >= 0 && rect.bottom <= innerHeight && document.documentElement.scrollWidth <= innerWidth;
+    }), 'Long hover help stays inside the mobile viewport');
+    await page.mouse.move(0, 0);
+    await page.evaluate(() => scrollTo(0, 0));
     assert.deepEqual(await page.evaluate(() => {
       const connection = document.querySelector('#connection'), previous = connection.textContent;
       connection.textContent = 'Connection failed: ' + 'Error details '.repeat(80);
@@ -727,7 +867,8 @@ const assert = require('node:assert/strict');
     assert(await card('%3').locator('.keys button').evaluateAll(buttons => buttons.every(button => button.disabled)));
     assert.equal(await card('%3').locator('.keys-toggle').getAttribute('aria-expanded'), 'true');
     assert.deepEqual(await card('%3').locator('.keys button:visible').allTextContents(), ['Keys', 'Up', 'Down', 'Enter', 'Esc', 'Tab: Hint']);
-    assert.equal(await paneTab('%3').textContent(), 'Boss · manager · closed');
+    assert.equal(await paneTab('%3').textContent(), 'Boss · 1.00M · closed');
+    assert.equal(await paneTab('%3').locator('.figure').textContent(), ' · 1.00M · closed');
     await card('%3').locator('.message-form textarea').fill('');
     await card('%3').locator('.output').click({position: {x: 24, y: 24}});
     await page.waitForFunction(() => getSelection().isCollapsed);

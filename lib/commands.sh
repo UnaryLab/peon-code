@@ -1,5 +1,21 @@
 # shellcheck shell=bash
 
+cmd_statusline() {
+  local input record used resets
+  # The sentinel keeps trailing newlines through command substitution.
+  input=$(cat; printf '.') || input=""
+  input=${input%.}
+  record=$(printf '%s' "$input" | tr '\n' ' ' | sed -n 's/.*"seven_day"[[:space:]]*:[[:space:]]*\({[^}]*}\).*/\1/p') || record=""
+  used=$(printf '%s' "$record" | sed -n 's/.*"used_percentage"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\(\.[0-9][0-9]*\)\{0,1\}\)[[:space:]]*[,}].*/\1/p') || used=""
+  resets=$(printf '%s' "$record" | sed -n 's/.*"resets_at"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\)[[:space:]]*[,}].*/\1/p') || resets=""
+  if [ -n "${TMUX_PANE:-}" ] && [ -n "$used" ] && [ -n "$resets" ]; then
+    used=$(LC_ALL=C awk -v used="$used" 'BEGIN { printf "%.1f", (used + 0 > 100 ? 100 : used) }') || used=""
+    [ -z "$used" ] || tmux set -pt "$TMUX_PANE" @peon_weekly "$used $resets" 2>/dev/null || true
+  fi
+  [ $# -gt 0 ] || return 0
+  sh -c "$1" < <(printf '%s' "$input")
+}
+
 # Paste text into agent panes, one at a time, with the Enter after each paste
 # held back until that pane's box shows the message. A pane in copy mode, on a
 # dialog or a menu, or whose box holds typed text is skipped before the paste,
@@ -8,6 +24,7 @@
 # took no message ends nonzero.
 cmd_msg() {
   local target=${1:-} text=${2:-} session panes id name pair sent=0 unsent=0
+  # shellcheck disable=SC2015 # Both required arguments must be present.
   [ -n "$target" ] && [ -n "$text" ] || die "usage: peon-code.sh msg <name|all> 'text' [<session>]"
   session=$(session_name "${3:-}")
   tmux has-session -t "=$session" 2>/dev/null || die "no session $session"
@@ -204,6 +221,7 @@ key_locked() {
 
 send_locked() {
   local pane=${1:-} text=${2:-} append=${3:-0} want box i rc reason cursor end_cursor last key
+  # shellcheck disable=SC2015 # Both required arguments must be present.
   [ -n "$pane" ] && [ -n "$text" ] || die "usage: peon-code.sh send [--append] <pane-id> 'text'|-"
   pane_identity_matches "$pane" || die "no message sent: agent changed"
   if [ "$text" = - ]; then

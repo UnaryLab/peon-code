@@ -1,6 +1,8 @@
 """Read agent identities and styled terminal snapshots from tmux."""
+import math
 import re
 import subprocess
+import time
 from pathlib import Path
 
 
@@ -11,15 +13,15 @@ def tmux(*args):
 
 def panes(session=None):
     try:
-        rows = tmux("list-panes", "-a", "-F", "#{session_name}\t#{pane_id}\t#{@peon_name}\t#{@peon_code}\t#{pane_current_command}\t#{@peon_role_type}\t#{@peon_brief}\t#{pid}:#{session_id}:#{pane_pid}")
+        rows = tmux("list-panes", "-a", "-F", "#{session_name}\t#{pane_id}\t#{@peon_name}\t#{@peon_code}\t#{pane_current_command}\t#{@peon_role_type}\t#{@peon_brief}\t#{pid}:#{session_id}:#{pane_pid}\t#{@peon_weekly}\t#{@peon_usage}\t#{@peon_bin}")
     except subprocess.CalledProcessError:
         return []
     result = []
     for row in rows.splitlines():
         parts = row.split("\t")
-        if len(parts) != 8:
+        if len(parts) != 11:
             continue
-        team, pane, name, marked, command, role, brief, identity = parts
+        team, pane, name, marked, command, role, brief, identity, weekly_text, usage_text, cli = parts
         if marked != "1" or not name or (session and team != session):
             continue
         if role not in ("manager", "reviewer", "worker") and brief:
@@ -34,7 +36,24 @@ def panes(session=None):
         except subprocess.CalledProcessError:
             continue  # The pane may close between listing it and reading metadata.
         project = project[:-1] if project.endswith("\n") else project
-        result.append(dict(session=team, id=pane, identity=identity, name=name, command=command, role=role, projectDir=project))
+        weekly = None
+        try:
+            used, resets = weekly_text.split()
+            used = float(used)
+            if math.isfinite(used) and 0 <= used <= 100 and re.fullmatch(r"[0-9]+", resets):
+                weekly = dict(usedPercent=used, resetsAt=int(resets))
+                if weekly["resetsAt"] < time.time():
+                    weekly["usedPercent"] = 0.0
+        except ValueError:
+            pass
+        usage = None
+        counts = usage_text.split()
+        if len(counts) == 4 and all(re.fullmatch(r"[0-9]+", count) for count in counts):
+            try:
+                usage = dict(zip(("input", "cacheRead", "cacheWrite", "output"), map(int, counts)))
+            except ValueError:
+                pass
+        result.append(dict(session=team, id=pane, identity=identity, name=name, command=command, cli=cli, role=role, projectDir=project, weekly=weekly, usage=usage))
     for team in {pane["session"] for pane in result}:
         group = sorted((pane for pane in result if pane["session"] == team), key=lambda pane: int(pane["id"][1:]))
         for index, pane in enumerate(group):

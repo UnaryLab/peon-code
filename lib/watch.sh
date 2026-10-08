@@ -3,11 +3,14 @@
 # shellcheck source=lib/cli.sh
 declare -F cli_call >/dev/null || source "$(dirname -- "${BASH_SOURCE[0]}")/cli.sh"
 
-# Context watcher: once a minute, read each agent pane's context size from
-# the usage record its CLI writes to the transcript, and run compact on a pane
-# that has reached the threshold. The transcript is the one source every CLI
-# shares, so no pane screen is read. Only claude and codex are known to log
-# usage; a pane of another CLI is named once as unwatched.
+# Context watcher: scan every five seconds, read changed transcripts at most
+# once a minute, and run compact on a pane that has reached the threshold.
+# Context size comes from the usage record its CLI writes to the transcript.
+# The transcript is the one source every CLI shares, so no pane screen is
+# read. Only claude and codex are known to log usage; a pane of another CLI is
+# named once as unwatched.
+# Each full read stores nonempty Codex weekly limits in @peon_weekly and
+# valid token totals in @peon_usage for the browser.
 
 # The context size the pane's last turn was answered against, from the last
 # usage record in its transcript. Empty when the CLI logs none, or the
@@ -31,10 +34,11 @@ watch_note() {
 # peon-code watch [<session>] [<tokens>]: loop until the session is gone.
 # A pane fires once per crossing: after a compact it is disarmed until its
 # reading drops below the threshold again, so a floor above the threshold
-# (a huge system prompt) is reported once instead of compacted every minute.
+# (a huge system prompt) is reported once rather than on each changed reading.
 cmd_watch() {
-  local session threshold panes id name bin file tokens owner pid_file
-  local unwatched="" disarmed="" files=""
+  local session threshold panes id name bin file tokens weekly usage owner pid_file
+  local now size last_size last_read last_lookup min=${PEON_WATCH_MIN:-60}
+  local unwatched="" disarmed="" files="" reads="" lookups=""
   session=$(session_name "${1:-}")
   threshold=${2:-250000}
   [[ $threshold =~ ^[0-9]+$ ]] || die "watch takes a number of tokens, got: $threshold"
@@ -60,15 +64,37 @@ cmd_watch() {
         esac
         continue
       fi
-      # The transcript appears after the first turn; look it up until found,
-      # then keep the path. A pane id never repeats within a session.
+      # Retry a missing transcript only at the read interval, then keep its
+      # path. A pane id never repeats within a session.
       file=$(printf '%s\n' "$files" | sed -n "s|^$id ||p")
       if [ -z "$file" ]; then
+        now=$(date +%s)
+        last_lookup=$(printf '%s\n' "$lookups" | sed -n "s|^$id ||p")
+        if [ -n "$last_lookup" ] && [ "$((now - last_lookup))" -lt "$min" ]; then
+          continue
+        fi
         file=$(last_thread_file "agent $name of peon-code session $session," "$bin") || file=""
+        lookups=$(printf '%s\n' "$lookups" | sed "/^$id /d")
+        lookups="$lookups"$'\n'"$id $now"
         [ -n "$file" ] || continue
         files="$files"$'\n'"$id $file"
       fi
+      size=$(wc -c 2>/dev/null <"$file") || continue
+      now=$(date +%s)
+      read -r last_size last_read <<<"$(printf '%s\n' "$reads" | sed -n "s|^$id ||p")"
+      if [ -n "$last_read" ] && { [ "$size" -eq "$last_size" ] || [ "$((now - last_read))" -lt "$min" ]; }; then
+        continue
+      fi
+      weekly=$(cli_call "$bin" weekly_limit "$file") || weekly=""
+      [ -z "$weekly" ] || tmux set -pt "$id" @peon_weekly "$weekly" 2>/dev/null || true
+      usage=$(cli_call "$bin" usage_tokens "$file") || usage=""
+      if [[ $usage =~ ^[0-9]+\ [0-9]+\ [0-9]+\ [0-9]+$ ]]; then
+        tmux set -pt "$id" @peon_usage "$usage" 2>/dev/null || true
+      fi
       tokens=$(context_tokens "$bin" "$file")
+      now=$(date +%s)
+      reads=$(printf '%s\n' "$reads" | sed "/^$id /d")
+      reads="$reads"$'\n'"$id $size $now"
       [ -n "$tokens" ] || continue
       if [ "$tokens" -lt "$threshold" ]; then
         disarmed=${disarmed// $id / }
@@ -83,7 +109,7 @@ cmd_watch() {
       # the watcher's own pane for a target.
       TMUX_PANE='' "$SCRIPT_DIR/peon-code.sh" compact "$name" "$session" || true
     done <<<"$panes"
-    sleep "${PEON_WATCH_TICK:-60}"
+    sleep "${PEON_WATCH_TICK:-5}"
   done
   if [ "$(cat "$pid_file" 2>/dev/null)" = "$$" ]; then
     rm -f "$pid_file"

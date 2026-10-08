@@ -20,6 +20,10 @@ from types import SimpleNamespace
 from urllib.parse import parse_qs, urlsplit
 
 ROOT = Path(__file__).resolve().parent.parent
+try:
+    VERSION = (ROOT / "VERSION").read_text(encoding="utf-8").strip()
+except OSError:
+    VERSION = ""
 BUTTONS_DIR = ROOT / "buttons"
 ASSETS = {"/": ("index.html", "text/html"), "/app.js": ("app.js", "text/javascript"),
           "/style.css": ("style.css", "text/css"),
@@ -180,7 +184,7 @@ class Handler(BaseHTTPRequestHandler):
                             result.append(captured)
                     except subprocess.CalledProcessError:
                         continue
-                self.respond(200, {"panes": result, "initial": self.server.initial})
+                self.respond(200, {"panes": result, "initial": self.server.initial, "version": VERSION})
             except (OSError, subprocess.TimeoutExpired) as error:
                 self.respond(503, {"error": str(error)})
         else:
