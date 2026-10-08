@@ -13,9 +13,6 @@
   <header class="top">
     <a class="brand" href="/">peon<span>•</span>code</a>
     <span class="tag">Agent workspace</span>
-    <label class="right-click"><input id="right-click" type="checkbox" checked> Right-click to explain</label>
-    <span id="connection" role="status">Connecting…</span>
-    <button id="new-session" type="button" aria-expanded="false" aria-controls="new-session-form">New session</button>
     <nav class="top-links" aria-label="Project links">
       <a href="https://github.com/UnaryLab/peon-code" target="_blank" rel="noopener noreferrer">GitHub</a>
       <a href="/LICENSE" target="_blank" rel="noopener">MIT License</a>
@@ -31,7 +28,11 @@
       <button type="button" class="cancel">Cancel</button>
     </form>
     <p id="new-session-status" class="feedback" role="status" hidden></p>
-    <nav id="sessions" aria-label="Sessions"></nav>
+    <div class="session-row">
+      <nav id="sessions" aria-label="Sessions"></nav>
+      <button id="new-session" type="button" aria-label="New session" aria-expanded="false" aria-controls="new-session-form">+</button>
+      <span id="connection" role="status">Connecting…</span>
+    </div>
     <p id="project-path"></p>
     <p id="empty" hidden>No agent panes yet. Start a team with <code>peon-code</code>, then return here.</p>
     <div class="workspace">

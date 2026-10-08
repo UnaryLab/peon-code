@@ -127,7 +127,7 @@ function setSelection(card, text) {
     button.disabled = (card.busy || card.closed) && !(card === backspaceCard && button.dataset.key === 'Backspace');
     if (button.dataset.key === 'Backspace') button.setAttribute('aria-disabled', String(card.busy || card.closed));
   }
-  card.el.querySelector('.selection-note').textContent = text ? 'Updates paused while selected' : '';
+  card.el.querySelector('.selection-note').textContent = text ? 'Updates paused while selected, right-click to explain' : '';
   card.el.querySelector('.state').textContent = card.closed ? 'Closed' : text ? 'Paused' : 'Live';
 }
 async function send(card, action, text, append = true) {
@@ -280,7 +280,7 @@ function createCard(pane) {
     if (typeof key === 'string') { event.preventDefault(); send(card, 'keys', key); }
   };
   el.querySelector('.output').oncontextmenu = event => {
-    if (document.querySelector('#right-click').checked && card.selected.trim() && !card.busy && !card.closed) {
+    if (card.selected.trim() && !card.busy && !card.closed) {
       event.preventDefault(); send(card, 'explain', card.selected);
     }
   };
@@ -357,7 +357,8 @@ async function refresh() {
     }
     const parameters = query.toString();
     const {panes, initial} = await api("/api/panes" + (parameters ? '?' + parameters : ''));
-    connection.textContent = panes.length + " agent" + (panes.length === 1 ? "" : "s") + " connected";
+    const sessions = new Set(panes.map(pane => pane.session)).size;
+    connection.textContent = sessions + " session" + (sessions === 1 ? "" : "s") + " connected with total " + panes.length + " agent" + (panes.length === 1 ? "" : "s");
     document.querySelector("#empty").hidden = !!panes.length;
     const keys = new Set(panes.map(paneKey));
     for (const pane of panes) {
