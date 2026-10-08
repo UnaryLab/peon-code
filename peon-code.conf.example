@@ -18,8 +18,9 @@
 
 compact-at 250000
 
+# codex needs --sandbox danger-full-access to edit files outside its sandbox.
 # name   command                                                     role
 *boss    claude --model claude-fable-5 --effort high                 manager
 archie   claude --model claude-opus-5 --effort medium                reviewer
-impl     codex --model gpt-5.6-luna -c model_reasoning_effort=max    implementer
+impl     codex --model gpt-5.6-luna -c model_reasoning_effort=max --sandbox danger-full-access    implementer
 scribe   claude --model claude-opus-5 --effort medium                writer

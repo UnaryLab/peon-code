@@ -17,9 +17,32 @@ let actionButtons = [];
 let backspaceTimer;
 let backspaceCard;
 let refreshTimer;
+let resizeTimer;
 let refreshing = false;
 let refreshRequested = false;
 let openedSession = null;
+let lastCols;
+let lastRows;
+let resizedAt = -Infinity;
+let fontSize = 13;
+try {
+  const saved = parseInt(localStorage.getItem('peon-font'), 10);
+  if (Number.isFinite(saved)) fontSize = Math.max(8, Math.min(32, saved));
+} catch {}
+document.documentElement.style.setProperty('--output-font', fontSize + 'px');
+for (const [selector, step] of [['.font-smaller', -1], ['.font-larger', 1]]) {
+  document.querySelector(selector).onclick = () => {
+    fontSize = Math.max(8, Math.min(32, fontSize + step));
+    document.documentElement.style.setProperty('--output-font', fontSize + 'px');
+    try { localStorage.setItem('peon-font', String(fontSize)); } catch {}
+    scheduleRefresh();
+  };
+}
+function scheduleRefresh() {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(refresh, 150);
+}
+window.addEventListener('resize', scheduleRefresh);
 function stopBackspaceRepeat() {
   clearTimeout(backspaceTimer);
   const card = backspaceCard;
@@ -78,7 +101,8 @@ newSessionForm.onsubmit = async event => {
     }
     const result = await api('/api/open', data);
     openedSession = result.session;
-    newSessionStatus.textContent = 'Opened session ' + result.session;
+    newSessionStatus.hidden = true;
+    newSessionStatus.textContent = '';
     newSessionForm.reset();
     closeNewSession();
     await refresh();
@@ -357,6 +381,11 @@ async function refresh() {
     }
     const parameters = query.toString();
     const {panes, initial} = await api("/api/panes" + (parameters ? '?' + parameters : ''));
+    const cols = query.get('cols'), rows = query.get('rows');
+    if (cols && rows && (cols !== lastCols || rows !== lastRows)) {
+      resizedAt = performance.now();
+      lastCols = cols; lastRows = rows;
+    }
     const sessions = new Set(panes.map(pane => pane.session)).size;
     connection.textContent = sessions + " session" + (sessions === 1 ? "" : "s") + " connected with total " + panes.length + " agent" + (panes.length === 1 ? "" : "s");
     document.querySelector("#empty").hidden = !!panes.length;
@@ -364,7 +393,8 @@ async function refresh() {
     for (const pane of panes) {
       const card = cards.get(paneKey(pane)) || createCard(pane);
       if (card.closed) { card.closed = false; setSelection(card, card.selected); feedback(card, 'Agent reconnected'); }
-      if (pane.role === 'manager' && card.latest && card.latest.output !== pane.output && card.key !== currentPane()) card.unread = true;
+      // Redraws after 2 seconds may flag unread; raise the window if seen.
+      if (pane.role === 'manager' && card.latest && card.latest.output !== pane.output && card.key !== currentPane() && performance.now() - resizedAt > 2000) card.unread = true;
       card.needsAnswer = pane.menu;
       const boxText = inputBox(pane), now = performance.now();
       if (!boxText) card.boxSince = 0;
