@@ -1,5 +1,8 @@
 # shellcheck shell=bash
 
+# shellcheck source=lib/cli.sh
+declare -F cli_call >/dev/null || source "$(dirname -- "${BASH_SOURCE[0]}")/cli.sh"
+
 # Paste stdin into a pane. Bracketed paste keeps a multi-line block in the
 # input line instead of submitting it early; long lines sent with send-keys
 # are cut at the tty line limit. Every control byte but tab and newline is
@@ -89,39 +92,42 @@ plain_text() {
 # Use the cursor row's marker, else the last marker above it. Confirmation
 # footers count within three rows below the cursor. Invalid cursors return 2.
 pane_has_menu() {
-  printf '%s' "$1" | LC_ALL=C awk -v cy="${2:-}" '
-    BEGIN { m = "\342\235\257"; m2 = "\342\200\272" }
+  printf '%s' "$1" | LC_ALL=C awk -v cy="${2:-}" -v markers="$CLI_PROMPT_MARKERS" '
+    BEGIN { marker = "(" markers ")" }
     { rows[NR] = $0 }
-    NR <= cy + 1 && (index($0, m) || index($0, m2)) { anchor = $0; ar = NR }
+    NR <= cy + 1 && markers != "" && $0 ~ marker { anchor = $0; ar = NR }
     NR >= cy + 2 && NR <= cy + 4 && index($0, "Enter to confirm") { menu = 1 }
     function letter_choice(s) {
-      sub("^ *(" m "|" m2 ") ", "  ", s)
-      return s ~ /^  .+ [(][abcdefghijklmnopqrstuvwxyz][)][ \t]*$/ && !index(s, m) && !index(s, m2)
+      sub("^ *" marker " ", "  ", s)
+      return s ~ /^  .+ [(][abcdefghijklmnopqrstuvwxyz][)][ \t]*$/ && s !~ marker
     }
     END {
       if (cy !~ /^[0-9]+$/ || cy >= NR) exit 2
-      if (anchor ~ ("^ *(" m "|" m2 ") .+ [(][yan][)][ \t]*$") && letter_choice(anchor)) {
+      if (anchor ~ ("^ *" marker " .+ [(][yan][)][ \t]*$") && letter_choice(anchor)) {
         first = ar; last = ar
         while (first > 1 && letter_choice(rows[first - 1])) first--
         while (last < NR && letter_choice(rows[last + 1])) last++
         if (last > first) exit 0
       }
-      exit (menu || anchor ~ ("^ *" m " [0-9][.]") || anchor ~ ("^ *" m2 " [0-9][.]")) ? 0 : 1
+      exit (menu || (markers != "" && anchor ~ ("^ *" marker " [0-9][.]"))) ? 0 : 1
     }'
 }
 
 # Type something. is Claude's label. Update it if Claude changes the label.
 pane_free_text_number() {
-  printf '%s\n' "$1" | LC_ALL=C awk '
-    BEGIN { m = "\342\235\257"; m2 = "\342\200\272" }
+  printf '%s\n' "$1" | LC_ALL=C awk -v markers="$CLI_PROMPT_MARKERS" '
+    BEGIN { count = split(markers, marks, "[|]") }
     {
-      rows[NR] = $0; p = index($0, m); q = index($0, m2)
-      if (!p || (q && q < p)) p = q
-      if (p) { mr = NR; mp = p }
+      rows[NR] = $0; p = 0
+      for (i = 1; i <= count; i++) {
+        q = index($0, marks[i])
+        if (q && (!p || q < p)) { p = q; ml = length(marks[i]) }
+      }
+      if (p) { mr = NR; mp = p; marker_length = ml }
     }
     END {
       if (!mr) exit 1
-      s = substr(rows[mr], mp + 3)
+      s = substr(rows[mr], mp + marker_length)
       if (s !~ /^[ \t]*[0-9]+\.[ \t]+/) exit 1
       n = s; sub(/^[ \t]*/, "", n); sub(/\..*/, "", n)
       sub(/^[ \t]*[0-9]+\.[ \t]*/, "", s); sub(/[ \t]*$/, "", s)
@@ -159,9 +165,8 @@ pane_box_ready() {
 # draws hint text, which is not typed text. The prompt marker is kept even
 # inside such a span, so a marker drawn in a hint style is still found.
 strip_styles() {
-  LC_ALL=C awk -v hint="$1" '
-    # Prompt markers: claude draws U+276F, codex U+203A; both are 3 bytes.
-    BEGIN { m = "\342\235\257"; m2 = "\342\200\272"; csi = "\033["; osc = "\033]"; st = "\033\\" }
+  LC_ALL=C awk -v hint="$1" -v markers="$CLI_PROMPT_MARKERS" '
+    BEGIN { count = split(markers, marks, "[|]"); csi = "\033["; osc = "\033]"; st = "\033\\" }
     {
       line = drop_osc($0); out = ""; dim = 0; gray = 0
       while ((p = index(line, csi)) > 0) {
@@ -190,17 +195,19 @@ strip_styles() {
       return r s
     }
     function span(s, styled) { return (hint && styled) ? blank(s) : s }
-    function markpos(s,   p, q) {
-      p = index(s, m); q = index(s, m2)
-      if (p == 0) return q
-      if (q == 0 || p < q) return p
-      return q
+    function markpos(s,   p, q, i) {
+      p = 0
+      for (i = 1; i <= count; i++) {
+        q = index(s, marks[i])
+        if (q && (!p || q < p)) { p = q; ml = length(marks[i]) }
+      }
+      return p
     }
     function blank(s,   r, p) {
       r = ""
       while ((p = markpos(s)) > 0) {
-        r = r spaces(p - 1) substr(s, p, 3)
-        s = substr(s, p + 3)
+        r = r spaces(p - 1) substr(s, p, ml)
+        s = substr(s, p + ml)
       }
       return r spaces(length(s))
     }
@@ -264,14 +271,15 @@ pane_box_text() {
   if [ -z "$free" ] && [ "$rc" -eq 0 ]; then
     return 1
   fi
-  box=$(printf '%s\n' "$cap" | strip_styles 1 | LC_ALL=C awk -v cy="$cy" -v free="$free" '
-    # Prompt markers: claude draws U+276F, codex U+203A; both are 3 bytes.
-    BEGIN { m = "\342\235\257"; m2 = "\342\200\272" }
-    function markpos(s,   p, q) {
-      p = index(s, m); q = index(s, m2)
-      if (p == 0) return q
-      if (q == 0 || p < q) return p
-      return q
+  box=$(printf '%s\n' "$cap" | strip_styles 1 | LC_ALL=C awk -v cy="$cy" -v free="$free" -v markers="$CLI_PROMPT_MARKERS" '
+    BEGIN { count = split(markers, marks, "[|]") }
+    function markpos(s,   p, q, i) {
+      p = 0
+      for (i = 1; i <= count; i++) {
+        q = index(s, marks[i])
+        if (q && (!p || q < p)) { p = q; ml = length(marks[i]) }
+      }
+      return p
     }
     { rows[NR] = $0; if (NR <= cy + 1 && markpos($0) > 0) mr = NR }
     END {
@@ -279,7 +287,8 @@ pane_box_text() {
       for (r = mr; r <= cy + 1; r++) {
         s = rows[r]
         if (r == mr) {
-          s = substr(s, markpos(s) + 3)
+          p = markpos(s)
+          s = substr(s, p + ml)
           if (free != "") {
             sub(/^[ \t]*[0-9]+\.[ \t]*/, "", s)
             if (s ~ /^Type something\.[ \t]*$/) s = ""
@@ -296,11 +305,11 @@ pane_box_text() {
 # text: claude draws "[Pasted text #2 +15 lines]", codex "[Pasted Content
 # 1234 chars]", copilot "[Paste #2 - 15 lines]", grok "[Pasted: 5 lines]". The
 # box is checked empty right before the paste, so a box holding exactly one
-# placeholder holds the pasted message. Add other CLIs' forms here as they show up.
+# placeholder holds the pasted message. Providers define their known forms.
 box_is_paste_placeholder() {
-  local claude='^\[Pasted text #[0-9]+( \+[0-9]+ lines)?\]$'
-  local codex='^\[Pasted Content [0-9]+ chars\]$'
-  local copilot='^\[Paste #[0-9]+( - [0-9]+ lines)?\]$'
-  local grok='^\[Pasted: [0-9]+ lines?\]$'
-  [[ $1 =~ $claude ]] || [[ $1 =~ $codex ]] || [[ $1 =~ $copilot ]] || [[ $1 =~ $grok ]]
+  local pattern
+  for pattern in ${CLI_PASTE_PLACEHOLDERS[@]+"${CLI_PASTE_PLACEHOLDERS[@]}"}; do
+    [[ $1 =~ $pattern ]] && return 0
+  done
+  return 1
 }

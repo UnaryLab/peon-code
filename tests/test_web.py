@@ -3,11 +3,13 @@ import contextlib
 import errno
 import importlib.util
 import io
+from html import unescape
 import json
 import os
 import pty
 import signal
 import subprocess
+import shutil
 import sys
 import threading
 import tempfile
@@ -75,6 +77,128 @@ class WebTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertIn("日本語", json.loads(body)["panes"][0]["output"])
 
+    def test_browser_size_stacks_detached_panes_and_skips_matching_windows(self):
+        group = [dict(id="%" + str(index), session="team") for index in range(4)]
+        for size, expected in (("80x24\n", 5), ("120x144\n", 3)):
+            outcomes = ["", "%0\n%1\n%2\n%3\n", size, "", ""]
+            with self.subTest(size=size), patch.object(web, "panes", return_value=group), patch.object(web, "tmux", side_effect=outcomes) as tmux, patch.object(web, "snapshot", side_effect=lambda pane: pane):
+                status, body = self.request("GET", "/api/panes?cols=120&rows=35")
+            self.assertEqual(status, 200)
+            self.assertEqual(json.loads(body)["panes"], group)
+            self.assertEqual(tmux.call_count, expected)
+            self.assertEqual(tmux.call_args_list[0].args, ("list-clients", "-t", "=team"))
+            if expected >= 3:
+                self.assertEqual(tmux.call_args_list[1].args, ("list-panes", "-t", "team:agents"))
+                self.assertEqual(tmux.call_args_list[2].args, ("display-message", "-p", "-t", "team:agents", "#{window_width}x#{window_height}"))
+            if expected == 5:
+                self.assertEqual(tmux.call_args_list[3].args, ("resize-window", "-t", "team:agents", "-x", "120", "-y", "144"))
+                self.assertEqual(tmux.call_args_list[4].args, ("select-layout", "-t", "team:agents", "even-vertical"))
+
+    def test_browser_size_attached_client_releases_manual_size_only_once(self):
+        for mode, expected in (("manual\n", 4), ("latest\n", 2)):
+            with self.subTest(mode=mode), patch.object(web, "tmux", side_effect=["client\n", mode, "", ""]) as tmux, patch.object(web, "snapshot", side_effect=lambda pane: pane):
+                self.assertEqual(self.request("GET", "/api/panes?cols=120&rows=35")[0], 200)
+            self.assertEqual(tmux.call_count, expected)
+            self.assertEqual(tmux.call_args_list[1].args, ("show-options", "-wv", "-t", "team:agents", "window-size"))
+            if expected == 4:
+                self.assertEqual(tmux.call_args_list[2].args, ("set", "-w", "-t", "team:agents", "-u", "window-size"))
+                self.assertEqual(tmux.call_args_list[3].args, ("select-layout", "-t", "team:agents", "main-vertical"))
+
+    def test_browser_size_validation_and_poll_without_dimensions(self):
+        for query in ("cols=10&rows=35", "cols=120&rows=abc", "cols=501&rows=35", "cols=120&rows=301", "cols=120&rows=4", "cols=120", "rows=35", "cols=&rows=35"):
+            with self.subTest(query=query), patch.object(web, "tmux") as tmux:
+                status, body = self.request("GET", "/api/panes?" + query)
+            self.assertEqual(status, 400)
+            self.assertIn("error", json.loads(body))
+            tmux.assert_not_called()
+        with patch.object(web, "tmux") as tmux, patch.object(web, "snapshot", side_effect=lambda pane: pane):
+            self.assertEqual(self.request("GET", "/api/panes")[0], 200)
+        tmux.assert_not_called()
+
+    def test_browser_size_tmux_failures_leave_poll_available(self):
+        group = [dict(id="%0", session="team"), dict(id="%1", session="other")]
+        for index, failure in enumerate((subprocess.CalledProcessError(1, "tmux"), subprocess.TimeoutExpired("tmux", 5), OSError("tmux unavailable"))):
+            with self.subTest(failure=failure), patch.object(web, "panes", return_value=group), patch.object(web, "tmux", side_effect=["", "%1\n", "80x24\n", failure, "client\n", "latest\n"]) as tmux, patch.object(web, "snapshot", side_effect=lambda pane: pane), contextlib.redirect_stderr(io.StringIO()) as error:
+                status, body = self.request("GET", "/api/panes?cols=120&rows=35")
+            self.assertEqual(status, 200)
+            self.assertEqual(json.loads(body)["panes"], group)
+            self.assertEqual(tmux.call_count, 6)
+            self.assertEqual(len(error.getvalue().splitlines()), int(index == 0))
+        self.assertEqual(self.server.resize_errors, {"other"})
+
+    def test_browser_size_caps_total_window_height(self):
+        with patch.object(web, "tmux", side_effect=["", "%0\n" * 40, "80x24\n", "", ""]) as tmux, patch.object(web, "snapshot", side_effect=lambda pane: pane):
+            self.assertEqual(self.request("GET", "/api/panes?cols=120&rows=300")[0], 200)
+        self.assertEqual(tmux.call_args_list[3].args, ("resize-window", "-t", "team:agents", "-x", "120", "-y", "10000"))
+
+    def test_real_browser_measurement_uses_output_line_height(self):
+        chrome = shutil.which("google-chrome") or shutil.which("chromium")
+        if not chrome:
+            self.skipTest("Chrome or Chromium is required for browser measurement")
+        source = (ROOT / "web/app.js").read_text()
+        span = source[source.index("const cellMeasure ="):source.index("let dragging =")]
+        measure = source[source.index("async function refresh() {"):source.index('    const {panes, initial} = await api("/api/panes"')]
+        script = '''const output = document.querySelector('.output');
+const cards = new Map([['active', {id: '%2', lines: 1000, el: {hidden: false, querySelector: () => output}}]]);
+let refreshTimer, refreshing = false, refreshRequested = false;
+function currentPane() {return 'active';}
+''' + span + measure + '''return parameters;} catch (error) {throw error;}}
+refresh().then(parameters => {document.querySelector('#result').textContent = JSON.stringify({parameters, height: cellMeasure.getBoundingClientRect().height, lineHeight: parseFloat(getComputedStyle(output).lineHeight)});});'''
+        with tempfile.TemporaryDirectory() as directory:
+            html = Path(directory) / "measure.html"
+            html.write_text('<!doctype html><style>' + (ROOT / "web/style.css").read_text() + '</style><pre class="output" style="width:640px;height:416px;flex:none;box-sizing:content-box"></pre><pre id="result"></pre><script>' + script + '</script>')
+            process = subprocess.Popen([chrome, "--headless", "--no-sandbox", "--disable-gpu", "--dump-dom", "--user-data-dir=" + str(Path(directory) / "profile"), html.as_uri()], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
+            try:
+                stdout, stderr = process.communicate(timeout=20)
+            finally:
+                if process.poll() is None:
+                    os.killpg(process.pid, signal.SIGKILL)
+                    process.communicate()
+            self.assertEqual(process.returncode, 0, stderr)
+            result = json.loads(unescape(stdout.split('<pre id="result">', 1)[1].split('</pre>', 1)[0]))
+            self.assertAlmostEqual(result["lineHeight"], 20.8, delta=0.02)
+            self.assertAlmostEqual(result["height"], result["lineHeight"], delta=0.02)
+            self.assertIn("rows=20", result["parameters"].split("&"))
+
+    def test_real_tmux_browser_size_gives_each_pane_exact_content_dimensions(self):
+        socket = "peon-web-size-check-" + str(os.getpid())
+        session = "browser-size-check"
+        def tmux(*args):
+            return subprocess.run(["tmux", "-L", socket, "-f", "/dev/null", *args], capture_output=True, text=True, timeout=5, check=True).stdout
+        try:
+            tmux("new-session", "-d", "-s", session, "-n", "agents", "-x", "80", "-y", "60")
+            tmux("set", "-w", "-t", session + ":agents", "pane-border-status", "top")
+            for _ in range(3):
+                tmux("split-window", "-t", session + ":agents")
+                tmux("select-layout", "-t", session + ":agents", "tiled")
+            group = [dict(id=pane, session=session) for pane in tmux("list-panes", "-t", session + ":agents", "-F", "#{pane_id}").splitlines()]
+            with patch.object(web, "panes", return_value=group), patch.object(web, "tmux", side_effect=tmux), patch.object(web, "snapshot", side_effect=lambda pane: pane):
+                self.assertEqual(self.request("GET", "/api/panes?cols=120&rows=35")[0], 200)
+            self.assertEqual(tmux("list-panes", "-t", session + ":agents", "-F", "#{pane_width}x#{pane_height}").splitlines(), ["120x35"] * 4)
+        finally:
+            subprocess.run(["tmux", "-L", socket, "kill-session", "-t", "=" + session], capture_output=True, timeout=5)
+
+    def test_terminal_attach_unsets_browser_size_before_attach_or_switch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fake = Path(directory) / "tmux"
+            log = Path(directory) / "calls"
+            fake.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$TEST_LOG"\ncase "$1" in\nshow-options) printf "%s\\n" "$TEST_MODE" ;;\nset|select-layout) exit "$TEST_FAILURE" ;;\nesac\n')
+            fake.chmod(0o755)
+            master, slave = pty.openpty()
+            try:
+                for attached, action, mode, failure in (("", "attach", "manual", "0"), ("existing-client", "switch-client", "manual", "0"), ("", "attach", "manual", "1"), ("", "attach", "latest", "0")):
+                    log.write_text("")
+                    environment = dict(os.environ, PATH=directory + os.pathsep + os.environ.get("PATH", ""), TEST_LOG=str(log), TMUX=attached, TEST_MODE=mode, TEST_FAILURE=failure)
+                    result = subprocess.run(["bash", "-ec", 'source "$1/lib/session.sh"; goto_session team', "bash", str(ROOT)], stdin=slave, capture_output=True, text=True, timeout=5, env=environment, start_new_session=True)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    expected = ["show-options -wv -t team:agents window-size"]
+                    if mode == "manual":
+                        expected += ["set -w -t team:agents -u window-size", "select-layout -t team:agents main-vertical"]
+                    self.assertEqual(log.read_text().splitlines(), expected + [action + " -t =team"])
+            finally:
+                os.close(slave)
+                os.close(master)
+
     def test_buttons_list_create_and_duplicate(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(web, "BUTTONS_DIR", Path(directory) / "buttons"):
             self.assertEqual(json.loads(self.request("GET", "/api/buttons")[1]), [])
@@ -98,6 +222,16 @@ class WebTests(unittest.TestCase):
             self.assertEqual(status, 409)
             self.assertIn("error", json.loads(body))
             self.assertEqual(json.loads(self.request("GET", "/api/buttons")[1]), [second, first])
+
+    def test_button_names_accept_ascii_apostrophes_only(self):
+        names = [button["name"] for button in web.read_buttons()]
+        self.assertIn("What's left", names)
+        self.assertNotIn("What left", names)
+        button = dict(name="Worker's tasks", description="List tasks", prompt="List open tasks")
+        status, body = self.request("POST", "/api/buttons", button)
+        self.assertEqual(status, 200)
+        self.assertIn(button, json.loads(body))
+        self.assertEqual(self.request("POST", "/api/buttons", dict(button, name="Worker’s tasks"))[0], 400)
 
     def test_buttons_order_and_optional_frontmatter(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(web, "BUTTONS_DIR", Path(directory)):
@@ -299,6 +433,138 @@ class WebTests(unittest.TestCase):
             self.assertEqual(self.request("POST", "/api/dismiss", dict(session=session, padding="x" * 262144))[0], 400)
             self.assertEqual(run.call_count, 1)
 
+    def test_open_session_arguments_and_unfilters_polling(self):
+        directory = "/project with spaces; $(literal)"
+        for session in (None, "", "custom.team"):
+            self.server.session = "team"
+            data = dict(directory=directory)
+            if session is not None:
+                data["session"] = session
+            with self.subTest(session=session), patch.object(web, "open_project", return_value="custom_team") as start:
+                status, body = self.request("POST", "/api/open", data)
+                self.assertEqual((status, json.loads(body)), (200, {"session": "custom_team"}))
+                start.assert_called_once_with(SimpleNamespace(directory=directory, session=session or "", config=None), ROOT, timeout=300)
+                self.assertIsNone(self.server.session)
+                with patch.object(web, "snapshot", side_effect=lambda pane: pane), patch.object(web, "panes", return_value=[dict(id="%3", session="custom_team")]) as panes:
+                    status, body = self.request("GET", "/api/panes")
+                panes.assert_called_once_with(None)
+                self.assertEqual(json.loads(body)["panes"][0]["session"], "custom_team")
+
+    def test_open_uploads_are_private_unique_and_ignore_xdg(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(web.Path, "home", return_value=Path(directory)):
+            uploads = Path(directory) / launch.REMOTE_CONFIG_DIR
+            uploads.mkdir(parents=True)
+            existing = uploads / "team.conf"
+            existing.write_text("Keep this file")
+            paths = []
+            text = "codex codex -\r\n# 日本語\n"
+            def launch_uploaded(args, root, timeout):
+                self.assertEqual((args.directory, args.session, root, timeout), ("~/project", "", ROOT, 300))
+                self.assertEqual(args.config.parent, uploads)
+                self.assertEqual(args.config.read_bytes(), text.encode("utf-8"))
+                self.assertEqual(args.config.stat().st_mode & 0o777, 0o600)
+                paths.append(args.config)
+                return "new_team"
+            for _ in range(2):
+                with patch.object(web, "open_project", side_effect=launch_uploaded):
+                    status, body = self.request("POST", "/api/open", dict(directory="~/project", config_name="team.conf", config_text=text))
+                self.assertEqual((status, json.loads(body)), (200, {"session": "new_team"}))
+                self.assertFalse(paths[-1].exists())
+            self.assertNotEqual(paths[0], paths[1])
+            self.assertEqual(existing.read_text(), "Keep this file")
+            self.assertFalse((Path(self.config.name) / "peon-code" / "uploads").exists())
+
+    def test_open_validation_and_authentication(self):
+        valid = dict(directory="/project")
+        invalid = [dict(directory=value) for value in ("", " ", "\t\n", "x" * 4097, "bad\0path", "relative", "./relative", "-rf", 1, None, [])]
+        invalid += [dict(directory=value, config_name="team.conf", config_text="team") for value in ("relative", "./relative", "-rf")]
+        invalid += [dict(valid, session=value) for value in (None, 1, [], {}, "-option", "bad\nname", "bad\x7fname")]
+        invalid += [dict(valid, session=value, config_name="team.conf", config_text="team") for value in ("-option", "bad\nname", "bad\x7fname")]
+        invalid += [dict(valid, config_name="team.conf"), dict(valid, config_text="team")]
+        invalid += [dict(valid, config_name=value, config_text="team") for value in ("", " ", ".", "..", "../team", "a/b", "a\\b", "a\0b", "a\nb", "a\x7fb", "\ud800", 1, None)]
+        invalid += [dict(valid, config_name="team.conf", config_text=value) for value in (None, 1, [], "\ud800")]
+        invalid += [[], "project", 1, None, {}]
+        with tempfile.TemporaryDirectory() as directory, patch.object(web.Path, "home", return_value=Path(directory)), patch.object(web, "open_project") as start:
+            for data in invalid:
+                with self.subTest(data=data):
+                    self.assertEqual(self.request("POST", "/api/open", data)[0], 400)
+            for headers in ({"X-Peon-Token": ""}, {"Host": "evil.test"}, {"Origin": "https://evil.test"}, {"Content-Type": "text/plain"}):
+                with self.subTest(headers=headers):
+                    self.assertEqual(self.request("POST", "/api/open", valid, headers)[0], 400 if "Content-Type" in headers else 403)
+            status, body = self.request("POST", "/api/open", valid, {"Content-Length": str(2 * 1024 * 1024 + 1)})
+            self.assertEqual((status, json.loads(body)), (400, {"error": "Expected JSON, at most 2 MiB"}))
+            start.assert_not_called()
+            self.assertEqual(list(Path(directory).iterdir()), [])
+
+    def test_open_config_limit_counts_utf8_bytes(self):
+        paths = []
+        def launch_uploaded(args, root, timeout):
+            self.assertEqual(args.config.read_bytes(), text.encode("utf-8"))
+            paths.append(args.config)
+            return "team"
+        with tempfile.TemporaryDirectory() as directory, patch.object(web.Path, "home", return_value=Path(directory)), patch.object(web, "open_project", side_effect=launch_uploaded) as start:
+            for text in ("x" * (200 * 1024), "é" * (100 * 1024), "\n" * (150 * 1024), "\0" * (200 * 1024)):
+                status, _ = self.request("POST", "/api/open", dict(directory="/project", config_name="team.conf", config_text=text))
+                self.assertEqual(status, 200)
+                self.assertFalse(paths[-1].exists())
+            for text in ("x" * (200 * 1024 + 1), "é" * (100 * 1024 + 1)):
+                status, body = self.request("POST", "/api/open", dict(directory="/project", config_name="team.conf", config_text=text))
+                self.assertEqual(status, 400)
+                self.assertIn("200 KiB", json.loads(body)["error"])
+            self.assertEqual(start.call_count, 4)
+
+    def test_open_project_and_launch_errors_preserve_filter(self):
+        timeout = subprocess.TimeoutExpired("launch", 300, stderr="Run peon-code dismiss new_team before retrying.")
+        byte_timeout = subprocess.TimeoutExpired("tmux", 5, stderr=b"partial output")
+        for error, expected in ((RuntimeError("bad project"), 400), (OSError("launch failed"), 503), (timeout, 503), (byte_timeout, 503)):
+            paths = []
+            def fail_launch(args, root, timeout):
+                self.assertEqual(args.config.read_bytes(), b"team")
+                paths.append(args.config)
+                raise error
+            with self.subTest(error=error), patch.object(web, "open_project", side_effect=fail_launch), patch.object(web.Path, "home", return_value=Path(self.config.name)):
+                status, body = self.request("POST", "/api/open", dict(directory="/project", config_name="team.conf", config_text="team"))
+                self.assertEqual((status, json.loads(body)), (expected, {"error": error.stderr if error is timeout else str(error)}))
+                self.assertEqual(len(paths), 1)
+                self.assertFalse(paths[0].exists())
+                self.assertEqual(self.server.session, "team")
+        with patch.object(web.tempfile, "NamedTemporaryFile", side_effect=PermissionError("Cannot save config")), patch.object(web, "open_project") as start, patch.object(web.Path, "home", return_value=Path(self.config.name)):
+            self.assertEqual(self.request("POST", "/api/open", dict(directory="/project", config_name="team.conf", config_text="team"))[0], 503)
+            start.assert_not_called()
+
+    def test_open_upload_write_failure_removes_file(self):
+        create_file, paths = web.tempfile.NamedTemporaryFile, []
+        @contextlib.contextmanager
+        def fail_write(*args, **kwargs):
+            with create_file(*args, **kwargs) as file:
+                paths.append(Path(file.name))
+                with patch.object(file, "write", side_effect=OSError("Cannot write config")):
+                    yield file
+        with patch.object(web.tempfile, "NamedTemporaryFile", side_effect=fail_write), patch.object(web.Path, "home", return_value=Path(self.config.name)), patch.object(web, "open_project") as start:
+            status, body = self.request("POST", "/api/open", dict(directory="/project", config_name="team.conf", config_text="team"))
+        self.assertEqual((status, json.loads(body)), (503, {"error": "Cannot write config"}))
+        self.assertEqual(len(paths), 1)
+        self.assertFalse(paths[0].exists())
+        start.assert_not_called()
+
+    def test_open_existing_session_removes_upload(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(web.Path, "home", return_value=Path(directory)):
+            outcomes = [subprocess.CompletedProcess([], 0), subprocess.CompletedProcess([], 0, "1", ""), subprocess.CompletedProcess([], 0, directory + "\n", "")]
+            with patch.object(web.subprocess, "run", side_effect=outcomes), patch.object(web.subprocess, "Popen") as popen, contextlib.redirect_stderr(io.StringIO()):
+                status, body = self.request("POST", "/api/open", dict(directory=directory, session="existing", config_name="team.conf", config_text="team"))
+            self.assertEqual((status, json.loads(body)), (200, {"session": "existing"}))
+            self.assertEqual(list((Path(directory) / launch.REMOTE_CONFIG_DIR).iterdir()), [])
+            popen.assert_not_called()
+
+    def test_open_uses_shared_project_and_session_checks(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(web.subprocess, "run") as run:
+            for session in ("-option", "bad\nname", "bad\x7fname"):
+                with self.subTest(session=session):
+                    self.assertEqual(self.request("POST", "/api/open", dict(directory=directory, session=session))[0], 400)
+            self.assertEqual(self.request("POST", "/api/open", dict(directory="/"))[0], 400)
+            self.assertEqual(self.request("POST", "/api/open", dict(directory=str(Path(directory) / "missing")))[0], 400)
+            run.assert_not_called()
+
     def test_dismiss_failure_and_timeout(self):
         with patch.object(web.subprocess, "run", return_value=subprocess.CompletedProcess([], 1, "could not close\n", "busy")):
             status, body = self.request("POST", "/api/dismiss", dict(session="team"))
@@ -490,6 +756,41 @@ class ServerLifecycleTests(unittest.TestCase):
         self.path.parent.mkdir(parents=True)
         self.error = OSError(errno.EADDRINUSE, "address in use")
 
+    def test_default_port_falls_back_with_notice_but_explicit_port_fails(self):
+        server = Mock(server_port=9123)
+        with patch.object(web, "ThreadingHTTPServer", side_effect=[self.error, server]) as bind, patch.object(web.os, "kill") as kill, contextlib.redirect_stderr(io.StringIO()) as error:
+            self.assertIs(web.bind_server(None), server)
+        self.assertEqual([call.args[0] for call in bind.call_args_list], [("127.0.0.1", 8765), ("127.0.0.1", 0)])
+        self.assertEqual(error.getvalue(), "port 8765 is busy, using 9123\n")
+        kill.assert_not_called()
+        with patch.object(web, "ThreadingHTTPServer", side_effect=self.error) as bind, self.assertRaises(OSError) as raised:
+            web.bind_server(8765)
+        self.assertIs(raised.exception, self.error)
+        self.assertEqual(bind.call_count, 1)
+
+    def test_default_port_does_not_fall_back_for_other_bind_errors(self):
+        error = OSError(errno.EACCES, "permission denied")
+        with patch.object(web, "ThreadingHTTPServer", side_effect=error) as bind, self.assertRaises(OSError) as raised:
+            web.bind_server(None)
+        self.assertIs(raised.exception, error)
+        self.assertEqual(bind.call_count, 1)
+
+    def test_real_busy_default_binds_another_loopback_port(self):
+        with web.socket.socket() as occupied:
+            occupied.bind(("127.0.0.1", 0))
+            occupied.listen(1)
+            port = occupied.getsockname()[1]
+            with patch.object(web, "DEFAULT_PORT", port), contextlib.redirect_stderr(io.StringIO()) as error:
+                server = web.bind_server(None)
+            try:
+                self.assertNotEqual(server.server_port, port)
+                self.assertEqual(server.server_address[0], "127.0.0.1")
+                self.assertEqual(error.getvalue(), f"port {port} is busy, using {server.server_port}\n")
+                with self.assertRaises(OSError):
+                    web.bind_server(port)
+            finally:
+                server.server_close()
+
     def test_orphan_watchdog_checks_every_five_seconds(self):
         server, stopped = Mock(), Mock()
         stopped.wait.side_effect = [False, False]
@@ -516,6 +817,15 @@ class ServerLifecycleTests(unittest.TestCase):
         kill.assert_called_once_with(12345, signal.SIGTERM)
         self.assertEqual(bind.call_count, 2)
         connection.assert_called_once_with(("127.0.0.1", 8765), timeout=0.1)
+
+    def test_default_port_replaces_stale_server_before_considering_fallback(self):
+        self.path.write_text("12345\n")
+        server = Mock(server_port=8765)
+        with patch.object(web, "ThreadingHTTPServer", side_effect=[self.error, server]) as bind, patch.object(web.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "python /project/web/server.py --stdio\n", "")), patch.object(web.os, "kill") as kill, patch.object(web.socket, "create_connection", side_effect=ConnectionRefusedError), contextlib.redirect_stderr(io.StringIO()) as error:
+            self.assertIs(web.bind_server(None), server)
+        self.assertEqual([call.args[0] for call in bind.call_args_list], [("127.0.0.1", 8765)] * 2)
+        kill.assert_called_once_with(12345, signal.SIGTERM)
+        self.assertEqual(error.getvalue(), "")
 
     def test_foreign_invalid_or_unreadable_pid_never_signaled(self):
         for contents in (None, "", "invalid", "0", "-2", "1", "999999999999999999999", str(os.getpid()), "12345"):

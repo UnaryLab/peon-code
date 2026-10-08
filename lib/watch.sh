@@ -1,5 +1,8 @@
 # shellcheck shell=bash
 
+# shellcheck source=lib/cli.sh
+declare -F cli_call >/dev/null || source "$(dirname -- "${BASH_SOURCE[0]}")/cli.sh"
+
 # Context watcher: once a minute, read each agent pane's context size from
 # the usage record its CLI writes to the transcript, and run compact on a pane
 # that has reached the threshold. The transcript is the one source every CLI
@@ -10,25 +13,7 @@
 # usage record in its transcript. Empty when the CLI logs none, or the
 # transcript has no turn yet.
 context_tokens() {
-  local bin=$1 file=$2 rec a b c
-  case $bin in
-    claude)
-      # Each assistant message carries the API usage: the input plus both
-      # cache fields is the full context of that request.
-      rec=$(grep -o '"usage":{[^}]*}' "$file" 2>/dev/null | tail -n 1) || true
-      [ -n "$rec" ] || return 0
-      a=$(printf '%s' "$rec" | sed -n 's/.*"input_tokens":\([0-9]*\).*/\1/p')
-      b=$(printf '%s' "$rec" | sed -n 's/.*"cache_creation_input_tokens":\([0-9]*\).*/\1/p')
-      c=$(printf '%s' "$rec" | sed -n 's/.*"cache_read_input_tokens":\([0-9]*\).*/\1/p')
-      [ -n "$a" ] || return 0
-      echo $((a + ${b:-0} + ${c:-0})) ;;
-    codex)
-      # Each turn ends with a token_count event; last_token_usage.input_tokens
-      # is the context of the last request.
-      rec=$(grep -o '"last_token_usage":{"input_tokens":[0-9]*' "$file" 2>/dev/null | tail -n 1) || true
-      [ -n "$rec" ] || return 0
-      echo "${rec##*:}" ;;
-  esac
+  cli_call "$1" context_tokens "$2"
 }
 
 # Post a note on the session's status line, or on stderr when no client shows
@@ -49,7 +34,7 @@ watch_note() {
 # (a huge system prompt) is reported once instead of compacted every minute.
 cmd_watch() {
   local session threshold panes id name bin file tokens owner pid_file
-  local watched="" unwatched="" disarmed="" files=""
+  local unwatched="" disarmed="" files=""
   session=$(session_name "${1:-}")
   threshold=${2:-250000}
   [[ $threshold =~ ^[0-9]+$ ]] || die "watch takes a number of tokens, got: $threshold"
@@ -67,15 +52,14 @@ cmd_watch() {
     while read -r id name; do
       [ -n "$id" ] || continue
       bin=$(tmux show-options -pqv -t "$id" @peon_bin 2>/dev/null) || bin=""
-      case $bin in
-        claude|codex) ;;
-        *)
-          case " $unwatched " in *" $id "*) ;; *)
-            unwatched="$unwatched $id"
-            watch_note "$session" "$name (${bin:-unknown}) logs no context size; not watched" ;;
-          esac
-          continue ;;
-      esac
+      if ! declare -F -- "${bin}_context_tokens" >/dev/null ||
+        ! cli_call "$bin" context_tokens; then
+        case " $unwatched " in *" $id "*) ;; *)
+          unwatched="$unwatched $id"
+          watch_note "$session" "$name (${bin:-unknown}) logs no context size; not watched" ;;
+        esac
+        continue
+      fi
       # The transcript appears after the first turn; look it up until found,
       # then keep the path. A pane id never repeats within a session.
       file=$(printf '%s\n' "$files" | sed -n "s|^$id ||p")
@@ -97,7 +81,7 @@ cmd_watch() {
       # when compaction outlasts its wait; this pane is retried on the next
       # crossing. The pane variable is cleared so compact does not take
       # the watcher's own pane for a target.
-      TMUX_PANE= "$SCRIPT_DIR/peon-code.sh" compact "$name" "$session" || true
+      TMUX_PANE='' "$SCRIPT_DIR/peon-code.sh" compact "$name" "$session" || true
     done <<<"$panes"
     sleep "${PEON_WATCH_TICK:-60}"
   done

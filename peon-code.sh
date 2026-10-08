@@ -118,6 +118,8 @@ die() {
 
 # shellcheck source=lib/deps.sh
 source "$SCRIPT_DIR/lib/deps.sh"
+# shellcheck source=lib/cli.sh
+source "$SCRIPT_DIR/lib/cli.sh"
 # shellcheck source=lib/tmux.sh
 source "$SCRIPT_DIR/lib/tmux.sh"
 # shellcheck source=lib/input.sh

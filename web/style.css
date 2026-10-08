@@ -49,13 +49,17 @@ h2 { font-size: 16px; margin: 0; }
 .button-form label { display: flex; flex-direction: column; gap: 4px; flex: 1; min-width: 120px; font-size: 12px; }
 .button-form label:last-of-type { flex-basis: 100%; }
 .button-form input { width: 100%; min-width: 0; font: inherit; border: 1px solid var(--line); border-radius: 4px; padding: 4px; }
+#new-session-form { flex-wrap: wrap; padding: 8px 0; }
+#new-session-form label { display: flex; flex: 1 1 240px; flex-direction: column; gap: 4px; min-width: 0; font-size: 13px; }
+#new-session-form input { width: 100%; min-width: 0; font: inherit; border: 1px solid var(--line); border-radius: 4px; padding: 4px; }
+#config-help { color: var(--muted); }
 .keys, .key-buttons, .key-shortcuts { display: flex; align-items: center; justify-content: flex-start; gap: 4px; flex-wrap: wrap; }
 .keys { flex-shrink: 0; padding: 0 12px 4px; }
 .keys button { background: transparent; font-size: 12px; padding: 2px 6px; touch-action: none; user-select: none; }
 .keys-toggle::after { content: " \25B8"; content: " \25B8" / ""; }
 .keys-toggle[aria-expanded="true"]::after { content: " \25BE"; content: " \25BE" / ""; }
 .keys-toggle[aria-expanded="true"] { background: #eef0ec; }
-.selection-note { color: var(--muted); font-size: 12px; }
+.selection-note { color: var(--muted); font-size: 12px; margin-left: auto; }
 button { font: inherit; font-size: 14px; border: 1px solid var(--accent-border); border-radius: 4px; padding: 5px 10px; background: var(--accent); color: #1a1a1a; cursor: pointer; }
 button:disabled { opacity: .45; cursor: default; }
 button:focus-visible, input:focus-visible, textarea:focus-visible, .output:focus-visible, a:focus-visible { outline: 2px solid #555; outline-offset: 3px; }

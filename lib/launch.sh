@@ -1,11 +1,11 @@
+# shellcheck shell=bash
+
 launch_command_locked() {
   local pane=$1 command=$2
   printf '%s' "$command" | paste_only "$pane" || return 1
   sleep 1
   tmux send-keys -t "$pane" Enter
 }
-
-# shellcheck shell=bash
 
 # The brief marker that identifies each agent's own thread, so two panes of
 # the same CLI in one directory do not both reopen the newest conversation.
@@ -122,113 +122,17 @@ done
 # a claude pane's brief once it settles. Agents that never started are named
 # in FAILED_AGENTS.
 launch_agents() {
-  local command claude_config project_key project_path physical_dir codex_config codex_temp header
-  local codex_link links
+  local command bin physical_dir
   local project_dirs=()
   physical_dir=$(pwd -P)
   project_dirs=("$physical_dir")
   [ "$physical_dir" = "$PWD" ] || project_dirs+=("$PWD")
-  for command in "${CMDS[@]}"; do
-    [ "${command%% *}" = claude ] || continue
-    claude_config="${CLAUDE_CONFIG_DIR:-$HOME}/.claude.json"
-    if [ ! -f "$claude_config" ] || ! command -v python3 >/dev/null 2>&1; then
-      echo "peon-code: skipping Claude project trust: existing $claude_config and python3 are required" >&2
-    elif ! python3 - "$claude_config" "${project_dirs[@]}" 2>/dev/null <<'PYTHON'
-import json
-import os
-import stat
-import sys
-import tempfile
-
-config, *projects = sys.argv[1:]
-config = os.path.realpath(config)
-temporary = None
-try:
-    mode = stat.S_IMODE(os.stat(config).st_mode)
-    with open(config, encoding="utf-8") as file:
-        data = json.load(file)
-    entries = data.setdefault("projects", {})
-    changed = False
-    for project in projects:
-        entry = entries.setdefault(project, {})
-        if entry.get("hasTrustDialogAccepted") is not True:
-            entry["hasTrustDialogAccepted"] = True
-            changed = True
-    if not changed:
-        sys.exit(0)
-    fd, temporary = tempfile.mkstemp(prefix=".claude-trust.", dir=os.path.dirname(config))
-    with os.fdopen(fd, "w", encoding="utf-8") as file:
-        json.dump(data, file, indent=2)
-        file.write("\n")
-        os.fchmod(file.fileno(), mode)
-    os.replace(temporary, config)
-    temporary = None
-finally:
-    if temporary is not None:
-        os.unlink(temporary)
-PYTHON
-    then
-      echo "peon-code: could not set Claude project trust in $claude_config; kept the original file" >&2
-    fi
-    break
-  done
-  for command in "${CMDS[@]}"; do
-    [ "${command%% *}" = codex ] || continue
-    codex_config="${CODEX_HOME:-$HOME/.codex}/config.toml"
-    links=0
-    while [ -L "$codex_config" ]; do
-      if [ "$links" -ge 40 ] || ! codex_link=$(readlink "$codex_config"); then
-        echo "peon-code: could not resolve Codex config link $codex_config; skipping project trust" >&2
-        codex_config=""
-        break
-      fi
-      case $codex_link in
-        /*) codex_config=$codex_link ;;
-        *) codex_config=${codex_config%/*}/$codex_link ;;
-      esac
-      links=$((links + 1))
-    done
-    [ -n "$codex_config" ] || break
-    if [ -f "$codex_config" ] &&
-      grep -Eq "^[[:space:]]*[\"']?projects[\"']?[[:space:]]*=" "$codex_config"; then
-      echo 'peon-code: config.toml has an inline projects table; skipping codex project trust' >&2
+  for bin in "${CLI_PROVIDERS[@]}"; do
+    for command in "${CMDS[@]}"; do
+      [ "${command%% *}" = "$bin" ] || continue
+      cli_call "$bin" trust_project "${project_dirs[@]}"
       break
-    fi
-    for project_path in "${project_dirs[@]}"; do
-      project_key=${project_path//\\/\\\\}
-      project_key=${project_key//\"/\\\"}
-      project_key=${project_key//$'\n'/\\n}
-      project_key=${project_key//$'\r'/\\r}
-      project_key=${project_key//$'\t'/\\t}
-      header="[projects.\"$project_key\"]"
-      if [ -f "$codex_config" ] && {
-        grep -Fq -- "\"$project_key\"" "$codex_config" || {
-          [[ $project_path != *$'\n'* && $project_path != *$'\r'* && $project_path != *"'"* ]] &&
-            grep -Fq -- "'$project_path'" "$codex_config"
-        }
-      }; then
-        continue
-      fi
-      if ! mkdir -p "${codex_config%/*}" ||
-        ! codex_temp=$(mktemp "${codex_config%/*}/.peon-code-trust.XXXXXX"); then
-        echo "peon-code: could not prepare Codex project trust in $codex_config" >&2
-        break
-      fi
-      if {
-        if [ -f "$codex_config" ]; then
-          cp -p "$codex_config" "$codex_temp" &&
-            printf '\n\n%s\n%s\n' "$header" 'trust_level = "trusted"' >>"$codex_temp"
-        else
-          printf '%s\n%s\n' "$header" 'trust_level = "trusted"' >"$codex_temp"
-        fi
-      } && mv "$codex_temp" "$codex_config"; then
-        :
-      else
-        echo "peon-code: could not set Codex project trust in $codex_config; kept the original file" >&2
-        break
-      fi
     done
-    break
   done
   for i in "${!NAMES[@]}"; do
     BRIEF=$(build_brief "$i")
@@ -251,40 +155,7 @@ PYTHON
     RID=${RESUME_IDS[$i]}
     # Quoted for the pane's shell: a qwen id can be a saved-chat tag, not a uuid.
     RID=${RID:+$(printf %q "$RID")}
-    case "$BIN" in
-      claude)
-        # A pane's own --settings wins over the generated settings:
-        # claude reads one --settings and the second would be lost.
-        SETTINGS=""
-        case "$ARGS " in
-          *" --settings "*|*" --settings="*)
-            echo "peon-code: ${NAMES[$i]} passes its own --settings, so it may stay fullscreen" >&2
-            if [ "$i" -ne "$MAIN" ]; then
-              echo "peon-code: ${NAMES[$i]} passes its own --settings, so it gets no git deny file" >&2
-            fi ;;
-          *)
-            if [ "$i" -eq "$MAIN" ]; then SETTINGS=" --settings $(printf %q "$NORMAL_SETTINGS")"
-            else SETTINGS=" --settings $(printf %q "$DENY_SETTINGS")"; fi ;;
-        esac
-        if [ "$i" -ne "$MAIN" ]; then
-          case "$ARGS " in
-            *" --dangerously-skip-permissions "*)
-              echo "peon-code: ${NAMES[$i]} passes --dangerously-skip-permissions, so the git deny file has no effect" >&2 ;;
-          esac
-        fi
-        LAUNCH="$BIN${RID:+ --resume $RID}$ARGS$SETTINGS" ;;  # bare, keeping user args; the brief follows the TUI
-      codex)
-        case "$ARGS " in
-          *" --no-alt-screen "*) ;;
-          *) ARGS="$ARGS --no-alt-screen" ;;
-        esac
-        LAUNCH="$BIN${RID:+ resume $RID}$ARGS $Q" ;; # positional prompt, stays interactive
-      # Other CLIs may use the alternate screen; add their per-CLI flags here to support the normal screen.
-      grok)        LAUNCH="$BIN${RID:+ --resume $RID}$ARGS $Q" ;; # positional prompt, stays interactive
-      copilot)     LAUNCH="$BIN${RID:+ --resume=$RID}$ARGS -i $Q" ;;  # -i starts the interactive TUI and runs the prompt
-      gemini|qwen) LAUNCH="$BIN${RID:+ --resume $RID}$ARGS -i $Q" ;;  # unverified on this machine
-      *)           LAUNCH="${CMDS[$i]} $Q" ;;     # anything else: positional prompt
-    esac
+    LAUNCH=$(cli_call "$BIN" launch_command "$BIN" "$ARGS" "$RID" "$Q" "$i")
     # The pane is still at its shell, whose prompt peon-code cannot predict, so
     # the box holds no text to check against: Enter follows the paste directly.
     with_pane_delivery "${PANE_IDS[$i]}" launch_command_locked "${PANE_IDS[$i]}" "$LAUNCH" ||
@@ -297,25 +168,7 @@ PYTHON
       FAILED_AGENTS+=("${NAMES[$i]}")
       continue
     fi
-    if [ "${CMDS[$i]%% *}" = claude ]; then
-      # A resumed pane may open on the summary picker; take its default,
-      # "Resume from summary", then allow for the compaction that starts:
-      # 400 settle tries (~2 min) instead of the usual 100.
-      [ -z "$RID" ] || answer_dialog "${PANE_IDS[$i]}" "*Resume from summary*"
-      # An unsettled pane is showing a dialog or still starting; pasting there
-      # would answer the dialog blindly, which the brief tells agents never to do.
-      if wait_pane_settled "${PANE_IDS[$i]}" "${RID:+400}"; then
-        PASTE_RC=0
-        printf '%s' "$BRIEF" | paste_to_pane "${PANE_IDS[$i]}" || PASTE_RC=$?
-        case $PASTE_RC in
-          1) echo "peon-code: tmux refused the brief for ${NAMES[$i]} ${PANE_IDS[$i]}. Send it with: peon-code rebrief ${NAMES[$i]}" >&2 ;;
-          3|75) echo "peon-code: no brief sent: input or another delivery is busy for ${NAMES[$i]} ${PANE_IDS[$i]}" >&2 ;;
-          2) echo "peon-code: no Enter sent to ${NAMES[$i]} ${PANE_IDS[$i]}: the brief is in its box for you to submit" >&2 ;;
-        esac
-      else
-        echo "peon-code: ${NAMES[$i]} is still on a dialog or starting up. Answer it, then run: peon-code rebrief ${NAMES[$i]}" >&2
-      fi
-    fi
+    cli_call "${CMDS[$i]%% *}" brief_after_start
   done
 }
 

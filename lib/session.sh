@@ -49,6 +49,10 @@ goto_session() {
     echo "peon-code: session $session is ready. Attach with: tmux attach -t $session"
     exit 0
   fi
+  if [ "$(tmux show-options -wv -t "$session":agents window-size 2>/dev/null)" = manual ]; then
+    tmux set -w -t "$session":agents -u window-size || true
+    tmux select-layout -t "$session":agents main-vertical >/dev/null 2>&1 || true
+  fi
   if [ -n "${TMUX:-}" ]; then
     exec tmux switch-client -t "=$session"
   fi

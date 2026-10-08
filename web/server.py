@@ -10,11 +10,13 @@ import sys
 import shutil
 import socket
 import time
-from bridge import panes, snapshot
-from launch import arguments, open_browser, remote_ui, open_project
+import tempfile
+from bridge import panes, snapshot, tmux
+from launch import arguments, open_browser, remote_ui, open_project, DEFAULT_PORT, REMOTE_CONFIG_DIR
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from types import SimpleNamespace
 from urllib.parse import parse_qs, urlsplit
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -29,8 +31,8 @@ ASSETS = {"/": ("index.html", "text/html"), "/app.js": ("app.js", "text/javascri
 def validate_button(data):
     name, description, prompt = data.get("name"), data.get("description"), data.get("prompt")
     name = name.strip(" ") if isinstance(name, str) else name
-    if not isinstance(name, str) or not name or len(name) > 80 or not re.fullmatch(r"[A-Za-z0-9 _-]+", name):
-        raise ValueError("Name must use 1 to 80 letters, digits, spaces, hyphens, or underscores")
+    if not isinstance(name, str) or not name or len(name) > 80 or not re.fullmatch(r"[A-Za-z0-9 '_-]+", name):
+        raise ValueError("Name must use 1 to 80 letters, digits, spaces, apostrophes, hyphens, or underscores")
     if not isinstance(description, str) or len(description) > 500 or "\n" in description or "\r" in description:
         raise ValueError("Description must be a single line of at most 500 characters")
     if not isinstance(prompt, str) or not prompt.strip() or len(prompt) > 200000:
@@ -134,9 +136,44 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError:
                 self.respond(400, {"error": "lines must be an integer from 1000 to 200000"})
                 return
+            cols = rows = None
+            if "cols" in query or "rows" in query:
+                try:
+                    cols = int(query.get("cols", [""])[0])
+                    rows = int(query.get("rows", [""])[0])
+                    if not 20 <= cols <= 500 or not 5 <= rows <= 300:
+                        raise ValueError
+                except ValueError:
+                    self.respond(400, {"error": "cols must be an integer from 20 to 500; rows must be an integer from 5 to 300"})
+                    return
             try:
+                current = panes(self.server.session)
+                if cols is not None:
+                    # Detached tmux windows default to 80x24. The browser shows one pane
+                    # at a time, so stack full-width panes sized to its output area.
+                    # A terminal client that attaches later sets the window size.
+                    # With several browser tabs, the last poll sets the size.
+                    for session in sorted({pane["session"] for pane in current}):
+                        try:
+                            window = session + ":agents"
+                            if tmux("list-clients", "-t", "=" + session).strip():
+                                if tmux("show-options", "-wv", "-t", window, "window-size").strip() == "manual":
+                                    tmux("set", "-w", "-t", window, "-u", "window-size")
+                                    tmux("select-layout", "-t", window, "main-vertical")
+                                continue
+                            count = len(tmux("list-panes", "-t", window).splitlines())
+                            # Each pane's top border consumes one additional row.
+                            height = min((rows + 1) * count, 10000)
+                            if tmux("display-message", "-p", "-t", window, "#{window_width}x#{window_height}").strip() != f"{cols}x{height}":
+                                tmux("resize-window", "-t", window, "-x", str(cols), "-y", str(height))
+                                tmux("select-layout", "-t", window, "even-vertical")
+                        except (OSError, subprocess.TimeoutExpired, subprocess.CalledProcessError):
+                            errors = self.server.__dict__.setdefault("resize_errors", set())
+                            if session not in errors:
+                                errors.add(session)
+                                print(f"Could not resize browser panes for {session!r}", file=sys.stderr)
                 result = []
-                for pane in panes(self.server.session):
+                for pane in current:
                     try:
                         captured = snapshot(pane, lines) if pane["id"] == target else snapshot(pane)
                         if captured is not None:
@@ -152,14 +189,55 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self.allowed(True):
             return
-        if self.path not in ("/api/explain", "/api/send", "/api/dismiss", "/api/keys", "/api/buttons"):
+        if self.path not in ("/api/explain", "/api/send", "/api/dismiss", "/api/keys", "/api/buttons", "/api/open"):
             self.respond(404, {"error": "Not found"})
             return
         try:
             size = int(self.headers.get("Content-Length", "0"))
-            if not 0 < size <= 262144 or self.headers.get_content_type() != "application/json":
-                raise ValueError("Expected JSON, at most 256 KiB")
+            limit = 2 * 1024 * 1024 if self.path == "/api/open" else 262144
+            if not 0 < size <= limit or self.headers.get_content_type() != "application/json":
+                raise ValueError("Expected JSON, at most " + ("2 MiB" if self.path == "/api/open" else "256 KiB"))
             data = json.loads(self.rfile.read(size))
+            if self.path == "/api/open":
+                directory, session = data.get("directory"), data.get("session", "")
+                if not isinstance(directory, str) or not directory.strip() or len(directory) > 4096 or "\0" in directory:
+                    raise ValueError("Project directory must contain 1 to 4096 characters without NUL")
+                if not Path(directory).is_absolute() and not directory.startswith("~"):
+                    raise ValueError("Project directory must be absolute or start with ~")
+                if not isinstance(session, str):
+                    raise ValueError("Session name must be text")
+                if session.startswith("-") or any(ord(char) < 32 or ord(char) == 127 for char in session):
+                    raise ValueError("Choose a valid SESSION name")
+                config = None
+                content = None
+                if "config_name" in data or "config_text" in data:
+                    if "config_name" not in data or "config_text" not in data:
+                        raise ValueError("Config requires both config_name and config_text")
+                    name, text = data["config_name"], data["config_text"]
+                    if not isinstance(name, str) or not name.strip() or name in (".", "..") or "/" in name or "\\" in name or any(ord(char) < 32 or ord(char) == 127 for char in name):
+                        raise ValueError("Config filename must be a basename without control characters")
+                    name.encode("utf-8")
+                    if not isinstance(text, str):
+                        raise ValueError("Config text must be UTF-8 and at most 200 KiB")
+                    content = text.encode("utf-8")
+                    if len(content) > 200 * 1024:
+                        raise ValueError("Config text must be UTF-8 and at most 200 KiB")
+                try:
+                    if content is not None:
+                        uploads = Path.home() / REMOTE_CONFIG_DIR
+                        uploads.mkdir(mode=0o700, parents=True, exist_ok=True)
+                        with tempfile.NamedTemporaryFile(dir=uploads, prefix="team-", suffix=".conf", delete=False) as file:
+                            config = Path(file.name)
+                            file.write(content)
+                    opened = open_project(SimpleNamespace(directory=directory, session=session, config=config), ROOT, timeout=300)
+                except RuntimeError as error:
+                    raise ValueError(str(error)) from error
+                finally:
+                    if config is not None:
+                        config.unlink(missing_ok=True)
+                self.server.session = None
+                self.respond(200, {"session": opened})
+                return
             if self.path == "/api/buttons":
                 button = validate_button(data)
                 directory = config_dir() / "buttons"
@@ -222,7 +300,8 @@ class Handler(BaseHTTPRequestHandler):
         except (ValueError, TypeError, AttributeError, RecursionError) as error:
             self.respond(400, {"error": str(error)})
         except (OSError, subprocess.TimeoutExpired) as error:
-            self.respond(503, {"error": str(error)})
+            message = error.stderr if self.path == "/api/open" and isinstance(error, subprocess.TimeoutExpired) and isinstance(error.stderr, str) and error.stderr else str(error)
+            self.respond(503, {"error": message})
 
 
 def config_dir():
@@ -235,6 +314,9 @@ def pid_file(port):
 
 
 def bind_server(port):
+    automatic = port is None
+    if automatic:
+        port = DEFAULT_PORT
     try:
         return ThreadingHTTPServer(("127.0.0.1", port), Handler)
     except OSError as error:
@@ -260,6 +342,10 @@ def bind_server(port):
             return ThreadingHTTPServer(("127.0.0.1", port), Handler)
         except (OSError, ValueError, OverflowError, UnicodeError, subprocess.TimeoutExpired):
             pass
+        if automatic:
+            server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+            print(f"port {port} is busy, using {server.server_port}", file=sys.stderr)
+            return server
     raise original
 
 
@@ -288,7 +374,7 @@ def main():
     try:
         server = bind_server(args.port)
     except OSError as error:
-        raise SystemExit("Cannot listen on loopback port " + str(args.port) + ": " + str(error) + ". Use --port <free-port>.") from error
+        raise SystemExit("Cannot listen on loopback port " + str(args.port if args.port is not None else DEFAULT_PORT) + ": " + str(error) + ". Use --port <free-port>.") from error
     stopped = threading.Event()
     path = pid_file(server.server_port)
     pid = str(os.getpid())

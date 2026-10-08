@@ -1,5 +1,8 @@
 # shellcheck shell=bash
 
+# shellcheck source=lib/cli.sh
+declare -F cli_call >/dev/null || source "$(dirname -- "${BASH_SOURCE[0]}")/cli.sh"
+
 # Session name for a directory: the given name, else the current directory.
 # tmux rewrites . and : in session names, so match what it stores.
 session_name() {
@@ -61,10 +64,11 @@ wait_agent_ready() {
 # first never showed the dialog, so the wait ends there. Always returns 0: a
 # pane still drawing after the cap, 15s, is left for wait_pane_settled to
 # judge.
-# The input-line check knows the claude and codex markers only; a CLI drawing
+# The input-line check uses the provider markers; a CLI drawing
 # another marker waits the full cap when it shows no dialog.
 answer_dialog() {
-  local pane=$1 pattern=$2 i cur cy rc
+  local pane=$1 pattern=$2 i cur cy rc markers
+  markers=$CLI_PROMPT_MARKERS
   for ((i = 0; i < 50; i++)); do
     cur=$(tmux capture-pane -pt "$pane" 2>/dev/null && printf '.') || cur=""
     cur=${cur%.}
@@ -77,7 +81,7 @@ answer_dialog() {
     # Input line drawn and no menu on screen: the pane never showed a dialog.
     rc=0
     pane_has_menu "$cur" "$cy" || rc=$?
-    if [ "$rc" -eq 1 ] && [[ $cur == *❯* || $cur == *›* ]]; then
+    if [ "$rc" -eq 1 ] && [ -n "$markers" ] && [[ $cur =~ $markers ]]; then
       return 0
     fi
     sleep 0.3
@@ -85,7 +89,7 @@ answer_dialog() {
   return 0
 }
 
-# Wait until the claude prompt line is drawn and the pane has stopped
+# Wait until a known prompt line is drawn and the pane has stopped
 # changing: a capture holds a line starting with the prompt marker and
 # matches the capture 0.3s before. A menu such as the folder-trust dialog
 # draws the same marker on its selected row, so a capture holding a menu
@@ -94,7 +98,8 @@ answer_dialog() {
 # the prompt never shows, or the dialog goes unanswered; the caller then
 # skips the paste rather than typing into whatever is on screen.
 wait_pane_settled() {
-  local pane=$1 tries=${2:-100} i prev="" cur cy rc
+  local pane=$1 tries=${2:-100} i prev="" cur cy rc markers
+  markers=$CLI_PROMPT_MARKERS
   for ((i = 0; i < tries; i++)); do
     cur=$(tmux capture-pane -pt "$pane" 2>/dev/null && printf '.') || cur=""
     cur=${cur%.}
@@ -104,7 +109,7 @@ wait_pane_settled() {
     if [ "$rc" -ne 1 ]; then
       cur=""  # a menu, not the input line
     fi
-    if [[ $cur == *❯* || $cur == *›* ]] && [ "$cur" = "$prev" ]; then
+    if [ -n "$markers" ] && [[ $cur =~ $markers ]] && [ "$cur" = "$prev" ]; then
       return 0
     fi
     prev=$cur

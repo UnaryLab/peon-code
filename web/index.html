@@ -15,6 +15,7 @@
     <span class="tag">Agent workspace</span>
     <label class="right-click"><input id="right-click" type="checkbox" checked> Right-click to explain</label>
     <span id="connection" role="status">Connecting…</span>
+    <button id="new-session" type="button" aria-expanded="false" aria-controls="new-session-form">New session</button>
     <nav class="top-links" aria-label="Project links">
       <a href="https://github.com/UnaryLab/peon-code" target="_blank" rel="noopener noreferrer">GitHub</a>
       <a href="/LICENSE" target="_blank" rel="noopener">MIT License</a>
@@ -22,6 +23,14 @@
     </nav>
   </header>
   <main>
+    <form id="new-session-form" hidden>
+      <label>Project directory<input name="directory" required placeholder="Absolute or ~ path, resolved on the agent host"></label>
+      <label>Session name (optional)<input name="session" placeholder="Folder basename; dots and colons become underscores"></label>
+      <label>Team config (optional)<input name="config" type="file" aria-describedby="config-help"><small id="config-help">Local UTF-8 file, up to 200 KiB. Uploaded to the agent host.</small></label>
+      <button type="submit">Start session</button>
+      <button type="button" class="cancel">Cancel</button>
+    </form>
+    <p id="new-session-status" class="feedback" role="status" hidden></p>
     <nav id="sessions" aria-label="Sessions"></nav>
     <p id="project-path"></p>
     <p id="empty" hidden>No agent panes yet. Start a team with <code>peon-code</code>, then return here.</p>
@@ -43,8 +52,8 @@
         <button class="explain" disabled>Explain selection</button>
         <span class="prompt-buttons"></span>
         <button class="discard" hidden>Discard saved text</button>
-        <span class="selection-note"></span>
         <button type="button" class="add-button" aria-label="Add button">+</button>
+        <span class="selection-note"></span>
       </div>
       <form class="button-form" hidden>
         <label>Name<input name="name" maxlength="80" required></label>

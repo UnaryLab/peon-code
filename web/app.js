@@ -5,12 +5,21 @@ history.replaceState(null, '', location.pathname);
 const cards = new Map();
 const BOX_WAIT_MS = 10000;
 const connection = document.querySelector('#connection');
+const cellMeasure = document.createElement('span');
+cellMeasure.textContent = 'M'.repeat(32);
+cellMeasure.setAttribute('aria-hidden', 'true');
+Object.assign(cellMeasure.style, {display: 'inline-block', position: 'fixed', top: '0', left: '0', visibility: 'hidden', whiteSpace: 'pre'});
+document.body.append(cellMeasure);
 let dragging = false;
 let dismissing = false;
 let dismissed = null;
 let actionButtons = [];
 let backspaceTimer;
 let backspaceCard;
+let refreshTimer;
+let refreshing = false;
+let refreshRequested = false;
+let openedSession = null;
 function stopBackspaceRepeat() {
   clearTimeout(backspaceTimer);
   const card = backspaceCard;
@@ -25,6 +34,59 @@ async function api(path, data) {
   if (!response.ok) throw new Error(result.error || 'Request failed');
   return result;
 }
+const newSession = document.querySelector('#new-session');
+const newSessionForm = document.querySelector('#new-session-form');
+const newSessionStatus = document.querySelector('#new-session-status');
+function closeNewSession() {
+  newSessionForm.hidden = true;
+  newSession.setAttribute('aria-expanded', 'false');
+  newSession.focus();
+}
+newSession.onclick = () => {
+  if (!newSessionForm.hidden) { closeNewSession(); return; }
+  newSessionForm.hidden = false;
+  newSession.setAttribute('aria-expanded', 'true');
+  newSessionForm.elements.directory.focus();
+};
+newSessionForm.querySelector('.cancel').onclick = closeNewSession;
+newSessionForm.onkeydown = event => {
+  if (event.key === 'Escape') { event.preventDefault(); closeNewSession(); }
+};
+newSessionForm.onsubmit = async event => {
+  event.preventDefault();
+  const submit = newSessionForm.querySelector('[type="submit"]');
+  if (submit.disabled) return;
+  submit.disabled = true;
+  newSessionStatus.hidden = false;
+  newSessionStatus.classList.remove('error');
+  newSessionStatus.textContent = 'Starting session...';
+  try {
+    const data = {directory: newSessionForm.elements.directory.value};
+    const session = newSessionForm.elements.session.value.trim();
+    if (session) data.session = session;
+    const file = newSessionForm.elements.config.files[0];
+    if (file) {
+      if (file.size > 200 * 1024) throw new Error('Team config must be at most 200 KiB.');
+      const text = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = () => reject(new Error('Could not read the team config.'));
+        reader.readAsText(file);
+      });
+      data.config_name = file.name;
+      data.config_text = text;
+    }
+    const result = await api('/api/open', data);
+    openedSession = result.session;
+    newSessionStatus.textContent = 'Opened session ' + result.session;
+    newSessionForm.reset();
+    closeNewSession();
+    await refresh();
+  } catch (error) {
+    newSessionStatus.textContent = error.message;
+    newSessionStatus.classList.add('error');
+  } finally { submit.disabled = false; }
+};
 document.querySelector('#dismiss').onclick = async () => {
   const session = navigation.session;
   if (!session || dismissing || !confirm('Close session ' + session + '? Its agents stop.')) return;
@@ -274,11 +336,27 @@ function updateOutput(card) {
   card.scrollTop = output.scrollTop;
 }
 async function refresh() {
+  if (refreshing) { refreshRequested = true; return; }
+  refreshing = true;
+  clearTimeout(refreshTimer);
   try {
     const visible = cards.get(currentPane());
     const lines = visible && !visible.closed ? visible.lines : 1000;
-    const query = lines > 1000 ? '?pane=' + encodeURIComponent(visible.id) + '&lines=' + lines : '';
-    const {panes, initial} = await api("/api/panes" + query);
+    const query = new URLSearchParams();
+    if (lines > 1000) { query.set('pane', visible.id); query.set('lines', lines); }
+    if (visible && !visible.closed && !visible.el.hidden) {
+      const output = visible.el.querySelector('.output');
+      const style = getComputedStyle(output);
+      cellMeasure.style.font = style.font;
+      const cell = cellMeasure.getBoundingClientRect();
+      const cols = Math.floor((output.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight)) / (cell.width / cellMeasure.textContent.length));
+      const rows = Math.floor((output.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom)) / cell.height);
+      if (cols >= 20 && cols <= 500 && rows >= 5 && rows <= 300) {
+        query.set('cols', cols); query.set('rows', rows);
+      }
+    }
+    const parameters = query.toString();
+    const {panes, initial} = await api("/api/panes" + (parameters ? '?' + parameters : ''));
     connection.textContent = panes.length + " agent" + (panes.length === 1 ? "" : "s") + " connected";
     document.querySelector("#empty").hidden = !!panes.length;
     const keys = new Set(panes.map(paneKey));
@@ -315,9 +393,17 @@ async function refresh() {
       dismissed = null;
       document.querySelector('#dismiss-status').hidden = true;
     }
+    if (openedSession && panes.some(pane => pane.session === openedSession && !pane.closed)) {
+      navigation.session = openedSession;
+      openedSession = null;
+    }
     reconcileNavigation(panes, initial);
   } catch (error) { connection.textContent = error.message; }
-  finally { setTimeout(refresh, 1200); }
+  finally {
+    refreshing = false;
+    refreshTimer = setTimeout(refresh, refreshRequested ? 0 : 1200);
+    refreshRequested = false;
+  }
 }
 refresh().then(async function refreshButtons() {
   try {

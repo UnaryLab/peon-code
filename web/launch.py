@@ -1,8 +1,12 @@
 """Local launch and one-command SSH forwarding without external packages."""
 import argparse
+import errno
 import json
+import os
 import re
 import shlex
+import signal
+import socket
 import subprocess
 import sys
 from pathlib import Path
@@ -16,7 +20,7 @@ def arguments():
     parser = argparse.ArgumentParser(prog="peon-code-web", description="Open your peon-code teams in a browser.", allow_abbrev=False)
     parser.add_argument("session", nargs="?", help="session name (defaults to the folder name with --dir)")
     parser.add_argument("--no-open", action="store_true", help="print the URL without opening a browser")
-    parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="loopback port (default: %(default)s; 0 picks a free local port)")
+    parser.add_argument("--port", type=int, help=f"loopback port (default: {DEFAULT_PORT} with local fallback; 0 picks a free local port)")
     parser.add_argument("--ssh", metavar="HOST", help="start the remote UI, forward it, and open your local browser")
     parser.add_argument("--dir", dest="directory", metavar="PATH", help="create or open this project (resolved on the agent host)")
     parser.add_argument("--config", type=Path, metavar="PATH", help="use this local team config with --dir; upload it with --ssh")
@@ -30,7 +34,7 @@ def arguments():
         args.config = args.config.expanduser().resolve()
         if not args.config.is_file():
             parser.error("Config file does not exist: " + str(args.config))
-    if not 0 <= args.port <= 65535 or (args.ssh and args.port == 0):
+    if args.port is not None and (not 0 <= args.port <= 65535 or (args.ssh and args.port == 0)):
         parser.error("use a port from 1 to 65535 with --ssh; 0 is local-only")
     if args.ssh and (args.ssh.startswith("-") or not re.fullmatch(r"[A-Za-z0-9_.@:\[\]-]+", args.ssh)):
         parser.error("--ssh requires an SSH host alias or user@host")
@@ -54,8 +58,10 @@ def remote_config_path(args):
     return REMOTE_CONFIG_DIR / (name + ".conf")
 
 
-def ssh_command(args):
-    remote_args = ["--stdio", "--no-open", "--port", str(args.port)]
+def ssh_command(args, local_port=None):
+    remote_port = args.port if args.port is not None else DEFAULT_PORT
+    local_port = remote_port if local_port is None else local_port
+    remote_args = ["--stdio", "--no-open", "--port", str(remote_port)]
     if args.directory:
         remote_args.extend(["--dir", args.directory])
     if getattr(args, "config", None):
@@ -63,7 +69,7 @@ def ssh_command(args):
     if args.session:
         remote_args.extend(["--", args.session])
     remote = 'if command -v peon-code-web >/dev/null 2>&1; then exec peon-code-web ' + shlex.join(remote_args) + '; else exec "$HOME/.local/bin/peon-code-web" ' + shlex.join(remote_args) + '; fi'
-    return ["ssh", "-T", "-o", "ExitOnForwardFailure=yes", "-L", f"127.0.0.1:{args.port}:127.0.0.1:{args.port}", "--", args.ssh, remote]
+    return ["ssh", "-T", "-o", "ExitOnForwardFailure=yes", "-L", f"127.0.0.1:{local_port}:127.0.0.1:{remote_port}", "--", args.ssh, remote]
 
 
 def remote_ui(args):
@@ -77,7 +83,20 @@ def remote_ui(args):
             raise RuntimeError("Config copy to SSH host timed out") from error
         if copied.returncode:
             raise RuntimeError(copied.stderr.decode(errors="replace").strip() or "Config copy to SSH host failed")
-    process = subprocess.Popen(ssh_command(args), stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+    remote_port = args.port if args.port is not None else DEFAULT_PORT
+    local_port = remote_port
+    if args.port is None:
+        with socket.socket() as probe:
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                probe.bind(("127.0.0.1", local_port))
+            except OSError as error:
+                if error.errno != errno.EADDRINUSE:
+                    raise
+                probe.bind(("127.0.0.1", 0))
+                local_port = probe.getsockname()[1]
+                print(f"local port {remote_port} is busy, using {local_port}", file=sys.stderr)
+    process = subprocess.Popen(ssh_command(args, local_port), stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
     try:
         # Remote startup may include shell greetings; only trust a validated loopback rendezvous.
         for line in process.stdout:
@@ -97,10 +116,11 @@ def remote_ui(args):
                 if not isinstance(url, str):
                     continue
                 parsed = urlsplit(url)
-                if parsed.scheme != "http" or parsed.netloc != f"127.0.0.1:{args.port}" or parsed.path != "/" or parsed.query or not re.fullmatch(r"[A-Za-z0-9_-]{43}", parsed.fragment):
+                if parsed.scheme != "http" or parsed.netloc != f"127.0.0.1:{remote_port}" or parsed.path != "/" or parsed.query or not re.fullmatch(r"[A-Za-z0-9_-]{43}", parsed.fragment):
                     continue
             except (ValueError, TypeError, KeyError):
                 continue
+            url = parsed._replace(netloc=f"127.0.0.1:{local_port}").geturl()
             print("peon-code-web: " + url + "\nKeep this command running. Press Ctrl-C to stop the SSH connection.", flush=True)
             if not args.no_open:
                 open_browser(url)
@@ -132,7 +152,7 @@ def verify_project(session, project):
         raise RuntimeError("Session " + session + " belongs to a different project: " + (directory or "unknown folder") + "; choose another SESSION name")
 
 
-def open_project(args, root):
+def open_project(args, root, timeout=None):
     project = Path(args.directory).expanduser().resolve()
     if not project.is_dir():
         raise RuntimeError("Project folder does not exist: " + str(project))
@@ -147,14 +167,31 @@ def open_project(args, root):
         if config:
             print(f"session {session} already runs; --config applies only to a new team", file=sys.stderr)
         return session
-    if session in {"resume", "dismiss", "detach", "msg", "send", "explain", "rebrief", "compact", "clear", "watch", "list", "uninstall"}:
+    if session in {"resume", "dismiss", "detach", "msg", "send", "key", "explain", "rebrief", "compact", "clear", "watch", "list", "uninstall"}:
         raise RuntimeError("Session name is a peon-code command: " + session + ". Choose another SESSION name.")
     print("Starting team " + session + " in " + str(project) + "…", file=sys.stderr, flush=True)
     command = [str(root / "peon-code.sh")]
     if config:
         command.extend(["-c", str(Path(config).expanduser().resolve())])
     command.append(session)
-    launched = subprocess.run(command, cwd=str(project), stdin=subprocess.DEVNULL, capture_output=True, text=True)
+    if timeout is None:
+        launched = subprocess.run(command, cwd=str(project), stdin=subprocess.DEVNULL, capture_output=True, text=True)
+    else:
+        process = subprocess.Popen(command, cwd=str(project), stdin=subprocess.DEVNULL,
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                                   start_new_session=True)
+        try:
+            stdout, stderr = process.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired as error:
+            # Stop the launcher and its children before the browser reports failure.
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.communicate()
+            error.stderr = f"Team startup timed out for session {session!r}. Run {shlex.join(['peon-code', 'dismiss', session])} before retrying."
+            raise
+        launched = subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
     if launched.returncode:
         raise RuntimeError((launched.stderr + launched.stdout).strip() or "Agent team could not start")
     verify_project(session, project)
