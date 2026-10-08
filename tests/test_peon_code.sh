@@ -195,6 +195,7 @@ test_weekly_watch() (
   printf '%s\n' '{"payload":{"type":"token_count","rate_limits":{"primary":{"window_minutes":10080,"used_percent":22,"resets_at":1700000000}}}}' >"$transcript"
   tmux() {
     case $1 in
+      display) echo 100 ;;
       has-session)
         ticks=$((ticks + 1))
         case $ticks in 3) printf '\n' >>"$transcript" ;; esac
@@ -253,6 +254,101 @@ test_watch_new_transcript() (
   PEON_WATCH_MIN=0 PEON_WATCH_TICK=0.01 cmd_watch "$session" 1000000 || fail 'watch failed after a new transcript appeared'
 )
 test_watch_new_transcript
+
+test_watch_ignores_old_transcript() (
+  local socket="peon-watch-old-test-$$" session="watch-old-test-$$" pane ticks=0
+  local transcripts="$TEST_DIR/watch-old-transcripts" old_transcript new_transcript
+  # shellcheck source=lib/tmux.sh
+  source "$ROOT/lib/tmux.sh"
+  # shellcheck source=lib/resume.sh
+  source "$ROOT/lib/resume.sh"
+  # shellcheck source=lib/watch.sh
+  source "$ROOT/lib/watch.sh"
+  tmux() { command tmux -L "$socket" -f /dev/null "$@"; }
+  trap 'tmux kill-session -t "=$session" 2>/dev/null || true' EXIT
+  mkdir -p "$transcripts"
+  old_transcript="$transcripts/old.jsonl"
+  new_transcript="$transcripts/new.jsonl"
+  printf '{"prompt":"agent impl of peon-code session %s,","total_token_usage":{"input_tokens":100,"cached_input_tokens":30,"output_tokens":20}}\n' "$session" >"$old_transcript"
+  command sleep 1
+  tmux new-session -d -s "$session" 'exec sleep 60'
+  pane=$(tmux list-panes -t "$session" -F '#{pane_id}')
+  tmux set-option -p -t "$pane" @peon_name impl
+  tmux set-option -p -t "$pane" @peon_bin codex
+  wait_agent_ready "$pane" || fail 'old-transcript watch test pane did not start'
+  # shellcheck disable=SC2034,SC2317 # last_thread_file invokes providers in its scope.
+  codex_resume_dir() { dir=$transcripts; }
+  [ "$(last_thread_file "agent impl of peon-code session $session," codex)" = "$old_transcript" ] ||
+    fail 'unfiltered transcript lookup lost the old transcript'
+  sleep() {
+    ticks=$((ticks + 1))
+    case $ticks in
+      1)
+        [ -z "$(tmux show-options -pqv -t "$pane" @peon_usage)" ] || fail 'watch read a pre-session transcript'
+        command sleep 1
+        printf '{"prompt":"agent impl of peon-code session %s,","total_token_usage":{"input_tokens":200,"cached_input_tokens":40,"output_tokens":50}}\n' "$session" >"$new_transcript"
+        ;;
+      *)
+        [ "$(tmux show-options -pqv -t "$pane" @peon_usage)" = '160 40 0 50' ] || fail 'watch missed the new transcript after ignoring the old one'
+        tmux kill-session -t "=$session"
+        ;;
+    esac
+  }
+  TZ=EST5 PEON_WATCH_MIN=0 PEON_WATCH_TICK=0.01 cmd_watch "$session" 1000000 || fail 'watch failed with a pre-session transcript'
+)
+test_watch_ignores_old_transcript
+
+test_watch_cleanup() (
+  local script="$TEST_DIR/watch-cleanup.sh" mode watch_dir ref watcher="" child="" rc i
+  trap '[ -z "$child" ] || kill -TERM "$child" 2>/dev/null || true' EXIT
+  cat >"$script" <<'WATCH'
+set -euo pipefail
+source "$1/lib/watch.sh"
+mode=$2
+session_name() { printf '%s\n' "$1"; }
+tmux() { case $1 in display) command date +%s ;; esac; return 0; }
+list_agent_panes() { :; }
+sleep() {
+  printf '%s\n' "$$" >"$TMPDIR/ready"
+  [ "$mode" != error ] || return 1
+  command sleep 0.05
+}
+trap 'printf "caller\n" >"$TMPDIR/caller-cleanup"' EXIT
+cmd_watch "peon-watch-cleanup-$$" 1000
+WATCH
+  for mode in term error; do
+    watch_dir="$TEST_DIR/watch cleanup $mode"
+    mkdir -p "$watch_dir"
+    set -- bash "$script" "$ROOT" "$mode"
+    if command -v setsid >/dev/null; then
+      if command -v systemd-run >/dev/null && systemctl --user show-environment >/dev/null 2>&1; then
+        set -- systemd-run --user --scope -q -p OOMPolicy=continue "$@"
+      fi
+      set -- setsid --wait "$@"
+    fi
+    TMPDIR="$watch_dir" "$@" >"$watch_dir/output" 2>&1 &
+    watcher=$!
+    for i in 1 2 3 4 5 6 7 8 9 10; do
+      [ ! -s "$watch_dir/ready" ] || break
+      command sleep 0.1
+    done
+    [ -s "$watch_dir/ready" ] || fail "cleanup watcher did not start: $(cat "$watch_dir/output")"
+    child=$(cat "$watch_dir/ready")
+    set -- "$watch_dir"/peon-code-watch.*
+    ref=$1
+    if [ "$mode" = term ]; then
+      [ -f "$ref" ] || fail 'watcher created no timestamp reference'
+      kill -TERM "$child"
+    fi
+    rc=0
+    wait "$watcher" || rc=$?
+    child=""
+    case $mode:$rc in term:143|error:1) ;; *) fail "watch cleanup exited $rc for $mode" ;; esac
+    [ ! -e "$ref" ] || fail "watch left its reference after $mode"
+    [ "$(cat "$watch_dir/caller-cleanup")" = caller ] || fail "watch lost the caller EXIT trap after $mode"
+  done
+)
+test_watch_cleanup
 
 test_claude_statusline() (
   local socket="peon-weekly-test-$$" session="weekly-test-$$" pane input="$TEST_DIR/statusline-input" rc=0

@@ -36,14 +36,17 @@ last_thread_id() {
 }
 
 # The newest transcript file carrying the marker, or nothing. Shared by the
-# resume lookup and the context watcher.
+# resume lookup and the context watcher. An optional reference file limits
+# the search to transcripts modified after its timestamp.
 last_thread_file() {
-  local marker=$1 bin=$2 dir="" cwd="" found file
+  local marker=$1 bin=$2 ref=${3:-} dir="" cwd="" found file
   cli_call "$bin" resume_dir
   [ -d "$dir" ] || return 0
   # Checked before sorting: with no input, xargs still runs ls, which would
   # then list the working directory instead of transcripts.
-  found=$(find "$dir" -name '*.jsonl' -type f -mtime -30 2>/dev/null) || true
+  set -- "$dir" -name '*.jsonl' -type f -mtime -30
+  [ -z "$ref" ] || set -- "$@" -newer "$ref"
+  found=$(find "$@" 2>/dev/null) || true
   [ -n "$found" ] || return 0
   while IFS= read -r file; do
     grep -qF -- "$marker" "$file" || continue

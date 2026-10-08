@@ -38,11 +38,28 @@ watch_note() {
 cmd_watch() {
   local session threshold panes id name bin file new_file tokens weekly usage owner pid_file
   local now size last_size last_read last_lookup min=${PEON_WATCH_MIN:-60}
+  local created stamp ref exit_trap cleanup
   local unwatched="" disarmed="" files="" reads="" lookups=""
   session=$(session_name "${1:-}")
   threshold=${2:-250000}
   [[ $threshold =~ ^[0-9]+$ ]] || die "watch takes a number of tokens, got: $threshold"
   [ "$threshold" -gt 0 ] || return 0
+  created=$(tmux display -p -t "=$session:" '#{session_created}' 2>/dev/null) || return 0
+  case $created in ''|*[!0-9]*) return 0 ;; esac
+  # BSD and GNU date use different flags to format an epoch.
+  stamp=$(date -u -r "$created" +%Y%m%d%H%M.%S 2>/dev/null) ||
+    stamp=$(date -u -d "@$created" +%Y%m%d%H%M.%S) || return 1
+  ref=$(mktemp "${TMPDIR:-/tmp}/peon-code-watch.XXXXXX") || return 1
+  exit_trap=$(trap -p EXIT)
+  cleanup=$(printf 'rm -f -- %q;' "$ref")
+  if [ -n "$exit_trap" ]; then
+    eval "set -- ${exit_trap#trap -- }"
+    cleanup="$cleanup $1"
+  fi
+  # shellcheck disable=SC2064 # Bind the reference path before local variables leave scope.
+  trap "$cleanup" EXIT
+  trap 'exit 143' TERM
+  TZ=UTC0 touch -t "$stamp" "$ref" || return 1
   pid_file="/tmp/peon-code-watch-$UID/$session.pid"
   (umask 077; mkdir -p "/tmp/peon-code-watch-$UID"; printf '%s\n' "$$" >"$pid_file") || true
   # A resume recreates the session under the same name, so an older watcher
@@ -70,7 +87,7 @@ cmd_watch() {
       now=$(date +%s)
       last_lookup=$(printf '%s\n' "$lookups" | sed -n "s|^$id ||p")
       if [ -z "$last_lookup" ] || [ "$((now - last_lookup))" -ge "$min" ]; then
-        new_file=$(last_thread_file "agent $name of peon-code session $session," "$bin") || new_file=""
+        new_file=$(last_thread_file "agent $name of peon-code session $session," "$bin" "$ref") || new_file=""
         lookups=$(printf '%s\n' "$lookups" | sed "/^$id /d")
         lookups="$lookups"$'\n'"$id $now"
         if [ "$new_file" != "$file" ]; then

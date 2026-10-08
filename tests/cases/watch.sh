@@ -108,6 +108,7 @@ test_watch_loop() (
   : >"$usage_log"
   tmux() {
     case $1 in
+      display) echo 100 ;;
       has-session)
         ticks=$((ticks + 1))
         case $ticks in 3|8) printf 'change\n' >>"$claude" ;; esac
@@ -123,6 +124,7 @@ test_watch_loop() (
   session_name() { echo "$1"; }
   list_agent_panes() { printf '%%0 lead\n%%1 late\n'; }
   last_thread_file() {
+    [ -f "$3" ] || fail 'watch lookup has no session timestamp reference'
     printf '%s %s\n' "$ticks" "$1" >>"$lookup_log"
     case $1 in *'agent late '*) [ "$ticks" -ge 5 ] || return 0 ;; esac
     echo "$claude"
@@ -131,7 +133,7 @@ test_watch_loop() (
   # shellcheck disable=SC2317 # cli_call invokes the provider by name.
   claude_usage_tokens() { printf '%s\n' "$ticks" >>"$usage_log"; echo '1 2 3 4'; }
   date() {
-    [ "$1" = +%s ] || fail 'watch used a non-portable date flag'
+    if [ "$1" != +%s ]; then command date "$@"; return; fi
     case $ticks in
       1) echo 100 ;; 2) echo 105 ;; 3) echo 110 ;; 4) echo 159 ;;
       5) echo 160 ;; 6) echo 165 ;; 7) echo 220 ;; 8) echo 225 ;;
@@ -156,6 +158,7 @@ test_watch_usage() (
   : >"$log"
   tmux() {
     case $1 in
+      display) echo 100 ;;
       has-session)
         ticks=$((ticks + 1))
         printf 'change\n' >>"$transcript"
