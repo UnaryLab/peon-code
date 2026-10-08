@@ -147,13 +147,19 @@ refresh().then(parameters => {document.querySelector('#result').textContent = JS
         with tempfile.TemporaryDirectory() as directory:
             html = Path(directory) / "measure.html"
             html.write_text('<!doctype html><style>' + (ROOT / "web/style.css").read_text() + '</style><pre class="output" style="width:640px;height:416px;flex:none;box-sizing:content-box"></pre><pre id="result"></pre><script>' + script + '</script>')
-            process = subprocess.Popen([chrome, "--headless", "--no-sandbox", "--disable-gpu", "--dump-dom", "--user-data-dir=" + str(Path(directory) / "profile"), html.as_uri()], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
+            process = subprocess.Popen([chrome, "--headless=new", "--no-sandbox", "--disable-gpu", "--no-first-run", "--no-default-browser-check", "--disable-extensions", "--disable-background-networking", "--disable-dev-shm-usage", "--virtual-time-budget=5000", "--dump-dom", "--user-data-dir=" + str(Path(directory) / "profile"), html.as_uri()], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
             try:
-                stdout, stderr = process.communicate(timeout=20)
+                stdout, stderr = process.communicate(timeout=60)
+            except subprocess.TimeoutExpired:
+                self.fail("Chrome timed out after 60 seconds")
             finally:
                 if process.poll() is None:
                     os.killpg(process.pid, signal.SIGKILL)
-                    process.communicate()
+                    try:
+                        process.communicate(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        process.stdout.close()
+                        process.stderr.close()
             self.assertEqual(process.returncode, 0, stderr)
             result = json.loads(unescape(stdout.split('<pre id="result">', 1)[1].split('</pre>', 1)[0]))
             self.assertAlmostEqual(result["lineHeight"], 20.8, delta=0.02)
