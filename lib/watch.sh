@@ -36,7 +36,7 @@ watch_note() {
 # reading drops below the threshold again, so a floor above the threshold
 # (a huge system prompt) is reported once rather than on each changed reading.
 cmd_watch() {
-  local session threshold panes id name bin file tokens weekly usage owner pid_file
+  local session threshold panes id name bin file new_file tokens weekly usage owner pid_file
   local now size last_size last_read last_lookup min=${PEON_WATCH_MIN:-60}
   local unwatched="" disarmed="" files="" reads="" lookups=""
   session=$(session_name "${1:-}")
@@ -64,21 +64,23 @@ cmd_watch() {
         esac
         continue
       fi
-      # Retry a missing transcript only at the read interval, then keep its
-      # path. A pane id never repeats within a session.
+      # Refresh the transcript path at the read interval. A pane id never
+      # repeats within a session.
       file=$(printf '%s\n' "$files" | sed -n "s|^$id ||p")
-      if [ -z "$file" ]; then
-        now=$(date +%s)
-        last_lookup=$(printf '%s\n' "$lookups" | sed -n "s|^$id ||p")
-        if [ -n "$last_lookup" ] && [ "$((now - last_lookup))" -lt "$min" ]; then
-          continue
-        fi
-        file=$(last_thread_file "agent $name of peon-code session $session," "$bin") || file=""
+      now=$(date +%s)
+      last_lookup=$(printf '%s\n' "$lookups" | sed -n "s|^$id ||p")
+      if [ -z "$last_lookup" ] || [ "$((now - last_lookup))" -ge "$min" ]; then
+        new_file=$(last_thread_file "agent $name of peon-code session $session," "$bin") || new_file=""
         lookups=$(printf '%s\n' "$lookups" | sed "/^$id /d")
         lookups="$lookups"$'\n'"$id $now"
-        [ -n "$file" ] || continue
-        files="$files"$'\n'"$id $file"
+        if [ "$new_file" != "$file" ]; then
+          file=$new_file
+          files=$(printf '%s\n' "$files" | sed "/^$id /d")
+          files="$files"$'\n'"$id $file"
+          reads=$(printf '%s\n' "$reads" | sed "/^$id /d")
+        fi
       fi
+      [ -n "$file" ] || continue
       size=$(wc -c 2>/dev/null <"$file") || continue
       now=$(date +%s)
       read -r last_size last_read <<<"$(printf '%s\n' "$reads" | sed -n "s|^$id ||p")"

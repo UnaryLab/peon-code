@@ -213,6 +213,47 @@ test_weekly_watch() (
 )
 test_weekly_watch
 
+test_watch_new_transcript() (
+  local socket="peon-watch-new-test-$$" session="watch-new-test-$$" pane ticks=0
+  local transcripts="$TEST_DIR/watch-transcripts" old_transcript new_transcript
+  # shellcheck source=lib/tmux.sh
+  source "$ROOT/lib/tmux.sh"
+  # shellcheck source=lib/resume.sh
+  source "$ROOT/lib/resume.sh"
+  # shellcheck source=lib/watch.sh
+  source "$ROOT/lib/watch.sh"
+  tmux() { command tmux -L "$socket" -f /dev/null "$@"; }
+  trap 'tmux kill-session -t "=$session" 2>/dev/null || true' EXIT
+  tmux new-session -d -s "$session" 'exec sleep 60'
+  pane=$(tmux list-panes -t "$session" -F '#{pane_id}')
+  tmux set-option -p -t "$pane" @peon_name impl
+  tmux set-option -p -t "$pane" @peon_bin codex
+  wait_agent_ready "$pane" || fail 'watch test pane did not start'
+  mkdir -p "$transcripts"
+  old_transcript="$transcripts/old.jsonl"
+  new_transcript="$transcripts/new.jsonl"
+  # shellcheck disable=SC2034,SC2317 # last_thread_file invokes providers in its scope.
+  codex_resume_dir() { dir=$transcripts; }
+  printf '{"prompt":"agent impl of peon-code session %s,","total_token_usage":{"input_tokens":100,"cached_input_tokens":30,"output_tokens":20}}\n' "$session" >"$old_transcript"
+  sleep() {
+    ticks=$((ticks + 1))
+    case $ticks in
+      1)
+        [ "$(tmux show-options -pqv -t "$pane" @peon_usage)" = '70 30 0 20' ] || fail 'watch did not read the old transcript'
+        command sleep 1
+        printf '{"prompt":"agent impl of peon-code session %s,","total_token_usage":{"input_tokens":200,"cached_input_tokens":40,"output_tokens":50}}\n' "$session" >"$new_transcript"
+        [ "$(wc -c <"$old_transcript")" -eq "$(wc -c <"$new_transcript")" ] || fail 'watch transcript fixtures differ in size'
+        ;;
+      *)
+        [ "$(tmux show-options -pqv -t "$pane" @peon_usage)" = '160 40 0 50' ] || fail 'watch did not switch to the newer transcript'
+        tmux kill-session -t "=$session"
+        ;;
+    esac
+  }
+  PEON_WATCH_MIN=0 PEON_WATCH_TICK=0.01 cmd_watch "$session" 1000000 || fail 'watch failed after a new transcript appeared'
+)
+test_watch_new_transcript
+
 test_claude_statusline() (
   local socket="peon-weekly-test-$$" session="weekly-test-$$" pane input="$TEST_DIR/statusline-input" rc=0
   local fake_bin="$TEST_DIR/statusline-bin"

@@ -95,8 +95,8 @@ test_watch_launch() {
   assert_contains "$TEST_DIR/watch-bad.err" "watch takes a number of tokens"
 }
 
-# Changed transcripts wait for each pane's read interval. Missing paths use
-# the same interval for lookup, while known paths stay cached.
+# Changed transcripts wait for each pane's read interval. Known and missing
+# paths use the same interval for lookup.
 test_watch_loop() (
   local claude="$TEST_DIR/watch transcript.jsonl" lookup_log="$TEST_DIR/lookups" err="$TEST_DIR/watch-loop.err" ticks=0
   local session="peon-watch-loop-$$" read_log="$TEST_DIR/watch-reads" owners="$TEST_DIR/watch-owners" PEON_WATCH_MIN=60
@@ -142,7 +142,7 @@ test_watch_loop() (
   [ "$ticks" -eq 9 ] || fail "watch loop ran $ticks has-session checks, expected 9"
   [ "$(cat "$read_log")" = "$(printf '1\n5\n5\n8\n8\n')" ] || fail "watch read unchanged transcripts or missed a pane's read interval: $(cat "$read_log")"
   [ "$(cat "$usage_log")" = "$(cat "$read_log")" ] || fail 'watch read usage outside a full transcript read'
-  [ "$(cat "$lookup_log")" = "$(printf '1 agent lead of peon-code session %s,\n1 agent late of peon-code session %s,\n5 agent late of peon-code session %s,\n' "$session" "$session" "$session")" ] || fail "watch missed the cached path or repeated a missing lookup inside its interval: $(cat "$lookup_log")"
+  [ "$(cat "$lookup_log")" = "$(printf '1 agent lead of peon-code session %s,\n1 agent late of peon-code session %s,\n5 agent lead of peon-code session %s,\n5 agent late of peon-code session %s,\n7 agent lead of peon-code session %s,\n7 agent late of peon-code session %s,\n' "$session" "$session" "$session" "$session" "$session" "$session")" ] || fail "watch missed a path refresh or repeated a lookup inside its interval: $(cat "$lookup_log")"
   [ "$(wc -l <"$owners")" -eq 8 ] || fail 'watch skipped an ownership check'
   [ ! -s "$err" ] || fail "watch loop wrote to stderr: $(cat "$err")"
   [ ! -e "/tmp/peon-code-watch-$UID/$session.pid" ] || fail "watch loop left its PID file"
