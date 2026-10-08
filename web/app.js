@@ -8,6 +8,15 @@ const connection = document.querySelector('#connection');
 let dragging = false;
 let dismissing = false;
 let dismissed = null;
+let actionButtons = [];
+let backspaceTimer;
+let backspaceCard;
+function stopBackspaceRepeat() {
+  clearTimeout(backspaceTimer);
+  const card = backspaceCard;
+  backspaceCard = null;
+  if (card) setSelection(card, card.selected);
+}
 async function api(path, data) {
   const response = await fetch(path, {method: data ? 'POST' : 'GET', headers: {
     'X-Peon-Token': token, ...(data ? {'Content-Type': 'application/json'} : {})
@@ -32,36 +41,48 @@ document.querySelector('#dismiss').onclick = async () => {
   catch (error) { status.textContent = error.message; status.classList.add('error'); }
   finally { dismissing = false; updateNavigation(); }
 };
+function renderButtons(card) {
+  card.el.querySelector('.prompt-buttons').replaceChildren(...actionButtons.map(action => {
+    const button = document.createElement('button');
+    button.type = 'button'; button.textContent = action.name; button.title = action.description;
+    button.disabled = card.busy || card.closed;
+    button.onclick = () => send(card, 'send', action.prompt, false);
+    return button;
+  }));
+}
 function feedback(card, message, error = false) {
   card.el.querySelector('.feedback').textContent = message;
   card.el.querySelector('.feedback').classList.toggle('error', error);
 }
 function setSelection(card, text) {
   card.selected = text;
-  card.el.querySelector('.copy').disabled = !text.trim();
+  for (const button of card.el.querySelectorAll('.prompt-buttons button, .add-button, .button-form button[type="submit"]')) button.disabled = card.busy || card.closed;
   card.el.querySelector('.explain').disabled = !text.trim() || card.busy || card.closed;
   card.el.querySelector('.resume').hidden = !text || card.closed;
   card.el.querySelector('.discard').hidden = !card.closed;
   card.el.querySelector('.discard').disabled = card.busy;
-  card.el.querySelector('form button').disabled = card.busy || card.closed;
-  for (const button of card.el.querySelectorAll('.keys button')) button.disabled = card.busy || card.closed;
+  card.el.querySelector('.message-form button').disabled = card.busy || card.closed;
+  for (const button of card.el.querySelectorAll('.keys button')) {
+    button.disabled = (card.busy || card.closed) && !(card === backspaceCard && button.dataset.key === 'Backspace');
+    if (button.dataset.key === 'Backspace') button.setAttribute('aria-disabled', String(card.busy || card.closed));
+  }
   card.el.querySelector('.selection-note').textContent = text ? 'Selection saved · updates paused' : '';
   card.el.querySelector('.state').textContent = card.closed ? 'Closed' : text ? 'Paused' : 'Live';
 }
-async function send(card, action, text) {
+async function send(card, action, text, append = true) {
   if (card.closed || card.busy) return;
   const selectionRevision = card.selectionRevision;
   const draftRevision = card.draftRevision;
   card.busy = true;
-  card.el.querySelector('form button').disabled = true;
+  card.el.querySelector('.message-form button').disabled = true;
   setSelection(card, card.selected);
   feedback(card, 'Sending to this agent…');
   try {
-    const result = await api('/api/' + action, {pane: card.id, identity: card.latest.identity, ...(action === 'keys' ? {key: text} : {text}), ...(action === 'send' ? {append: true} : {})});
+    const result = await api('/api/' + action, {pane: card.id, identity: card.latest.identity, ...(action === 'keys' ? {key: text} : {text}), ...(action === 'send' && append ? {append: true} : {})});
     feedback(card, action === 'keys' && text === 'Enter' ? 'Pressed Enter' : result.message);
     if (action === 'explain') {
       if (card.selected === text && card.selectionRevision === selectionRevision) { setSelection(card, ''); if (card.key === currentPane()) getSelection().removeAllRanges(); }
-    } else if (action === 'send' && card.draftRevision === draftRevision && card.el.querySelector('textarea').value === text) card.el.querySelector('textarea').value = '';
+    } else if (action === 'send' && card.draftRevision === draftRevision && card.el.querySelector('.message-form textarea').value === text) card.el.querySelector('.message-form textarea').value = '';
   } catch (error) { feedback(card, error.message, true); }
   finally { card.busy = false; setSelection(card, card.selected); }
 }
@@ -69,7 +90,7 @@ function inputHint(pane) {
   const markerRow = (pane.screen || '').split('\n').reverse().find(row => /[❯›]/.test(row));
   if (!markerRow) return '';
   const parsed = document.createElement('div');
-  for (const row of pane.output.split('\n').reverse()) {
+  for (const row of (pane.styledScreen || '').split('\n').reverse()) {
     if (!/[❯›]/.test(row)) continue;
     let hint = '', afterMarker = false;
     renderAnsi(parsed, row, '', (text, hinted) => {
@@ -85,12 +106,12 @@ function inputBox(pane) {
   const screen = (pane.screen || '').split('\n');
   if (screen[screen.length - 1] === '') screen.pop();
   if (pane.menu || !Number.isInteger(pane.cursorY) || pane.cursorY < 0 || pane.cursorY >= screen.length || !/^ *[❯›]/.test(screen[pane.cursorY])) return '';
-  const styled = pane.output.split('\n');
+  const styled = (pane.styledScreen || '').split('\n');
   if (styled[styled.length - 1] === '') styled.pop();
   if (styled.length < screen.length) return '';
   const parsed = document.createElement('div');
   let text = '', afterMarker = false;
-  renderAnsi(parsed, styled[styled.length - screen.length + pane.cursorY], '', (span, hinted) => {
+  renderAnsi(parsed, styled[pane.cursorY], '', (span, hinted) => {
     const marker = span.search(/[❯›]/);
     if (!afterMarker && marker >= 0) { afterMarker = true; span = span.slice(marker + 1); }
     if (afterMarker && !hinted) text += span;
@@ -130,18 +151,54 @@ function createCard(pane) {
     el.querySelector('.key-buttons').hidden = !card.keysOpen;
   };
   for (const button of el.querySelectorAll('.key-buttons button')) button.onclick = () => send(card, 'keys', button.dataset.key);
+  const backspace = el.querySelector('.key-buttons button[data-key="Backspace"]');
+  let backspaceRepeated = false;
+  backspace.onclick = event => { if (!backspaceRepeated || event.detail === 0) send(card, 'keys', 'Backspace'); };
+  backspace.onpointerdown = event => {
+    if (event.button !== 0 || card.busy || card.closed) return;
+    backspaceRepeated = false;
+    stopBackspaceRepeat();
+    backspaceCard = card;
+    backspaceTimer = setTimeout(function repeat() {
+      backspaceRepeated = true;
+      send(card, 'keys', 'Backspace');
+      backspaceTimer = setTimeout(repeat, 80);
+    }, 400);
+  };
+  backspace.onpointerleave = stopBackspaceRepeat;
   const shortcuts = document.createElement('div');
   shortcuts.className = 'key-shortcuts';
   el.querySelector('.keys').append(shortcuts);
-  el.querySelector('textarea').oninput = () => { card.draftRevision++; };
-  el.querySelector('textarea').onkeydown = event => {
+  el.querySelector('.message-form textarea').oninput = () => { card.draftRevision++; };
+  el.querySelector('.message-form textarea').onkeydown = event => {
     if (event.key === 'Enter' && event.shiftKey && !event.isComposing) {
-      event.preventDefault(); el.querySelector('form').requestSubmit();
+      event.preventDefault(); el.querySelector('.message-form').requestSubmit();
     }
   };
   el.querySelector('h2').textContent = pane.name;
   el.querySelector('.meta').textContent = pane.session + ' / ' + pane.id + ' / ' + pane.command;
   el.querySelector('.explain').onclick = () => send(card, 'explain', card.selected);
+  renderButtons(card);
+  const buttonForm = el.querySelector('.button-form');
+  el.querySelector('.add-button').onclick = () => {
+    buttonForm.hidden = false;
+    buttonForm.querySelector('[name="name"]').focus();
+  };
+  buttonForm.querySelector('.cancel').onclick = () => {
+    buttonForm.hidden = true; buttonForm.reset(); el.querySelector('.add-button').focus();
+  };
+  buttonForm.onsubmit = async event => {
+    event.preventDefault();
+    if (card.busy || card.closed) return;
+    card.busy = true; setSelection(card, card.selected);
+    try {
+      actionButtons = await api('/api/buttons', Object.fromEntries(new FormData(buttonForm)));
+      for (const other of cards.values()) renderButtons(other);
+      buttonForm.hidden = true; buttonForm.reset();
+      feedback(card, 'Button saved');
+    } catch (error) { feedback(card, error.message, true); }
+    finally { card.busy = false; setSelection(card, card.selected); }
+  };
   el.querySelector('.output').onscroll = event => {
     const output = event.currentTarget;
     if (card.el.hidden || card.closed) return;
@@ -154,19 +211,12 @@ function createCard(pane) {
   };
   el.querySelector('.output').onkeydown = event => {
     if (event.ctrlKey || event.altKey || event.metaKey || event.isComposing || card.closed || card.busy) return;
-    const key = {ArrowUp: 'Up', ArrowDown: 'Down', Enter: 'Enter', Escape: 'Escape'}[event.key];
+    const key = {ArrowUp: 'Up', ArrowDown: 'Down', Enter: 'Enter', Escape: 'Escape', Backspace: 'Backspace'}[event.key];
     if (typeof key === 'string') { event.preventDefault(); send(card, 'keys', key); }
   };
   el.querySelector('.output').oncontextmenu = event => {
     if (document.querySelector('#right-click').checked && card.selected.trim() && !card.busy && !card.closed) {
       event.preventDefault(); send(card, 'explain', card.selected);
-    }
-  };
-  el.querySelector('.copy').onclick = async () => {
-    try { await navigator.clipboard.writeText(card.selected); feedback(card, 'Copied'); }
-    catch {
-      restoreSelection(el.querySelector(".output"), card.selected);
-      feedback(card, 'Use ⌘ / Ctrl + C to copy the highlighted text.', true);
     }
   };
   el.querySelector('.resume').onclick = () => { setSelection(card, ''); getSelection().removeAllRanges(); };
@@ -175,9 +225,9 @@ function createCard(pane) {
     el.remove(); cards.delete(card.key);
     reconcileNavigation(navigation.panes.filter(pane => paneKey(pane) !== card.key));
   };
-  el.querySelector('form').onsubmit = event => {
+  el.querySelector('.message-form').onsubmit = event => {
     event.preventDefault();
-    const text = el.querySelector('textarea').value;
+    const text = el.querySelector('.message-form textarea').value;
     if (!text.trim() && card.latest.menu) return;
     if (!card.busy) send(card, text.trim() ? 'send' : 'keys', text.trim() ? text : 'Enter');
   };
@@ -186,15 +236,18 @@ function createCard(pane) {
   return card;
 }
 document.addEventListener('pointerdown', event => { dragging = !!event.target.closest('.output'); });
-document.addEventListener('pointerup', () => { dragging = false; });
-document.addEventListener('pointercancel', () => { dragging = false; });
+document.addEventListener('pointerup', () => { dragging = false; stopBackspaceRepeat(); }, true);
+document.addEventListener('pointercancel', () => { dragging = false; stopBackspaceRepeat(); }, true);
+window.addEventListener('blur', stopBackspaceRepeat);
+document.addEventListener('visibilitychange', () => { if (document.hidden) stopBackspaceRepeat(); });
 document.addEventListener('selectionchange', () => {
   const selection = getSelection();
-  if (!selection.rangeCount || selection.isCollapsed) return;
+  if (!selection.rangeCount) return;
   const range = selection.getRangeAt(0);
   for (const card of cards.values()) {
     const output = card.el.querySelector('.output');
     if (output.contains(range.startContainer) && output.contains(range.endContainer)) {
+      if (selection.isCollapsed && (!card.selected || card.closed)) return;
       card.selectionRevision++;
       setSelection(card, selection.toString());
       return;
@@ -245,7 +298,7 @@ async function refresh() {
     }
     for (const [key, card] of cards) {
       if (!keys.has(key)) {
-        if (card.selected || card.el.querySelector('textarea').value || card.busy) {
+        if (card.selected || card.el.querySelector('.message-form textarea').value || card.busy) {
           if (!card.closed) feedback(card, 'This agent closed. Copy your text or discard it.', true);
           card.closed = true;
           card.boxText = ''; card.boxSince = 0; card.waitingText = false;
@@ -258,9 +311,19 @@ async function refresh() {
     if (dismissed && !panes.some(pane => pane.session === dismissed && !pane.closed)) {
       if (navigation.session === dismissed) navigation.session = undefined;
       dismissed = null;
+      document.querySelector('#dismiss-status').hidden = true;
     }
     reconcileNavigation(panes, initial);
   } catch (error) { connection.textContent = error.message; }
   finally { setTimeout(refresh, 1200); }
 }
-refresh();
+refresh().then(async function refreshButtons() {
+  try {
+    const buttons = await api('/api/buttons');
+    if (JSON.stringify(buttons) !== JSON.stringify(actionButtons)) {
+      actionButtons = buttons;
+      for (const card of cards.values()) renderButtons(card);
+    }
+  } catch (error) { connection.textContent = error.message; }
+  finally { setTimeout(refreshButtons, 5000); }
+});

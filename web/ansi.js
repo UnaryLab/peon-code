@@ -86,17 +86,3 @@ function renderAnsi(output, text, defaultStyle = '', onSpan = null) {
   }
   append(text.slice(cursor)); output.replaceChildren(fragment);
 }
-function restoreSelection(output, selected) {
-  const start = output.textContent.indexOf(selected);
-  if (start < 0) return;
-  const walker = document.createTreeWalker(output, NodeFilter.SHOW_TEXT);
-  const range = document.createRange(); let position = 0, node, started = false;
-  while ((node = walker.nextNode())) {
-    const end = position + node.length;
-    if (!started && start < end) { range.setStart(node, start - position); started = true; }
-    if (started && start + selected.length <= end) {
-      range.setEnd(node, start + selected.length - position); getSelection().removeAllRanges(); getSelection().addRange(range); return;
-    }
-    position = end;
-  }
-}

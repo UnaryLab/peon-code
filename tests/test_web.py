@@ -75,6 +75,89 @@ class WebTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertIn("日本語", json.loads(body)["panes"][0]["output"])
 
+    def test_buttons_list_create_and_duplicate(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(web, "BUTTONS_DIR", Path(directory) / "buttons"):
+            self.assertEqual(json.loads(self.request("GET", "/api/buttons")[1]), [])
+            web.BUTTONS_DIR.mkdir()
+            saved = Path(self.config.name) / "peon-code" / "buttons"
+            first = dict(name="Z check_1", description="Check the changes", prompt="It's `quoted` $(literal)\r\n日本語\n")
+            second = dict(name="A-check", description="", prompt="Check again")
+            for button, expected in ((first, [first]), (second, [second, first])):
+                status, body = self.request("POST", "/api/buttons", button)
+                self.assertEqual((status, json.loads(body)), (200, expected))
+                self.assertEqual((saved / (button["name"] + ".md")).read_bytes().decode("utf-8"),
+                                 "---\ndescription: " + button["description"] + "\n---\n" + button["prompt"])
+                self.assertFalse((web.BUTTONS_DIR / (button["name"] + ".md")).exists())
+            (web.BUTTONS_DIR / "Malformed.md").write_text("no frontmatter")
+            (web.BUTTONS_DIR / "Invalid.name.md").write_text("---\ndescription: Invalid name\n---\nPrompt")
+            (web.BUTTONS_DIR / "Dir.md").mkdir()
+            (web.BUTTONS_DIR / "Dangling.md").symlink_to(web.BUTTONS_DIR / "missing")
+            status, body = self.request("GET", "/api/buttons")
+            self.assertEqual((status, json.loads(body)), (200, [second, first]))
+            status, body = self.request("POST", "/api/buttons", dict(first, prompt="Overwrite"))
+            self.assertEqual(status, 409)
+            self.assertIn("error", json.loads(body))
+            self.assertEqual(json.loads(self.request("GET", "/api/buttons")[1]), [second, first])
+
+    def test_buttons_trim_spaces_and_read_crlf_without_changing_prompt(self):
+        button = dict(name="Check", description="Check changes", prompt="Check this branch")
+        crlf = dict(name="Windows", description="CRLF header", prompt="Line one\r\nLine two\n")
+        with tempfile.TemporaryDirectory() as directory, patch.object(web, "BUTTONS_DIR", Path(directory)):
+            status, body = self.request("POST", "/api/buttons", dict(button, name="  Check  "))
+            self.assertEqual((status, json.loads(body)), (200, [button]))
+            saved = Path(self.config.name) / "peon-code" / "buttons"
+            self.assertTrue((saved / "Check.md").is_file())
+            self.assertEqual(self.request("POST", "/api/buttons", dict(button, name=" Check "))[0], 409)
+            (web.BUTTONS_DIR / "Windows.md").write_bytes(
+                ("---\r\ndescription: " + crlf["description"] + "\r\n---\r\n" + crlf["prompt"]).encode("utf-8"))
+            status, body = self.request("GET", "/api/buttons")
+            self.assertEqual((status, json.loads(body)), (200, [button, crlf]))
+            self.assertEqual(self.request("POST", "/api/buttons", crlf)[0], 409)
+            self.assertFalse((saved / "Windows.md").exists())
+            read = Path.read_bytes
+            def read_or_deny(path):
+                if path.name == "Check.md":
+                    raise PermissionError("Cannot read button")
+                return read(path)
+            with patch.object(Path, "read_bytes", read_or_deny):
+                status, body = self.request("GET", "/api/buttons")
+                self.assertEqual((status, json.loads(body)), (200, [crlf]))
+
+    def test_buttons_validation_and_authentication(self):
+        valid = dict(name="Check", description="Check changes", prompt="Check this branch")
+        with tempfile.TemporaryDirectory() as directory, patch.object(web, "BUTTONS_DIR", Path(directory)):
+            for method in ("GET", "POST"):
+                for headers in ({"X-Peon-Token": ""}, {"Host": "evil.test"}, {"Origin": "https://evil.test"}):
+                    self.assertEqual(self.request(method, "/api/buttons", valid if method == "POST" else None, headers)[0], 403)
+            invalid = [{"name": name} for name in ("../escape", "a/b", "a\\b", "a.md", "é", "x\n", " ", "", "x" * 81, 1, None)]
+            invalid += [{"description": value} for value in ("two\nlines", "line\rbreak", "x" * 501, None, 1, "\ud800")]
+            invalid += [{"prompt": value} for value in (" ", "", "x" * 200001, None, [], "\ud800")]
+            for fields in invalid:
+                with self.subTest(fields=fields):
+                    self.assertEqual(self.request("POST", "/api/buttons", dict(valid, **fields))[0], 400)
+            for data in ([], "text", 1, None, {}):
+                self.assertEqual(self.request("POST", "/api/buttons", data)[0], 400)
+            self.assertEqual(self.request("POST", "/api/buttons", dict(valid, padding="x" * 262144))[0], 400)
+            self.assertEqual(self.request("POST", "/api/buttons", valid, {"Content-Type": "text/plain"})[0], 400)
+            self.assertEqual(list(Path(directory).iterdir()), [])
+
+    def test_buttons_concurrent_create_never_overwrites(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(web, "BUTTONS_DIR", Path(directory)):
+            barrier, results = threading.Barrier(2), []
+            def save(prompt):
+                barrier.wait()
+                status, _ = self.request("POST", "/api/buttons", dict(name="Same", description="", prompt=prompt))
+                results.append((status, prompt))
+            threads = [threading.Thread(target=save, args=(prompt,)) for prompt in ("First", "Second")]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=5)
+            self.assertEqual(sorted(status for status, _ in results), [200, 409])
+            winner = next(prompt for status, prompt in results if status == 200)
+            self.assertEqual(json.loads(self.request("GET", "/api/buttons")[1]),
+                             [dict(name="Same", description="", prompt=winner)])
+
     def test_scrollback_depth_validation_and_authentication(self):
         path = "/api/panes?pane=%252&lines="
         self.assertEqual(self.request("GET", path + "2000", headers={"X-Peon-Token": ""})[0], 403)
@@ -132,7 +215,7 @@ class WebTests(unittest.TestCase):
             self.assertEqual(run.call_count, 3)
 
     def test_keys_validate_identity_and_only_send_allowed_keys(self):
-        keys = ("Tab", "Up", "Down", "Enter", "Escape")
+        keys = ("Tab", "Up", "Down", "Enter", "Escape", "Backspace")
         def deliver(args, text, identity):
             self.assertTrue(self.server.send_lock.locked())
             return subprocess.CompletedProcess(args, 0, "key sent", "")
@@ -142,8 +225,8 @@ class WebTests(unittest.TestCase):
                 status, body = self.request("POST", "/api/keys", data)
                 self.assertEqual((status, json.loads(body)), (200, {"message": "key sent"}))
                 flags = ["--submit"] if key == "Enter" else []
-                run.assert_called_with([str(ROOT / "peon-code.sh"), "key", *flags, "%2", key], "", "server:session:pane")
-            for key in (*"0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ", "Esc", "tab", "10", "aa", "é", "C-c", "Tab Enter", "", None, 1, []):
+                run.assert_called_with([str(ROOT / "peon-code.sh"), "key", *flags, "%2", "BSpace" if key == "Backspace" else key], "", "server:session:pane")
+            for key in (*"0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ", "Esc", "tab", "BSpace", "backspace", "Bspace", "10", "aa", "é", "C-c", "Tab Enter", "", None, 1, []):
                 with self.subTest(key=key):
                     self.assertEqual(self.request("POST", "/api/keys", dict(pane="%2", identity="server:session:pane", key=key))[0], 400)
             data = dict(pane="%2", identity="server:session:pane", key="Enter")
@@ -218,6 +301,21 @@ class WebTests(unittest.TestCase):
                 if lock.exists():
                     (lock / "owner").unlink(missing_ok=True)
                     lock.rmdir()
+
+    def test_snapshot_joins_history_but_keeps_visible_screen_rows(self):
+        pane = dict(id="%2", identity="100:$1:202")
+        visible = "› wrapped input\ncontinues here\nHint below cursor\nwraps here\n"
+        styled = "› wrapped input\ncontinues here\n\x1b[2mHint below cursor\nwraps here\x1b[0m\n"
+        with patch.object(bridge, "tmux", side_effect=["› wrapped inputcontinues here\nHint below cursorwraps here\n", visible, styled, "", "0", "100:$1:202\t1500\t1\n"]) as tmux:
+            result = bridge.snapshot(pane, 2000)
+        self.assertEqual(tmux.call_args_list[0].args,
+                         ("capture-pane", "-p", "-e", "-N", "-J", "-t", "%2", "-S", "-2000"))
+        self.assertEqual(tmux.call_args_list[1].args, ("capture-pane", "-p", "-t", "%2"))
+        self.assertEqual(tmux.call_args_list[2].args, ("capture-pane", "-p", "-e", "-N", "-t", "%2"))
+        self.assertEqual(result["screen"], visible)
+        self.assertEqual(result["styledScreen"], styled)
+        self.assertEqual(result["cursorY"], 1)
+        self.assertFalse(result["menu"])
 
     def test_closed_or_replaced_snapshot_is_omitted(self):
         for result in (None, subprocess.CalledProcessError(1, 'tmux')):

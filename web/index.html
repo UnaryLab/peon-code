@@ -40,11 +40,19 @@
       <pre tabindex="0" class="output" aria-label="Agent output"></pre>
       <div class="actions">
         <button class="explain" disabled>Explain selection</button>
-        <button class="copy" disabled>Copy</button>
+        <span class="prompt-buttons"></span>
         <button class="resume" hidden>Resume updates</button>
         <button class="discard" hidden>Discard saved text</button>
         <span class="selection-note"></span>
+        <button type="button" class="add-button" aria-label="Add button">+</button>
       </div>
+      <form class="button-form" hidden>
+        <label>Name<input name="name" maxlength="80" required></label>
+        <label>Description<input name="description" maxlength="500"></label>
+        <label>Prompt<textarea name="prompt" rows="3" maxlength="200000" required></textarea></label>
+        <button type="submit">Save</button>
+        <button type="button" class="cancel">Cancel</button>
+      </form>
       <div class="keys">
         <button type="button" class="keys-toggle" aria-expanded="false">Keys</button>
         <div class="key-buttons" hidden>
@@ -53,9 +61,10 @@
           <button type="button" data-key="Tab">Tab</button>
           <button type="button" data-key="Enter">Enter</button>
           <button type="button" data-key="Escape">Esc</button>
+          <button type="button" data-key="Backspace">Backspace</button>
         </div>
       </div>
-      <form><textarea rows="2" placeholder="Ask this agent something… (Shift+Enter to send)" aria-label="Message this agent"></textarea><button type="submit">Send ↗</button></form>
+      <form class="message-form"><textarea rows="2" placeholder="Ask this agent something… (Shift+Enter to send)" aria-label="Message this agent"></textarea><button type="submit">Send ↗</button></form>
       <p class="feedback" role="status"></p>
     </article>
   </template>

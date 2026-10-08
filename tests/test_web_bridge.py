@@ -41,7 +41,7 @@ class BridgeTests(unittest.TestCase):
 
     def test_capture_keeps_ansi_and_background(self):
         pane = {'id': '%2', 'identity': '100:$1:202'}
-        with patch.object(bridge, 'tmux', side_effect=['\x1b[38;2;1;2;3mtext\x1b[0m', '› 2. Continue\n', 'fg=#abcdef,bg=#123456\n', '0', '100:$1:202\t1500\t0\n']) as tmux:
+        with patch.object(bridge, 'tmux', side_effect=['\x1b[38;2;1;2;3mtext\x1b[0m', '› 2. Continue\n', '\x1b[31m› 2. Continue\x1b[0m\n', 'fg=#abcdef,bg=#123456\n', '0', '100:$1:202\t1500\t0\n']) as tmux:
             bridge.snapshot(pane, 2000)
         self.assertIn('-e', tmux.call_args_list[0].args)
         self.assertEqual(tmux.call_args_list[0].args[-2:], ('-S', '-2000'))
@@ -49,8 +49,10 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(pane['cursorY'], 0)
         self.assertTrue(pane['menu'])
         self.assertEqual(pane['screen'], '› 2. Continue\n')
-        self.assertEqual(tmux.call_count, 5)
+        self.assertEqual(tmux.call_count, 6)
         self.assertEqual(tmux.call_args_list[1].args, ('capture-pane', '-p', '-t', '%2'))
+        self.assertEqual(tmux.call_args_list[2].args, ('capture-pane', '-p', '-e', '-N', '-t', '%2'))
+        self.assertEqual(pane['styledScreen'], '\x1b[31m› 2. Continue\x1b[0m\n')
         self.assertEqual(tmux.call_args_list[-1].args[-1], '#{pid}:#{session_id}:#{pane_pid}\t#{history_size}\t#{cursor_y}')
         self.assertEqual(pane['defaultStyle'], 'fg=#abcdef,bg=#123456')
         self.assertIn('\x1b[', pane['output'])
@@ -78,7 +80,7 @@ class BridgeTests(unittest.TestCase):
                 ('Choose a model\n› 1. Model A\n  2. Model B\n\nenter select / esc back\n', 4, True),
                 ('❯ \n', -1, False), ('❯ \n', 99, False), ('❯ \n', '', False), ('❯ \n', 'invalid', False)):
             pane = dict(id='%2', identity='100:$1:202')
-            with self.subTest(screen=screen, cursor_y=cursor_y), patch.object(bridge, 'tmux', side_effect=[history, screen, '', '0', f'100:$1:202\t2000\t{cursor_y}\n']):
+            with self.subTest(screen=screen, cursor_y=cursor_y), patch.object(bridge, 'tmux', side_effect=[history, screen, screen, '', '0', f'100:$1:202\t2000\t{cursor_y}\n']):
                 result = bridge.snapshot(pane, 200000)
             self.assertEqual(result['menu'], expected)
             self.assertEqual(result['output'], history)
@@ -105,9 +107,9 @@ class BridgeTests(unittest.TestCase):
                 ('› Yes, proceed (y)\n', 99, False)):
             with self.subTest(screen=screen, cy=cy):
                 pane = dict(id='%2', identity='100:$1:202')
-                with patch.object(bridge, 'tmux', side_effect=['history', screen, '', '0', f'100:$1:202\t0\t{cy}\n']) as tmux:
+                with patch.object(bridge, 'tmux', side_effect=['history', screen, screen, '', '0', f'100:$1:202\t0\t{cy}\n']) as tmux:
                     self.assertEqual(bridge.snapshot(pane)['menu'], expected)
-                self.assertEqual(tmux.call_count, 5)
+                self.assertEqual(tmux.call_count, 6)
 
     def test_real_tmux_inherited_background_and_truecolor(self):
         socket = 'peon-web-style-check-' + str(os.getpid())

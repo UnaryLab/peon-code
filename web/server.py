@@ -2,6 +2,7 @@
 import json
 import errno
 import os
+import re
 import secrets
 import signal
 import subprocess
@@ -17,11 +18,39 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 ROOT = Path(__file__).resolve().parent.parent
+BUTTONS_DIR = ROOT / "buttons"
 ASSETS = {"/": ("index.html", "text/html"), "/app.js": ("app.js", "text/javascript"),
           "/style.css": ("style.css", "text/css"),
           "/ansi.js": ("ansi.js", "text/javascript"),
           "/navigation.js": ("navigation.js", "text/javascript"),
           "/LICENSE": ("../LICENSE", "text/plain")}
+
+
+def validate_button(data):
+    name, description, prompt = data.get("name"), data.get("description"), data.get("prompt")
+    name = name.strip(" ") if isinstance(name, str) else name
+    if not isinstance(name, str) or not name or len(name) > 80 or not re.fullmatch(r"[A-Za-z0-9 _-]+", name):
+        raise ValueError("Name must use 1 to 80 letters, digits, spaces, hyphens, or underscores")
+    if not isinstance(description, str) or len(description) > 500 or "\n" in description or "\r" in description:
+        raise ValueError("Description must be a single line of at most 500 characters")
+    if not isinstance(prompt, str) or not prompt.strip() or len(prompt) > 200000:
+        raise ValueError("Prompt must contain text and be at most 200000 characters")
+    description.encode("utf-8")
+    prompt.encode("utf-8")
+    return dict(name=name, description=description, prompt=prompt)
+
+
+def read_buttons():
+    result = []
+    paths = list(BUTTONS_DIR.glob("*.md")) + list((config_dir() / "buttons").glob("*.md"))
+    for path in paths:
+        try:
+            match = re.fullmatch(r"---\r?\ndescription: ([^\r\n]*)\r?\n---\r?\n([\s\S]*)", path.read_bytes().decode("utf-8"))
+            if match:
+                result.append(validate_button(dict(name=path.stem, description=match[1], prompt=match[2])))
+        except (ValueError, OSError):
+            continue
+    return sorted(result, key=lambda button: button["name"])
 
 
 def run_delivery(args, text, identity, timeout=20):
@@ -73,11 +102,16 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         parsed = urlsplit(self.path)
-        if not self.allowed(parsed.path == "/api/panes"):
+        if not self.allowed(parsed.path in ("/api/panes", "/api/buttons")):
             return
         if self.path in ASSETS:
             filename, mime = ASSETS[self.path]
             self.respond(200, (ROOT / "web" / filename).read_bytes(), mime)
+        elif parsed.path == "/api/buttons":
+            try:
+                self.respond(200, read_buttons())
+            except OSError as error:
+                self.respond(503, {"error": str(error)})
         elif parsed.path == "/api/panes":
             query = parse_qs(parsed.query, keep_blank_values=True)
             target = query.get("pane", [None])[0]
@@ -107,7 +141,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self.allowed(True):
             return
-        if self.path not in ("/api/explain", "/api/send", "/api/dismiss", "/api/keys"):
+        if self.path not in ("/api/explain", "/api/send", "/api/dismiss", "/api/keys", "/api/buttons"):
             self.respond(404, {"error": "Not found"})
             return
         try:
@@ -115,6 +149,22 @@ class Handler(BaseHTTPRequestHandler):
             if not 0 < size <= 262144 or self.headers.get_content_type() != "application/json":
                 raise ValueError("Expected JSON, at most 256 KiB")
             data = json.loads(self.rfile.read(size))
+            if self.path == "/api/buttons":
+                button = validate_button(data)
+                directory = config_dir() / "buttons"
+                directory.mkdir(parents=True, exist_ok=True)
+                filename = button["name"] + ".md"
+                try:
+                    seed = BUTTONS_DIR / filename
+                    if seed.exists() or seed.is_symlink():
+                        raise FileExistsError
+                    with (directory / filename).open("x", encoding="utf-8", newline="\n") as file:
+                        file.write("---\ndescription: " + button["description"] + "\n---\n" + button["prompt"])
+                except FileExistsError:
+                    self.respond(409, {"error": "A button with this name already exists"})
+                    return
+                self.respond(200, read_buttons())
+                return
             if self.path == "/api/dismiss":
                 session = data.get("session")
                 if not isinstance(session, str) or not session or not any(p["session"] == session for p in panes(self.server.session)):
@@ -132,8 +182,8 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError("append must be a boolean")
             if self.path == "/api/keys":
                 key = data.get("key")
-                if key not in ("Tab", "Up", "Down", "Enter", "Escape"):
-                    raise ValueError("Allowed keys: Tab, Up, Down, Enter, Escape")
+                if key not in ("Tab", "Up", "Down", "Enter", "Escape", "Backspace"):
+                    raise ValueError("Allowed keys: Tab, Up, Down, Enter, Escape, Backspace")
                 text = ""
             elif not isinstance(text, str) or not text.strip():
                 raise ValueError("Select or enter some text first")
@@ -150,7 +200,7 @@ class Handler(BaseHTTPRequestHandler):
                     args.append("--submit")
                 args.append(pane)
                 if action == "key":
-                    args.append(key)
+                    args.append("BSpace" if key == "Backspace" else key)
                 elif action == "send":
                     args.append("-")
                 result = run_delivery(args, text, identity)
@@ -163,9 +213,13 @@ class Handler(BaseHTTPRequestHandler):
             self.respond(503, {"error": str(error)})
 
 
-def pid_file(port):
+def config_dir():
     config = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
-    return config / "peon-code" / ("web-" + str(port) + ".pid")
+    return config / "peon-code"
+
+
+def pid_file(port):
+    return config_dir() / ("web-" + str(port) + ".pid")
 
 
 def bind_server(port):

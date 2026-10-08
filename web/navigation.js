@@ -3,6 +3,7 @@ const roleOrder = {manager: 0, reviewer: 1, worker: 2};
 function paneKey(pane) { return pane.identity ? pane.id + ':' + pane.identity : pane.id; }
 function currentPane() { return navigation.active.get(navigation.session); }
 function chooseSession(session) {
+  if (session !== navigation.session && !dismissing) document.querySelector('#dismiss-status').hidden = true;
   navigation.session = session;
   const panes = navigation.panes.filter(pane => pane.session === session);
   if (!panes.some(pane => paneKey(pane) === currentPane())) navigation.active.set(session, panes[0] && paneKey(panes[0]));

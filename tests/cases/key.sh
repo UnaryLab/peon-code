@@ -21,7 +21,7 @@ run_key() {
     env "$@" "$ROOT/peon-code.sh" key ${submit:+"$submit"} %2 "$name" >"$TEST_DIR/key.out" 2>"$TEST_DIR/key.err"
 }
 
-for name in Tab Up Down Enter Escape; do
+for name in Tab Up Down Enter Escape BSpace; do
   run_key "$name"
   assert_contains "$KEY_LOG" "send-keys -t %2 $name"
   [ "$(grep -c '^send-keys' "$KEY_LOG")" = 1 ] || fail "key sent $name more than once"
@@ -51,7 +51,7 @@ for name in C-c 0 {1..9} 10 {a..z} Y ab ''; do
   rc=0
   run_key "$name" || rc=$?
   [ "$rc" -eq 2 ] || fail "unknown key '$name' returned $rc instead of 2"
-  assert_contains "$TEST_DIR/key.err" 'allowed keys: Tab, Up, Down, Enter, Escape'
+  assert_contains "$TEST_DIR/key.err" 'allowed keys: Tab, Up, Down, Enter, Escape, BSpace'
   assert_not_contains "$KEY_LOG" 'send-keys'
 done
 
@@ -85,7 +85,7 @@ assert_key_refused Tab 'agent changed' PEON_EXPECTED_IDENTITY=100:1:200
 source "$ROOT/lib/delivery.sh"
 test_key_held_lock() {
   local name rc
-  for name in Tab Up Down Enter Escape; do
+  for name in Tab Up Down Enter Escape BSpace; do
     rc=0
     run_key "$name" || rc=$?
     [ "$rc" -eq 75 ] || fail "key $name returned $rc while another delivery held the pane"

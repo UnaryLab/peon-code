@@ -44,8 +44,9 @@ def panes(session=None):
 
 
 def snapshot(pane, lines=1000):
-    output = tmux("capture-pane", "-p", "-e", "-N", "-t", pane["id"], "-S", "-" + str(lines))
+    output = tmux("capture-pane", "-p", "-e", "-N", "-J", "-t", pane["id"], "-S", "-" + str(lines))
     visible = tmux("capture-pane", "-p", "-t", pane["id"])
+    styled = tmux("capture-pane", "-p", "-e", "-N", "-t", pane["id"])
     screen = visible.split("\n")
     if visible.endswith("\n"):
         screen.pop()
@@ -72,5 +73,6 @@ def snapshot(pane, lines=1000):
             "Enter to confirm" in row for row in screen[cy + 1:cy + 4])
     pane["output"], pane["defaultStyle"], pane["history"], pane["menu"] = output, style, int(history), menu
     pane["screen"] = visible
+    pane["styledScreen"] = styled
     pane["cursorY"] = cy
     return pane

@@ -154,8 +154,8 @@ cmd_key() {
     die "usage: peon-code.sh key [--submit] <pane-id> <name>"
   fi
   case $name in
-    Tab|Up|Down|Enter|Escape) ;;
-    *) echo "peon-code: allowed keys: Tab, Up, Down, Enter, Escape" >&2; return 2 ;;
+    Tab|Up|Down|Enter|Escape|BSpace) ;;
+    *) echo "peon-code: allowed keys: Tab, Up, Down, Enter, Escape, BSpace" >&2; return 2 ;;
   esac
   with_pane_delivery "$pane" key_locked "$pane" "$name" "$submit"
 }
