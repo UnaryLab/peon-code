@@ -146,6 +146,22 @@ cmd_send() {
   with_pane_delivery "${1:-}" send_locked "${1:-}" "${2:-}" "$append"
 }
 
+cmd_explain() {
+  local pane=${1:-} text result rc=0
+  if [ $# -ne 1 ] || [ -z "$pane" ]; then
+    die "usage: peon-code.sh explain <pane-id> < selected-text"
+  fi
+  text=$(cat)
+  case $text in
+    *[![:space:]]*) ;;
+    *) tmux display-message -t "$pane" 'peon-code: no selected text'; return 1 ;;
+  esac
+  result=$(cmd_send "$pane" $'Explain what the following text means in this conversation:\n\n'"$text" 2>&1) || rc=$?
+  printf '%s\n' "$result"
+  tmux display-message -t "$pane" -- "${result//#/##}"
+  return "$rc"
+}
+
 cmd_key() {
   local submit=0
   if [ "${1:-}" = --submit ]; then submit=1; shift; fi

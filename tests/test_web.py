@@ -99,6 +99,35 @@ class WebTests(unittest.TestCase):
             self.assertIn("error", json.loads(body))
             self.assertEqual(json.loads(self.request("GET", "/api/buttons")[1]), [second, first])
 
+    def test_buttons_order_and_optional_frontmatter(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(web, "BUTTONS_DIR", Path(directory)):
+            files = {
+                "Z default": "description: No order\n",
+                "Z first": "order: 1\ndescription: Before\n",
+                "A second": "description: After\norder: 2\n",
+                "Z second": "order: 2\ndescription: Tie\n",
+            }
+            for name, header in files.items():
+                (web.BUTTONS_DIR / (name + ".md")).write_bytes(("---\r\n" + header.replace("\n", "\r\n") + "---\r\nPrompt\r\n").encode())
+            status, body = self.request("GET", "/api/buttons")
+            buttons = json.loads(body)
+            self.assertEqual(status, 200)
+            self.assertEqual([button["name"] for button in buttons], list(files))
+            self.assertNotIn("order", buttons[0])
+            self.assertEqual([button.get("order", 0) for button in buttons], [0, 1, 2, 2])
+            self.assertTrue(all(button["prompt"] == "Prompt\r\n" for button in buttons))
+            explicit = dict(name="A saved", description="Explicit order", prompt="Keep\r\nthis\n", order=1)
+            status, body = self.request("POST", "/api/buttons", explicit)
+            self.assertEqual((status, json.loads(body)[1]), (200, explicit))
+            saved = Path(self.config.name) / "peon-code" / "buttons" / "A saved.md"
+            self.assertEqual(saved.read_bytes().decode(), "---\norder: 1\ndescription: Explicit order\n---\n" + explicit["prompt"])
+            for order in (-1, 1001, True, 1.5, "1", None):
+                with self.subTest(order=order):
+                    self.assertEqual(self.request("POST", "/api/buttons", dict(explicit, name="Invalid", order=order))[0], 400)
+            (web.BUTTONS_DIR / "Invalid.md").write_text("---\norder: 1001\ndescription: Invalid\n---\nPrompt")
+            (web.BUTTONS_DIR / "Duplicate.md").write_text("---\norder: 1\ndescription: Duplicate\norder: 2\n---\nPrompt")
+            self.assertEqual(json.loads(self.request("GET", "/api/buttons")[1]), [buttons[0], explicit, *buttons[1:]])
+
     def test_buttons_trim_spaces_and_read_crlf_without_changing_prompt(self):
         button = dict(name="Check", description="Check changes", prompt="Check this branch")
         crlf = dict(name="Windows", description="CRLF header", prompt="Line one\r\nLine two\n")

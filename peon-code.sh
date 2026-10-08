@@ -27,8 +27,8 @@
 #   gemini, qwen    -i <prompt>  (documented; unverified on this machine); resume with --resume <id>
 # Any other command is passed through as-is: <cmd> <quoted-brief>.
 # The session is attached first and the CLIs start while it is on screen, their
-# launch notes arriving as tmux status-line messages. A pane opening on the
-# folder-trust check is left for you to answer in the attached session.
+# launch notes arriving as tmux status-line messages. The project folder is
+# trusted for Claude and Codex before their agents start.
 set -euo pipefail
 
 # Resolve symlinks without readlink -f, which macOS lacks before 12.3.
@@ -128,8 +128,6 @@ source "$SCRIPT_DIR/lib/delivery.sh"
 source "$SCRIPT_DIR/lib/session.sh"
 # shellcheck source=lib/commands.sh
 source "$SCRIPT_DIR/lib/commands.sh"
-# shellcheck source=lib/mouse.sh
-source "$SCRIPT_DIR/lib/mouse.sh"
 # shellcheck source=lib/config.sh
 source "$SCRIPT_DIR/lib/config.sh"
 # shellcheck source=lib/resume.sh

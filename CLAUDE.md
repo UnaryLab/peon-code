@@ -13,7 +13,6 @@ Bash launcher that builds a tmux session of side-by-side AI coding agent CLIs (c
 - `lib/input.sh`: input-box parsing and safe pasting
 - `lib/session.sh`: session creation, attach, detach, dismiss, and list
 - `lib/commands.sh`: messaging, clear, compact, and rebrief
-- `lib/mouse.sh`: selection, copying, and explanation bindings
 - `peon-code-web.sh`, `web/`: optional local browser launcher, stdlib server, and static UI
 - `lib/brief.sh`: launch briefs and task-board header
 - `lib/watch.sh`: context watcher

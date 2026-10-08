@@ -58,7 +58,6 @@ function setSelection(card, text) {
   card.selected = text;
   for (const button of card.el.querySelectorAll('.prompt-buttons button, .add-button, .button-form button[type="submit"]')) button.disabled = card.busy || card.closed;
   card.el.querySelector('.explain').disabled = !text.trim() || card.busy || card.closed;
-  card.el.querySelector('.resume').hidden = !text || card.closed;
   card.el.querySelector('.discard').hidden = !card.closed;
   card.el.querySelector('.discard').disabled = card.busy;
   card.el.querySelector('.message-form button').disabled = card.busy || card.closed;
@@ -66,7 +65,7 @@ function setSelection(card, text) {
     button.disabled = (card.busy || card.closed) && !(card === backspaceCard && button.dataset.key === 'Backspace');
     if (button.dataset.key === 'Backspace') button.setAttribute('aria-disabled', String(card.busy || card.closed));
   }
-  card.el.querySelector('.selection-note').textContent = text ? 'Selection saved · updates paused' : '';
+  card.el.querySelector('.selection-note').textContent = text ? 'Updates paused while selected' : '';
   card.el.querySelector('.state').textContent = card.closed ? 'Closed' : text ? 'Paused' : 'Live';
 }
 async function send(card, action, text, append = true) {
@@ -210,7 +209,11 @@ function createCard(pane) {
     }
   };
   el.querySelector('.output').onkeydown = event => {
-    if (event.ctrlKey || event.altKey || event.metaKey || event.isComposing || card.closed || card.busy) return;
+    if (event.ctrlKey || event.altKey || event.metaKey || event.isComposing || card.closed) return;
+    if (event.key === 'Escape' && card.selected) {
+      event.preventDefault(); setSelection(card, ''); getSelection().removeAllRanges(); return;
+    }
+    if (card.busy) return;
     const key = {ArrowUp: 'Up', ArrowDown: 'Down', Enter: 'Enter', Escape: 'Escape', Backspace: 'Backspace'}[event.key];
     if (typeof key === 'string') { event.preventDefault(); send(card, 'keys', key); }
   };
@@ -219,7 +222,6 @@ function createCard(pane) {
       event.preventDefault(); send(card, 'explain', card.selected);
     }
   };
-  el.querySelector('.resume').onclick = () => { setSelection(card, ''); getSelection().removeAllRanges(); };
   el.querySelector('.discard').onclick = () => {
     if (card.busy) return;
     el.remove(); cards.delete(card.key);
@@ -242,15 +244,15 @@ window.addEventListener('blur', stopBackspaceRepeat);
 document.addEventListener('visibilitychange', () => { if (document.hidden) stopBackspaceRepeat(); });
 document.addEventListener('selectionchange', () => {
   const selection = getSelection();
-  if (!selection.rangeCount) return;
-  const range = selection.getRangeAt(0);
+  const range = !selection.isCollapsed && selection.rangeCount ? selection.getRangeAt(0) : null;
   for (const card of cards.values()) {
     const output = card.el.querySelector('.output');
-    if (output.contains(range.startContainer) && output.contains(range.endContainer)) {
-      if (selection.isCollapsed && (!card.selected || card.closed)) return;
+    if (range && output.contains(range.startContainer) && output.contains(range.endContainer)) {
       card.selectionRevision++;
       setSelection(card, selection.toString());
-      return;
+    } else if (card.selected && !card.closed) {
+      card.selectionRevision++;
+      setSelection(card, '');
     }
   }
 });

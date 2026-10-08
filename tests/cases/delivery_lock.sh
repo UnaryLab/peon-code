@@ -121,8 +121,6 @@ test_failed_explain_enter() (
   source "$ROOT/lib/input.sh"
   # shellcheck source=lib/commands.sh
   source "$ROOT/lib/commands.sh"
-  # shellcheck source=lib/mouse.sh
-  source "$ROOT/lib/mouse.sh"
   # shellcheck source=lib/delivery.sh
   source "$ROOT/lib/delivery.sh"
   die() { echo "$*" >&2; exit 1; }

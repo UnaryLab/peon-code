@@ -106,6 +106,77 @@ test_headless_launch_order() {
   if grep '^display-message ' "$log" | grep -vq '^display-message -p '; then fail "headless launch posted a status message"; fi
 }
 
+test_all_commands_before_readiness() {
+  local fake_bin=$1 bin_dir="$TEST_DIR/launch-order-bin" state_dir="$TEST_DIR/launch-order-state"
+  local log="$TEST_DIR/all-launches.log" home_dir="$TEST_DIR/home-all-launches"
+  local work_dir="$TEST_DIR/all-launches-work" pane launch_line ready_line brief_line
+  mkdir -p "$bin_dir" "$state_dir" "$home_dir" "$work_dir"
+  cp "$fake_bin/sleep" "$bin_dir/sleep"
+  cat >"$bin_dir/tmux" <<'FAKE_TMUX'
+#!/usr/bin/env bash
+case ${1:-} in
+  display)
+    if [ "${4:-}" = '#{pane_current_command}' ]; then
+      if [ -f "$LAUNCH_STATE/$3.launched" ]; then
+        printf 'ready-check:%s\n' "$3" >>"$FAKE_TMUX_LOG"
+        printf 'node\n'
+      else
+        printf 'zsh\n'
+      fi
+      exit 0
+    fi
+    ;;
+  send-keys)
+    if [ "${4:-}" = Enter ] && [ ! -f "$LAUNCH_STATE/$3.launched" ]; then
+      : >"$LAUNCH_STATE/$3.launched"
+      printf 'launch-enter:%s\n' "$3" >>"$FAKE_TMUX_LOG"
+    fi
+    ;;
+  load-buffer)
+    cat >"$LAUNCH_STATE/$3"
+    "$LAUNCH_BASE_TMUX" "$@" <"$LAUNCH_STATE/$3"
+    exit $?
+    ;;
+  paste-buffer)
+    if [ -f "$LAUNCH_STATE/$5.launched" ]; then
+      cp "$LAUNCH_STATE/$3" "$LAUNCH_STATE/$5.brief"
+      printf 'brief-paste:%s:%s\n' "$5" "$(head -1 "$LAUNCH_STATE/$5.brief")" >>"$FAKE_TMUX_LOG"
+    fi
+    ;;
+  capture-pane)
+    if [ -s "$LAUNCH_STATE/$3.brief" ]; then
+      printf 'output\n❯ [Pasted text #1]\n────\n'
+    else
+      printf 'output\n❯\n────\n'
+    fi
+    exit 0
+    ;;
+esac
+exec "$LAUNCH_BASE_TMUX" "$@"
+FAKE_TMUX
+  chmod +x "$bin_dir/tmux"
+  printf 'compact-at 0\nfirst claude -\nsecond claude -\nlast codex -\n' >"$work_dir/peon-code.conf"
+  : >"$log"
+  (
+    cd "$work_dir"
+    PATH="$bin_dir:$PATH" HOME="$home_dir" TMPDIR="$TEST_DIR" \
+      LAUNCH_STATE="$state_dir" LAUNCH_BASE_TMUX="$fake_bin/tmux" \
+      FAKE_TMUX_LOG="$log" FAKE_TMUX_MODE=launch FAKE_TMUX_PANES=3 \
+      "$ROOT/peon-code.sh" all-launches
+  ) >"$TEST_DIR/all-launches.out" 2>"$TEST_DIR/all-launches.err" </dev/null || fail 'multi-pane launch failed'
+  ready_line=$(grep -n '^ready-check:' "$log" | head -1 | cut -d: -f1)
+  brief_line=$(grep -n '^brief-paste:' "$log" | head -1 | cut -d: -f1)
+  [[ -n $ready_line && -n $brief_line ]] || fail 'launch did not check readiness and paste briefs'
+  for pane in %1 %2 %3; do
+    launch_line=$(grep -n -Fx "launch-enter:$pane" "$log" | cut -d: -f1)
+    [ -n "$launch_line" ] || fail "$pane did not launch"
+    [ "$launch_line" -lt "$ready_line" ] || fail "$pane launched after the first readiness wait"
+    [ "$launch_line" -lt "$brief_line" ] || fail "$pane launched after the first Claude brief"
+  done
+  assert_contains "$log" 'brief-paste:%1:You are first (claude), agent first'
+  assert_contains "$log" 'brief-paste:%2:You are second (claude), agent second'
+}
+
 # Attached, the session goes up first and the launch notes become status-line
 # messages, leaving a failed agent's pane in view instead of killing it.
 # A TTY cannot be faked portably, so this reads the wiring out of the source.
@@ -161,6 +232,7 @@ fake_bin=$(make_fake_commands)
 test_unique_buffers_and_launch_failure "$fake_bin"
 test_launch_with_prompt_box "$fake_bin"
 test_headless_launch_order "$fake_bin"
+test_all_commands_before_readiness "$fake_bin"
 test_attached_launch_notes
 test_codex_normal_screen "$fake_bin"
 echo "launch: PASS"

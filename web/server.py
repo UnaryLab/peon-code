@@ -37,7 +37,12 @@ def validate_button(data):
         raise ValueError("Prompt must contain text and be at most 200000 characters")
     description.encode("utf-8")
     prompt.encode("utf-8")
-    return dict(name=name, description=description, prompt=prompt)
+    button = dict(name=name, description=description, prompt=prompt)
+    if "order" in data:
+        if type(data["order"]) is not int or not 0 <= data["order"] <= 1000:
+            raise ValueError("Order must be an integer from 0 to 1000")
+        button["order"] = data["order"]
+    return button
 
 
 def read_buttons():
@@ -45,12 +50,18 @@ def read_buttons():
     paths = list(BUTTONS_DIR.glob("*.md")) + list((config_dir() / "buttons").glob("*.md"))
     for path in paths:
         try:
-            match = re.fullmatch(r"---\r?\ndescription: ([^\r\n]*)\r?\n---\r?\n([\s\S]*)", path.read_bytes().decode("utf-8"))
+            match = re.fullmatch(r"---\r?\n(?:order: ([^\r\n]*)\r?\n)?description: ([^\r\n]*)\r?\n(?:order: ([^\r\n]*)\r?\n)?---\r?\n([\s\S]*)", path.read_bytes().decode("utf-8"))
             if match:
-                result.append(validate_button(dict(name=path.stem, description=match[1], prompt=match[2])))
+                button = dict(name=path.stem, description=match[2], prompt=match[4])
+                if match[1] is not None and match[3] is not None:
+                    continue
+                order = match[1] if match[1] is not None else match[3]
+                if order is not None:
+                    button["order"] = int(order)
+                result.append(validate_button(button))
         except (ValueError, OSError):
             continue
-    return sorted(result, key=lambda button: button["name"])
+    return sorted(result, key=lambda button: (button.get("order", 0), button["name"]))
 
 
 def run_delivery(args, text, identity, timeout=20):
@@ -159,7 +170,8 @@ class Handler(BaseHTTPRequestHandler):
                     if seed.exists() or seed.is_symlink():
                         raise FileExistsError
                     with (directory / filename).open("x", encoding="utf-8", newline="\n") as file:
-                        file.write("---\ndescription: " + button["description"] + "\n---\n" + button["prompt"])
+                        order = "order: " + str(button["order"]) + "\n" if "order" in button else ""
+                        file.write("---\n" + order + "description: " + button["description"] + "\n---\n" + button["prompt"])
                 except FileExistsError:
                     self.respond(409, {"error": "A button with this name already exists"})
                     return

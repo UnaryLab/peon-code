@@ -4,6 +4,10 @@
 # re-sourcing is harmless.
 : "${ROOT:=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)}"
 : "${TEST_DIR:=$(mktemp -d "${TMPDIR:-/tmp}/peon-code-test.XXXXXX")}"
+# A suite run from inside a peon-code pane inherits that pane's TMUX_PANE,
+# and the slash commands refuse to send when it names one of their fake
+# target panes. Tests that need a calling pane set it per command.
+unset TMUX_PANE
 
 fail() {
   echo "FAIL: $*" >&2

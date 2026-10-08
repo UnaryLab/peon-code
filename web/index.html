@@ -38,10 +38,10 @@
     <article class="pane" hidden>
       <header class="pane-heading"><div><h2></h2><p class="meta"></p></div><span class="state">Live</span></header>
       <pre tabindex="0" class="output" aria-label="Agent output"></pre>
+      <form class="message-form"><textarea rows="2" placeholder="Ask this agent something… (Shift+Enter to send)" aria-label="Message this agent"></textarea><button type="submit">Send ↗</button></form>
       <div class="actions">
         <button class="explain" disabled>Explain selection</button>
         <span class="prompt-buttons"></span>
-        <button class="resume" hidden>Resume updates</button>
         <button class="discard" hidden>Discard saved text</button>
         <span class="selection-note"></span>
         <button type="button" class="add-button" aria-label="Add button">+</button>
@@ -64,7 +64,6 @@
           <button type="button" data-key="Backspace">Backspace</button>
         </div>
       </div>
-      <form class="message-form"><textarea rows="2" placeholder="Ask this agent something… (Shift+Enter to send)" aria-label="Message this agent"></textarea><button type="submit">Send ↗</button></form>
       <p class="feedback" role="status"></p>
     </article>
   </template>

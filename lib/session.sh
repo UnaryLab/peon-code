@@ -44,7 +44,6 @@ cmd_list() {
 
 goto_session() {
   local session=$1
-  enable_mouse_ui "$session"
   # No TTY means a headless caller: build the session, print how to reach it.
   if [ ! -t 0 ]; then
     echo "peon-code: session $session is ready. Attach with: tmux attach -t $session"

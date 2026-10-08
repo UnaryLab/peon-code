@@ -42,36 +42,5 @@ TEXT
   assert_not_contains "$log" 'paste-buffer'
 }
 
-test_bindings() (
-  local socket="peon-mouse-test-$$" pane table before after
-  SCRIPT_DIR=$ROOT
-  # shellcheck source=lib/tmux.sh
-  . "$ROOT/lib/tmux.sh"
-  # shellcheck source=lib/mouse.sh
-  . "$ROOT/lib/mouse.sh"
-  tmux() { command tmux -L "$socket" "$@"; }
-  trap 'tmux kill-session -t mouse-test 2>/dev/null || true' EXIT
-  tmux -f /dev/null new-session -d -s mouse-test bash
-  pane=$(tmux display -pt mouse-test '#{pane_id}')
-  tmux set -pt "$pane" @peon_name test
-  tmux bind-key -T copy-mode MouseDragEnd1Pane display-message 'custom copy'
-  enable_mouse_ui mouse-test
-  for table in copy-mode copy-mode-vi; do
-    tmux list-keys -T "$table" >"$TEST_DIR/$table.keys"
-    assert_contains "$TEST_DIR/$table.keys" 'copy-selection-no-clear'
-    assert_contains "$TEST_DIR/$table.keys" 'copy-pipe-and-cancel'
-    assert_contains "$TEST_DIR/$table.keys" 'explain #{pane_id}'
-    assert_contains "$TEST_DIR/$table.keys" 'M-e'
-  done
-  assert_contains "$TEST_DIR/copy-mode.keys" 'custom copy'
-  [ "$(tmux show-options -pqv -t "$pane" @peon_script)" = "$ROOT/peon-code.sh" ] || fail 'missing explanation handler'
-  [ "$(tmux show-options -qv -t mouse-test mouse)" = on ] || fail 'mouse UI disabled'
-  before=$(tmux list-keys -T copy-mode)
-  enable_mouse_ui mouse-test
-  after=$(tmux list-keys -T copy-mode)
-  [ "$before" = "$after" ] || fail 'reattaching nested the mouse bindings'
-)
-
 test_explain
-test_bindings
-echo 'mouse: PASS'
+echo 'explain: PASS'

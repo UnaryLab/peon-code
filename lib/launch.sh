@@ -118,10 +118,118 @@ for i in "${!NAMES[@]}"; do
   ROSTER+=$'\n'
 done
 
-# Start each agent in its pane: paste the launch command, wait for the CLI to
-# come up, and paste a claude pane's brief once the pane settles. Agents that
-# never started are named in FAILED_AGENTS.
+# Send every agent's launch command first, then wait for each CLI and paste
+# a claude pane's brief once it settles. Agents that never started are named
+# in FAILED_AGENTS.
 launch_agents() {
+  local command claude_config project_key project_path physical_dir codex_config codex_temp header
+  local codex_link links
+  local project_dirs=()
+  physical_dir=$(pwd -P)
+  project_dirs=("$physical_dir")
+  [ "$physical_dir" = "$PWD" ] || project_dirs+=("$PWD")
+  for command in "${CMDS[@]}"; do
+    [ "${command%% *}" = claude ] || continue
+    claude_config="${CLAUDE_CONFIG_DIR:-$HOME}/.claude.json"
+    if [ ! -f "$claude_config" ] || ! command -v python3 >/dev/null 2>&1; then
+      echo "peon-code: skipping Claude project trust: existing $claude_config and python3 are required" >&2
+    elif ! python3 - "$claude_config" "${project_dirs[@]}" 2>/dev/null <<'PYTHON'
+import json
+import os
+import stat
+import sys
+import tempfile
+
+config, *projects = sys.argv[1:]
+config = os.path.realpath(config)
+temporary = None
+try:
+    mode = stat.S_IMODE(os.stat(config).st_mode)
+    with open(config, encoding="utf-8") as file:
+        data = json.load(file)
+    entries = data.setdefault("projects", {})
+    changed = False
+    for project in projects:
+        entry = entries.setdefault(project, {})
+        if entry.get("hasTrustDialogAccepted") is not True:
+            entry["hasTrustDialogAccepted"] = True
+            changed = True
+    if not changed:
+        sys.exit(0)
+    fd, temporary = tempfile.mkstemp(prefix=".claude-trust.", dir=os.path.dirname(config))
+    with os.fdopen(fd, "w", encoding="utf-8") as file:
+        json.dump(data, file, indent=2)
+        file.write("\n")
+        os.fchmod(file.fileno(), mode)
+    os.replace(temporary, config)
+    temporary = None
+finally:
+    if temporary is not None:
+        os.unlink(temporary)
+PYTHON
+    then
+      echo "peon-code: could not set Claude project trust in $claude_config; kept the original file" >&2
+    fi
+    break
+  done
+  for command in "${CMDS[@]}"; do
+    [ "${command%% *}" = codex ] || continue
+    codex_config="${CODEX_HOME:-$HOME/.codex}/config.toml"
+    links=0
+    while [ -L "$codex_config" ]; do
+      if [ "$links" -ge 40 ] || ! codex_link=$(readlink "$codex_config"); then
+        echo "peon-code: could not resolve Codex config link $codex_config; skipping project trust" >&2
+        codex_config=""
+        break
+      fi
+      case $codex_link in
+        /*) codex_config=$codex_link ;;
+        *) codex_config=${codex_config%/*}/$codex_link ;;
+      esac
+      links=$((links + 1))
+    done
+    [ -n "$codex_config" ] || break
+    if [ -f "$codex_config" ] &&
+      grep -Eq "^[[:space:]]*[\"']?projects[\"']?[[:space:]]*=" "$codex_config"; then
+      echo 'peon-code: config.toml has an inline projects table; skipping codex project trust' >&2
+      break
+    fi
+    for project_path in "${project_dirs[@]}"; do
+      project_key=${project_path//\\/\\\\}
+      project_key=${project_key//\"/\\\"}
+      project_key=${project_key//$'\n'/\\n}
+      project_key=${project_key//$'\r'/\\r}
+      project_key=${project_key//$'\t'/\\t}
+      header="[projects.\"$project_key\"]"
+      if [ -f "$codex_config" ] && {
+        grep -Fq -- "\"$project_key\"" "$codex_config" || {
+          [[ $project_path != *$'\n'* && $project_path != *$'\r'* && $project_path != *"'"* ]] &&
+            grep -Fq -- "'$project_path'" "$codex_config"
+        }
+      }; then
+        continue
+      fi
+      if ! mkdir -p "${codex_config%/*}" ||
+        ! codex_temp=$(mktemp "${codex_config%/*}/.peon-code-trust.XXXXXX"); then
+        echo "peon-code: could not prepare Codex project trust in $codex_config" >&2
+        break
+      fi
+      if {
+        if [ -f "$codex_config" ]; then
+          cp -p "$codex_config" "$codex_temp" &&
+            printf '\n\n%s\n%s\n' "$header" 'trust_level = "trusted"' >>"$codex_temp"
+        else
+          printf '%s\n%s\n' "$header" 'trust_level = "trusted"' >"$codex_temp"
+        fi
+      } && mv "$codex_temp" "$codex_config"; then
+        :
+      else
+        echo "peon-code: could not set Codex project trust in $codex_config; kept the original file" >&2
+        break
+      fi
+    done
+    break
+  done
   for i in "${!NAMES[@]}"; do
     BRIEF=$(build_brief "$i")
     BRIEF_FILE="$BRIEF_DIR/$i.md"  # by index: a CLI-team name is the command, which can hold / or repeat
@@ -181,6 +289,10 @@ launch_agents() {
     # the box holds no text to check against: Enter follows the paste directly.
     with_pane_delivery "${PANE_IDS[$i]}" launch_command_locked "${PANE_IDS[$i]}" "$LAUNCH" ||
       echo "peon-code: no command sent to ${NAMES[$i]} ${PANE_IDS[$i]}" >&2
+  done
+  for i in "${!NAMES[@]}"; do
+    RID=${RESUME_IDS[$i]}
+    BRIEF=$(cat "$BRIEF_DIR/$i.md")
     if ! wait_agent_ready "${PANE_IDS[$i]}"; then
       FAILED_AGENTS+=("${NAMES[$i]}")
       continue
