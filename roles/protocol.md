@@ -29,6 +29,8 @@ Every message starts with the sender prefix the brief gives you, then one line n
 | verdict | reviewer | manager | row set to reviewed pass | `T3 reviewed pass` |
 | findings | reviewer | author and manager | row set to reviewed fail | `T3 reviewed fail` plus a short list, file, line, and what is wrong each |
 
+A subagent reports once, when it finishes; it sends no progress messages to its parent.
+
 A message that arrives while you are working is new work, not an interruption: at your next step boundary, re-read the board and act on it.
 
 ## Worker duties

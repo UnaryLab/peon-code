@@ -201,12 +201,19 @@ function updateSwap() {
   const card = cards.get(currentPane());
   const selected = card?.key;
   const focused = document.activeElement === swap || swapForm.contains(document.activeElement);
+  let targetGone = !card || card.closed;
   if (selected !== swapSelection) {
+    const previous = cards.get(swapSelection);
+    targetGone = targetGone || !previous || previous.closed;
     swapSelection = selected;
     swapRevision++;
-    if (!swapForm.hidden) prefillSwap(card);
+    if (!swapForm.hidden && !targetGone) prefillSwap(card);
   }
   const disabled = !card || card.closed || card.busy || swapPending || !!card.latest?.swap?.startsWith('checking');
+  if (!swapForm.hidden && targetGone) {
+    swapForm.hidden = true;
+    swap.setAttribute('aria-expanded', 'false');
+  }
   swap.disabled = disabled;
   for (const control of swapForm.querySelectorAll('input, select, button')) control.disabled = disabled;
   if (disabled && focused) card?.el.querySelector('.output').focus();

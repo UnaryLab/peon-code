@@ -727,7 +727,7 @@ PYTHON
 test_claude_statusline_settings
 
 test_usage_report() (
-  local socket="peon-usage-test-$$" session="usage-test-$$" pane name bin report project original_path=$PWD
+  local socket="peon-usage-test-$$" session="usage-test-$$" pane name bin report project original_path=$PWD i
   # shellcheck source=lib/tmux.sh
   source "$ROOT/lib/tmux.sh"
   # shellcheck source=lib/resume.sh
@@ -741,6 +741,13 @@ test_usage_report() (
   mkdir -p "$project" "$TEST_DIR/claude-transcripts" "$TEST_DIR/codex-transcripts"
   create_agent_session "$session" 4 0
   for pane in "${PANE_IDS[@]}"; do
+    # shellcheck disable=SC2016 # The variable must expand in the pane shell.
+    tmux send-keys -t "$pane" 'printf "%s\n" "$PEON_CODE_SESSION"' Enter
+    for ((i = 0; i < 100; i++)); do
+      if tmux capture-pane -pt "$pane" | grep -Fxq -- "$session"; then break; fi
+      sleep 0.05
+    done
+    [ "$i" -lt 100 ] || fail "pane $pane did not inherit PEON_CODE_SESSION=$session"
     case $pane in
       "${PANE_IDS[0]}") name=boss; bin=claude ;;
       "${PANE_IDS[1]}") name=impl; bin=codex ;;

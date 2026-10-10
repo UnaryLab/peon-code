@@ -74,6 +74,8 @@ To add a CLI:
 
 ### Start and attach
 
+Each pane shell, agent, and subagent inherits `PEON_CODE_SESSION` set to the session name, so hooks can identify a peon-code session.
+
 `peon-code [-c file] [<session>] [<cmd> ...]` builds the session, or attaches it if it already exists. The team resolves as described under [Config file](#config-file).
 
 The window uses tmux's `main-vertical` layout: the main agent's pane takes the left 60% of the width, the other agents stack to its right. Main is the agent marked with a leading `*` in the config, else the first agent with the `manager` role, else the first agent in the team.
