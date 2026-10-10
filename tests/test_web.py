@@ -467,7 +467,7 @@ refresh().then(parameters => {document.querySelector('#result').textContent = JS
             process.communicate.assert_called_once_with("message", timeout=20)
 
     def test_keys_validate_identity_and_only_send_allowed_keys(self):
-        keys = ("Tab", "Up", "Down", "Enter", "Escape", "Backspace")
+        keys = ("Tab", "Up", "Down", "Enter", "Escape", "Backspace", "C-c")
         def deliver(args, text, identity):
             self.assertTrue(self.server.send_lock.locked())
             return subprocess.CompletedProcess(args, 0, "key sent", "")
@@ -478,7 +478,7 @@ refresh().then(parameters => {document.querySelector('#result').textContent = JS
                 self.assertEqual((status, json.loads(body)), (200, {"message": "key sent"}))
                 flags = ["--submit"] if key == "Enter" else []
                 run.assert_called_with([str(ROOT / "peon-code.sh"), "key", *flags, "%2", "BSpace" if key == "Backspace" else key], "", "server:session:pane")
-            for key in (*"0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ", "Esc", "tab", "BSpace", "backspace", "Bspace", "10", "aa", "é", "C-c", "Tab Enter", "", None, 1, []):
+            for key in (*"0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ", "Esc", "tab", "BSpace", "backspace", "Bspace", "10", "aa", "é", "Tab Enter", "", None, 1, []):
                 with self.subTest(key=key):
                     self.assertEqual(self.request("POST", "/api/keys", dict(pane="%2", identity="server:session:pane", key=key))[0], 400)
             data = dict(pane="%2", identity="server:session:pane", key="Enter")

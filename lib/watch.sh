@@ -292,6 +292,8 @@ cmd_watch() {
         tmux set -pt "$id" @peon_usage "$usage" 2>/dev/null || true
       fi
       tokens=$(context_tokens "$bin" "$file")
+      # Retry every tick until the transcript has context tokens or usage.
+      [ -n "$tokens" ] || [ -n "$usage" ] || continue
       now=$(date +%s)
       reads=$(printf '%s\n' "$reads" | sed "/^$id /d")
       reads="$reads"$'\n'"$id $size $now"

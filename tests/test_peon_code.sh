@@ -492,7 +492,7 @@ test_weekly_watch() (
   last_thread_file() { printf '%s\n' "$transcript"; }
   sleep() { :; }
   PEON_WATCH_MIN=0 cmd_watch "$session" 1000000 || fail 'weekly watch failed without context tokens'
-  [ "$(grep -c '@peon_weekly 22.0 1700000000' "$log")" -eq 2 ] || fail 'weekly watch did not read only changed transcripts without context tokens'
+  [ "$(grep -c '@peon_weekly 22.0 1700000000' "$log")" -eq 3 ] || fail 'weekly watch did not retry before the first usage record'
 )
 test_weekly_watch
 
@@ -536,6 +536,46 @@ test_watch_new_transcript() (
   PEON_WATCH_MIN=0 PEON_WATCH_TICK=0.01 cmd_watch "$session" 1000000 || fail 'watch failed after a new transcript appeared'
 )
 test_watch_new_transcript
+
+test_watch_first_usage() (
+  local session="peon-watch-first-usage-$$" ticks=0
+  local transcript="$TEST_DIR/watch-first-usage.jsonl" log="$TEST_DIR/watch-first-usage.log"
+  # shellcheck source=lib/watch.sh
+  source "$ROOT/lib/watch.sh"
+  printf '%s\n' '{"type":"user","message":{"content":"brief"}}' >"$transcript"
+  : >"$log"
+  tmux() {
+    case $1 in
+      display) echo 100 ;;
+      has-session) ticks=$((ticks + 1)); [ "$ticks" -le 3 ] ;;
+      show-options) case $* in *@peon_bin*) echo claude ;; esac ;;
+      set) printf '%s\n' "$*" >>"$log" ;;
+      *) return 0 ;;
+    esac
+  }
+  session_name() { echo "$1"; }
+  list_agent_panes() { printf '%%0 impl\n'; }
+  last_thread_file() { printf '%s\n' "$transcript"; }
+  date() { if [ "$1" = +%s ]; then echo 100; else command date "$@"; fi; }
+  sleep() {
+    case $ticks in
+      1)
+        [ ! -s "$log" ] || fail 'watch reported usage before the first usage record'
+        printf '%s\n' '{"requestId":"first","message":{"usage":{"input_tokens":100,"cache_read_input_tokens":30,"output_tokens":20}}}' >>"$transcript"
+        ;;
+      2)
+        assert_contains "$log" '@peon_usage 100 30 0 20'
+        printf '%s\n' '{"requestId":"second","message":{"usage":{"input_tokens":200,"output_tokens":50}}}' >>"$transcript"
+        ;;
+      3)
+        [ "$(grep -c '@peon_usage' "$log")" -eq 1 ] || fail 'watch ignored the read interval after the first usage record'
+        ;;
+    esac
+    command sleep "$1"
+  }
+  PEON_WATCH_MIN=60 PEON_WATCH_TICK=0.01 cmd_watch "$session" 1000000 || fail 'watch failed before the first usage record'
+)
+test_watch_first_usage
 
 test_watch_ignores_old_transcript() (
   local socket="peon-watch-old-test-$$" session="watch-old-test-$$" pane ticks=0

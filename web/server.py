@@ -303,8 +303,8 @@ class Handler(BaseHTTPRequestHandler):
                 text = ""
             elif self.path == "/api/keys":
                 key = data.get("key")
-                if key not in ("Tab", "Up", "Down", "Enter", "Escape", "Backspace"):
-                    raise ValueError("Allowed keys: Tab, Up, Down, Enter, Escape, Backspace")
+                if key not in ("Tab", "Up", "Down", "Enter", "Escape", "Backspace", "C-c"):
+                    raise ValueError("Allowed keys: Tab, Up, Down, Enter, Escape, Backspace, C-c")
                 text = ""
             elif not isinstance(text, str) or not text.strip():
                 raise ValueError("Select or enter some text first")

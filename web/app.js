@@ -215,6 +215,7 @@ function updateSwap() {
     swap.setAttribute('aria-expanded', 'false');
   }
   swap.disabled = disabled;
+  swap.hidden = !card || card.closed;
   for (const control of swapForm.querySelectorAll('input, select, button')) control.disabled = disabled;
   if (disabled && focused) card?.el.querySelector('.output').focus();
 }
@@ -294,19 +295,22 @@ function setSelection(card, text) {
   card.el.querySelector('.discard').disabled = card.busy;
   card.el.querySelector('.message-form button').disabled = card.busy || card.closed;
   for (const button of card.el.querySelectorAll('.keys button')) {
-    button.disabled = (card.busy || card.closed) && !(card === backspaceCard && button.dataset.key === 'Backspace');
+    button.disabled = card.closed || (card.busy && button.dataset.key !== 'C-c' && !(card === backspaceCard && button.dataset.key === 'Backspace'));
     if (button.dataset.key === 'Backspace') button.setAttribute('aria-disabled', String(card.busy || card.closed));
   }
   card.el.querySelector('.selection-note').textContent = text ? 'Updates paused while selected, right-click to explain' : '';
   card.el.querySelector('.state').textContent = card.closed ? 'Closed' : text ? 'Paused' : 'Live';
 }
 async function send(card, action, text, append = true) {
-  if (card.closed || card.busy) return;
+  const interrupt = action === 'keys' && text === 'C-c';
+  if (card.closed || (card.busy && !interrupt)) return;
   const selectionRevision = card.selectionRevision;
   const draftRevision = card.draftRevision;
-  card.busy = true;
-  card.el.querySelector('.message-form button').disabled = true;
-  setSelection(card, card.selected);
+  if (!interrupt) {
+    card.busy = true;
+    card.el.querySelector('.message-form button').disabled = true;
+    setSelection(card, card.selected);
+  }
   feedback(card, 'Sending to this agent…');
   try {
     const result = await api('/api/' + action, {pane: card.id, identity: card.latest.identity, ...(action === 'keys' ? {key: text} : {text}), ...(action === 'send' && append ? {append: true} : {})});
@@ -315,7 +319,7 @@ async function send(card, action, text, append = true) {
       if (card.selected === text && card.selectionRevision === selectionRevision) { setSelection(card, ''); if (card.key === currentPane()) getSelection().removeAllRanges(); }
     } else if (action === 'send' && card.draftRevision === draftRevision && card.el.querySelector('.message-form textarea').value === text) card.el.querySelector('.message-form textarea').value = '';
   } catch (error) { feedback(card, error.message, true); }
-  finally { card.busy = false; setSelection(card, card.selected); }
+  finally { if (!interrupt) { card.busy = false; setSelection(card, card.selected); } }
 }
 function inputHint(pane) {
   const markerRow = (pane.screen || '').split('\n').reverse().find(row => /[❯›]/.test(row));
@@ -359,7 +363,7 @@ function updateKeys(card) {
   card.shortcutsRendered = signature;
   for (const button of card.el.querySelectorAll('.key-buttons button')) {
     const key = button.dataset.key;
-    button.hidden = key === 'Tab' ? !!hint : pane.menu;
+    button.hidden = key === 'C-c' ? false : key === 'Tab' ? !!hint : pane.menu;
   }
   const buttons = labels.map(([key, label]) => {
     const button = document.createElement('button');
@@ -442,6 +446,9 @@ function createCard(pane) {
     }
   };
   el.querySelector('.output').onkeydown = event => {
+    if (event.ctrlKey && event.key === 'c' && !event.shiftKey && !event.altKey && !event.metaKey && !event.isComposing && getSelection().isCollapsed && !card.closed) {
+      event.preventDefault(); send(card, 'keys', 'C-c'); return;
+    }
     if (event.ctrlKey || event.altKey || event.metaKey || event.isComposing || card.closed) return;
     if (event.key === 'Escape' && card.selected) {
       event.preventDefault(); setSelection(card, ''); getSelection().removeAllRanges(); return;
