@@ -162,6 +162,108 @@ document.querySelector('#dismiss').onclick = async () => {
   catch (error) { status.textContent = error.message; status.classList.add('error'); }
   finally { dismissing = false; updateNavigation(); }
 };
+const swap = document.querySelector('#swap');
+const swapForm = document.querySelector('#swap-form');
+let swapSelection;
+let swapPrefill;
+let availableClis = [];
+let swapRevision = 0;
+let swapPending = false;
+function swapValues(card) {
+  const words = [];
+  let word = '', quote = '', escaped = false;
+  for (const char of card?.latest?.agent_command || card?.latest?.command || '') {
+    if (escaped) { word += char; escaped = false; }
+    else if (char === '\\' && quote !== "'") escaped = true;
+    else if (quote) { if (char === quote) quote = ''; else word += char; }
+    else if (char === "'" || char === '"') quote = char;
+    else if (/\s/.test(char)) { if (word) words.push(word); word = ''; }
+    else word += char;
+  }
+  if (quote || escaped) return {cli: card?.latest?.cli || '', model: '', effort: ''};
+  if (word) words.push(word);
+  const values = {cli: card?.latest?.cli || '', model: '', effort: ''};
+  for (let i = 0; i < words.length; i++) {
+    if (words[i] === '--model') values.model = words[++i] || '';
+    else if (words[i].startsWith('--model=')) values.model = words[i].slice(8);
+    else if (words[i] === '--effort') values.effort = words[++i] || '';
+    else if (words[i].startsWith('--effort=')) values.effort = words[i].slice(9);
+    else if (words[i].startsWith('model_reasoning_effort=')) values.effort = words[i].slice(23);
+  }
+  for (const field of ['model', 'effort']) if (!/^(-|[A-Za-z0-9._=/][A-Za-z0-9._=/-]*)$/.test(values[field])) values[field] = '';
+  return values;
+}
+function prefillSwap(card) {
+  swapPrefill = swapValues(card);
+  for (const field of ['cli', 'model', 'effort']) swapForm.elements[field].value = swapPrefill[field];
+}
+function updateSwap() {
+  const card = cards.get(currentPane());
+  const selected = card?.key;
+  const focused = document.activeElement === swap || swapForm.contains(document.activeElement);
+  if (selected !== swapSelection) {
+    swapSelection = selected;
+    swapRevision++;
+    if (!swapForm.hidden) prefillSwap(card);
+  }
+  const disabled = !card || card.closed || card.busy || swapPending || !!card.latest?.swap?.startsWith('checking');
+  swap.disabled = disabled;
+  for (const control of swapForm.querySelectorAll('input, select, button')) control.disabled = disabled;
+  if (disabled && focused) card?.el.querySelector('.output').focus();
+}
+const renderNavigation = updateNavigation;
+updateNavigation = () => { renderNavigation(); updateSwap(); };
+function closeSwap() {
+  swapForm.hidden = true;
+  swap.setAttribute('aria-expanded', 'false');
+  (swap.disabled ? cards.get(currentPane())?.el.querySelector('.output') : swap)?.focus();
+}
+swap.onclick = () => {
+  if (swap.disabled) return;
+  if (!swapForm.hidden) { closeSwap(); return; }
+  const card = cards.get(currentPane());
+  prefillSwap(card);
+  swapForm.hidden = false;
+  swap.setAttribute('aria-expanded', 'true');
+  swapForm.elements.cli.focus();
+};
+swapForm.querySelector('.cancel').onclick = closeSwap;
+swapForm.onkeydown = event => {
+  if (event.key === 'Escape') { event.preventDefault(); closeSwap(); }
+};
+swapForm.onsubmit = async event => {
+  event.preventDefault();
+  updateSwap();
+  if (swap.disabled) return;
+  const card = cards.get(currentPane());
+  const identity = card.latest.identity, revision = swapRevision;
+  const values = {};
+  for (const field of ['cli', 'model', 'effort']) {
+    const value = swapForm.elements[field].value.trim();
+    values[field] = value === swapPrefill[field] || (field !== 'cli' && !value) ? '-' : value;
+    if (!/^(-|[A-Za-z0-9._=/][A-Za-z0-9._=/-]*)$/.test(values[field])) { feedback(card, field + ' must be one token', true); return; }
+  }
+  if (values.cli !== '-' && !availableClis.includes(values.cli)) { feedback(card, 'Unknown CLI', true); return; }
+  if (Object.values(values).every(value => value === '-')) { feedback(card, 'Change CLI, model, or effort first.', true); return; }
+  let succeeded = false, message, error = false;
+  swapPending = true;
+  card.busy = true; setSelection(card, card.selected);
+  feedback(card, 'Changing this agent...');
+  try {
+    const result = await api('/api/swap', {pane: card.id, identity, ...values});
+    message = /(?:^|:\s*)checking\b/.test(result.message) ? '' : result.message;
+    succeeded = true;
+  } catch (failure) { message = failure.message; error = true; }
+  finally {
+    swapPending = false;
+    card.busy = false; setSelection(card, card.selected);
+    if (revision === swapRevision && card.key === currentPane() && card.latest.identity === identity) {
+      feedback(card, message, error);
+      if (succeeded) closeSwap();
+      else (swapForm.elements.cli.disabled ? card.el.querySelector('.output') : swapForm.elements.cli).focus();
+    }
+  }
+};
 function renderButtons(card) {
   card.el.querySelector('.prompt-buttons').replaceChildren(...actionButtons.map(action => {
     const button = document.createElement('button');
@@ -179,6 +281,7 @@ function feedback(card, message, error = false) {
 function setSelection(card, text) {
   card.selected = text;
   for (const button of card.el.querySelectorAll('.prompt-buttons button, .add-button, .button-form button[type="submit"]')) button.disabled = card.busy || card.closed;
+  updateSwap();
   card.el.querySelector('.explain').disabled = !text.trim() || card.busy || card.closed;
   card.el.querySelector('.discard').hidden = !card.closed;
   card.el.querySelector('.discard').disabled = card.busy;
@@ -439,7 +542,17 @@ async function refresh() {
       else if (boxText !== card.boxText || card.latest?.output !== pane.output) card.boxSince = now;
       card.boxText = boxText;
       card.waitingText = !!boxText && now - card.boxSince >= BOX_WAIT_MS;
+      const swapStatus = pane.swap || '';
       card.latest = {...pane, capturedLines: visible && visible.id === pane.id ? lines : 1000};
+      if (card.swapState !== swapStatus) {
+        card.swapState = swapStatus;
+        clearTimeout(card.swapTimer);
+        const state = card.el.querySelector('.swap-state');
+        state.textContent = swapStatus;
+        state.classList.toggle('error', swapStatus.startsWith('failed'));
+        if (swapStatus.startsWith('done') || swapStatus.startsWith('failed')) card.swapTimer = setTimeout(() => { state.textContent = ''; }, 5000);
+      }
+      setSelection(card, card.selected);
       updateKeys(card);
       card.el.querySelector("h2").textContent = pane.name;
       const weekly = pane.weekly ? " / " + (pane.cli ? pane.cli + " " : "") + "weekly " + (100 - pane.weekly.usedPercent).toFixed(1) + "% left, resets " + new Date(pane.weekly.resetsAt * 1000).toLocaleString(undefined, {month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit'}) : "";
@@ -474,6 +587,13 @@ async function refresh() {
     refreshRequested = false;
   }
 }
+api('/api/clis').then(clis => {
+  availableClis = clis;
+  swapForm.elements.cli.replaceChildren(...clis.map(cli => {
+    const option = document.createElement('option'); option.value = cli; option.textContent = cli; return option;
+  }));
+  if (!swapForm.hidden) prefillSwap(cards.get(currentPane()));
+}).catch(error => { connection.textContent = error.message; });
 refresh().then(async function refreshButtons() {
   try {
     const buttons = await api('/api/buttons');

@@ -35,9 +35,9 @@ last_thread_id() {
   cli_call "$bin" resume_id "$file"
 }
 
-# The newest transcript file carrying the marker, or nothing. Shared by the
-# resume lookup and the context watcher. An optional reference file limits
-# the search to transcripts modified after its timestamp.
+# The newest own transcript with the marker in its first 20 lines, or nothing.
+# Shared by resume and the watcher. An optional reference file limits the
+# search to transcripts modified after its timestamp.
 last_thread_file() {
   local marker=$1 bin=$2 ref=${3:-} dir="" cwd="" found file
   cli_call "$bin" resume_dir
@@ -49,7 +49,8 @@ last_thread_file() {
   found=$(find "$@" 2>/dev/null) || true
   [ -n "$found" ] || return 0
   while IFS= read -r file; do
-    grep -qF -- "$marker" "$file" || continue
+    cli_call "$bin" own_thread "$file" || continue
+    head -n 20 "$file" | grep -F -- "$marker" >/dev/null || continue
     [ -z "$cwd" ] || grep -qF -- "$cwd" "$file" || continue
     printf '%s\n' "$file"
     return 0

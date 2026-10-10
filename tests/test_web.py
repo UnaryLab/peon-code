@@ -396,6 +396,76 @@ refresh().then(parameters => {document.querySelector('#result').textContent = JS
                 self.assertEqual(self.request("POST", "/api/send", dict(data, append=True, **options))[0], 400)
             self.assertEqual(run.call_count, 3)
 
+    def test_available_clis_require_auth_and_match_provider_files(self):
+        self.assertEqual(self.request("GET", "/api/clis", headers={"X-Peon-Token": ""})[0], 403)
+        status, body = self.request("GET", "/api/clis")
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body), ["claude", "codex"])
+        with tempfile.TemporaryDirectory() as directory:
+            providers = Path(directory) / "lib" / "cli"
+            providers.mkdir(parents=True)
+            (providers / "fake.sh").write_text("fake_swap_args() { :; }\n")
+            (providers / "unused.sh").write_text("# unused_swap_args() { :; }\nunused_args() { :; }\n")
+            with patch.object(web, "ROOT", Path(directory)), patch.object(web.subprocess, "run") as run, patch.object(web.subprocess, "Popen") as popen:
+                status, body = self.request("GET", "/api/clis")
+                self.assertEqual((status, json.loads(body)), (200, ["fake"]))
+                run.assert_not_called()
+                popen.assert_not_called()
+
+    def test_swap_delivers_fields_to_current_agent_under_lock(self):
+        target = dict(id="%2", identity="server:session:pane", name="worker 'quoted'", session="team 'quoted'")
+        def deliver(args, text, identity):
+            self.assertTrue(self.server.send_lock.locked())
+            return subprocess.CompletedProcess(args, 0, "agent changed\n", "")
+        for cli, model, effort in (("-", "gpt-6.1-sol", "-"), ("claude", "-", "high"), ("-", "-", "-"), ("codex", "path/model=v2", "xhigh")):
+            data = dict(pane=target["id"], identity=target["identity"], cli=cli, model=model, effort=effort)
+            with self.subTest(data=data), patch.object(web, "panes", return_value=[target]) as panes, patch.object(web, "run_delivery", side_effect=deliver) as run:
+                status, body = self.request("POST", "/api/swap", data)
+                self.assertEqual((status, json.loads(body)), (200, {"message": "agent changed"}))
+                panes.assert_called_once_with("team")
+                run.assert_called_once_with([str(ROOT / "peon-code.sh"), "swap", target["name"], cli, model, effort, target["session"]], "", data["identity"])
+
+    def test_swap_rejects_invalid_fields_identity_and_access(self):
+        data = dict(pane="%2", identity="server:session:pane", cli="codex", model="-", effort="-")
+        with patch.object(web, "run_delivery", return_value=subprocess.CompletedProcess([], 0, "changed", "")) as run:
+            for field in ("cli", "model", "effort"):
+                for value in ("", " ", "two tokens", "codex\nclaude", "codex\rclaude", "codex\0", "$(codex)", "'codex'", "codex;", "--model", "-bad", "--", None, 1, []):
+                    with self.subTest(field=field, value=value):
+                        self.assertEqual(self.request("POST", "/api/swap", dict(data, **{field: value}))[0], 400)
+            self.assertEqual(self.request("POST", "/api/swap", dict(data, cli="unknown-provider"))[0], 400)
+            self.assertEqual(self.request("POST", "/api/swap", dict(pane="%2", identity=data["identity"], command="codex --model old"))[0], 400)
+            for options in ({"identity": "old:pane"}, {"identity": None}, {"pane": "%999"}, {"padding": "x" * 262144}):
+                self.assertEqual(self.request("POST", "/api/swap", dict(data, **options))[0], 400)
+            for headers in ({"X-Peon-Token": "bad-token"}, {"Host": "evil.test"}, {"Origin": "https://evil.test"}):
+                self.assertEqual(self.request("POST", "/api/swap", data, headers)[0], 403)
+            run.assert_not_called()
+
+    def test_swap_delivery_error_and_timeout(self):
+        data = dict(pane="%2", identity="server:session:pane", cli="claude", model="test", effort="-")
+        with patch.object(web, "run_delivery", return_value=subprocess.CompletedProcess([], 1, "", "agent is busy\n")):
+            status, body = self.request("POST", "/api/swap", data)
+            self.assertEqual((status, json.loads(body)), (409, {"error": "agent is busy"}))
+        with patch.object(web, "run_delivery", return_value=subprocess.CompletedProcess([], 1, "", "all fields unchanged\n")) as run:
+            status, body = self.request("POST", "/api/swap", dict(data, cli="-", model="-", effort="-"))
+            self.assertEqual((status, json.loads(body)), (409, {"error": "all fields unchanged"}))
+            self.assertEqual(run.call_args.args[0][-4:], ["-", "-", "-", "team"])
+        with patch.object(web, "run_delivery", side_effect=subprocess.TimeoutExpired("swap", 20)):
+            self.assertEqual(self.request("POST", "/api/swap", data)[0], 503)
+
+    def test_swap_delivery_clears_inherited_tmux_pane(self):
+        args = [str(ROOT / "peon-code.sh"), "swap", "worker", "codex", "-", "-", "team"]
+        process = Mock(returncode=0)
+        process.communicate.return_value = ("changed", "")
+        with patch.dict(os.environ, TMUX_PANE="%2"), patch.object(web.subprocess, "Popen", return_value=process) as popen:
+            self.assertEqual(web.run_delivery(args, "", "current:pane").returncode, 0)
+            self.assertEqual(popen.call_args.args, (args,))
+            self.assertEqual(popen.call_args.kwargs["env"]["TMUX_PANE"], "")
+            self.assertEqual(popen.call_args.kwargs["env"]["PEON_EXPECTED_IDENTITY"], "current:pane")
+            process.communicate.assert_called_once_with("", timeout=20)
+            process.reset_mock()
+            web.run_delivery([str(ROOT / "peon-code.sh"), "send", "%2", "-"], "message", "current:pane")
+            process.communicate.assert_called_once_with("message", timeout=20)
+
     def test_keys_validate_identity_and_only_send_allowed_keys(self):
         keys = ("Tab", "Up", "Down", "Enter", "Escape", "Backspace")
         def deliver(args, text, identity):
@@ -643,7 +713,7 @@ refresh().then(parameters => {document.querySelector('#result').textContent = JS
                 ("25 true", None), ("25 1700000000.5", None),
                 ("25 -1", None), ('"25" 1700000000', None)):
             rows = "team\t%2\tworker\t1\tcodex\tworker\t\t100:$1:202\t" + text + "\t\t\n"
-            with self.subTest(text=text), patch.object(bridge.time, "time", return_value=1699999999), patch.object(bridge, "tmux", side_effect=[rows, "/work/project\n"]) as tmux:
+            with self.subTest(text=text), patch.object(bridge.time, "time", return_value=1699999999), patch.object(bridge, "tmux", side_effect=[rows, "/work/project\n", "\n", "\n"]) as tmux:
                 pane = bridge.panes()[0]
             self.assertEqual(pane["weekly"], expected)
             self.assertTrue(tmux.call_args_list[0].args[-1].endswith("\t#{@peon_weekly}\t#{@peon_usage}\t#{@peon_bin}"))
@@ -654,7 +724,7 @@ refresh().then(parameters => {document.querySelector('#result').textContent = JS
     def test_panes_weekly_reset_time(self):
         for resets, expected_used in ((1699999999, 0.0), (1700000000, 25.5), (1700000001, 25.5)):
             rows = "team\t%2\tworker\t1\tcodex\tworker\t\t100:$1:202\t25.5 " + str(resets) + "\t\t\n"
-            with self.subTest(resets=resets), patch.object(bridge.time, "time", return_value=1700000000), patch.object(bridge, "tmux", side_effect=[rows, "/work/project\n"]):
+            with self.subTest(resets=resets), patch.object(bridge.time, "time", return_value=1700000000), patch.object(bridge, "tmux", side_effect=[rows, "/work/project\n", "\n", "\n"]):
                 pane = bridge.panes()[0]
             self.assertEqual(pane["weekly"], {"usedPercent": expected_used, "resetsAt": resets})
 

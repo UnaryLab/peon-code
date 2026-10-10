@@ -17,7 +17,7 @@ const assert = require('node:assert/strict');
     const roles = [
       {id: '%5', name: 'Builder', role: 'worker', session: 'alpha', usage: {input: 0, cacheRead: 0, cacheWrite: 0, output: 0}},
       {id: '%2', name: 'Reviewer', role: 'reviewer', session: 'alpha', usage: {input: 10000, cacheRead: 2000, cacheWrite: 300, output: 45}},
-      {id: '%3', name: 'Boss', role: 'manager', session: 'alpha', weekly: {usedPercent: 34, resetsAt: 2000000000}, usage: {input: 1000000, cacheRead: 200000, cacheWrite: 30000, output: 4567}},
+      {id: '%3', name: 'Boss', role: 'manager', session: 'alpha', command: 'node', agent_command: 'codex --model gpt-6.1-sol -c \"model_reasoning_effort=high\" --sandbox danger-full-access', weekly: {usedPercent: 34, resetsAt: 2000000000}, usage: {input: 1000000, cacheRead: 200000, cacheWrite: 30000, output: 4567}},
       {id: '%8', name: 'Lead', role: 'manager', session: 'zeta', usage: null},
       {id: '%9', name: 'Check', role: 'reviewer', session: 'zeta', usage: null},
       {id: '%10', name: 'Build', role: 'worker', session: 'zeta', usage: null}
@@ -38,6 +38,10 @@ const assert = require('node:assert/strict');
     ];
     let buttonGets = 0, buttonError = null;
     const createdButtons = [];
+    await page.route('**/api/clis', route => {
+      assert.equal(route.request().headers()['x-peon-token'], token);
+      return route.fulfill({json: ['claude', 'codex']});
+    });
     await page.route('**/api/buttons', route => {
       assert.equal(route.request().headers()['x-peon-token'], token);
       if (route.request().method() === 'GET') {
@@ -64,7 +68,7 @@ const assert = require('node:assert/strict');
       const query = new URL(route.request().url()).searchParams;
       const lines = Number(query.get('lines') || 1000);
       if (joinedHistory) historyRequests.push({pane: query.get('pane'), lines});
-      const panes = empty ? [] : roles.filter(pane => pane.session !== dismissedSession).map(pane => ({...pane, cli: pane.cli ?? 'codex', projectDir: '/work/' + pane.session + ' project', command: 'codex', output: joinedHistory && pane.id === '%3' ? joinedLines.slice(-lines / 50).join('\n') : output + revision[pane.id] + (menu[pane.id] || ''), history: joinedHistory && pane.id === '%3' ? 3000 : undefined, screen: screen[pane.id] || '', styledScreen: styledScreen[pane.id] ?? screen[pane.id] ?? '', cursorY: cursorY[pane.id] ?? -1, menu: !!menuShown[pane.id], defaultStyle: 'fg=#abcdef,bg=#123456'}));
+      const panes = empty ? [] : roles.filter(pane => pane.session !== dismissedSession).map(pane => ({...pane, cli: pane.cli ?? 'codex', projectDir: '/work/' + pane.session + ' project', command: pane.command ?? 'codex', output: joinedHistory && pane.id === '%3' ? joinedLines.slice(-lines / 50).join('\n') : output + revision[pane.id] + (menu[pane.id] || ''), history: joinedHistory && pane.id === '%3' ? 3000 : undefined, screen: screen[pane.id] || '', styledScreen: styledScreen[pane.id] ?? screen[pane.id] ?? '', cursorY: cursorY[pane.id] ?? -1, menu: !!menuShown[pane.id], defaultStyle: 'fg=#abcdef,bg=#123456'}));
       if (paneDelay) await new Promise(resolve => setTimeout(resolve, paneDelay));
       return route.fulfill({json: {panes, version: responseVersion}});
     });
@@ -83,6 +87,15 @@ const assert = require('node:assert/strict');
       const error = sendError || (!data.append && blocked ? 'target box busy' : null);
       await new Promise(resolve => setTimeout(resolve, 300));
       await route.fulfill({status: error ? 409 : 200, json: error ? {error} : {message: 'Message sent'}});
+    });
+    let swapError = 'Agent is busy', swapMessage = 'Agent changed', finishSwap, swapStarted;
+    const swaps = [];
+    await page.route('**/api/swap', async route => {
+      assert.equal(route.request().method(), 'POST');
+      assert.equal(route.request().headers()['x-peon-token'], token);
+      swaps.push(route.request().postDataJSON());
+      await new Promise(resolve => { finishSwap = resolve; swapStarted(); });
+      await route.fulfill({status: swapError ? 409 : 200, json: swapError ? {error: swapError} : {message: swapMessage}});
     });
     let keyRequest, keyDelay = 0, keyCount = 0;
     await page.route('**/api/keys', async route => {
@@ -117,6 +130,272 @@ const assert = require('node:assert/strict');
       assert.equal(keyCount, before, 'Focus navigation stays in the browser');
     }
     await page.goto(url); await page.waitForSelector('.pane:not([hidden])');
+    await promptButton('%3', 'Code summary').waitFor();
+    assert.equal(buttonGets, 1);
+    const swap = page.getByRole('button', {name: 'Swap agent', exact: true});
+    const swapForm = page.locator('#swap-form');
+    const swapCli = swapForm.locator('[name="cli"]');
+    const swapCommand = swapForm.locator('[name="model"]');
+    const swapEffort = swapForm.locator('[name="effort"]');
+    await swapCli.locator('option').first().waitFor({state: 'attached'});
+    assert.deepEqual(await swapCli.locator('option').allTextContents(), ['claude', 'codex']);
+    assert.equal(await swapForm.locator('[name="command"]').count(), 0);
+    assert.equal(await page.locator('.pane .swap, .pane .swap-form').count(), 0);
+    assert(await swap.evaluate(el => el.parentElement.matches('.sidebar') && el.previousElementSibling.id === 'agents' && el.nextElementSibling.id === 'swap-form' && el.nextElementSibling.nextElementSibling.id === 'dismiss'));
+    assert.equal(await swap.evaluate(el => Math.round(el.getBoundingClientRect().top - document.querySelector('#agents').getBoundingClientRect().bottom)), 16);
+    await page.evaluate(() => { navigation.active.delete(navigation.session); showPane(); });
+    assert(await swap.isDisabled(), 'No selected pane disables Swap');
+    await paneTab('%3').click();
+    await swap.click();
+    assert.equal(await swapCli.inputValue(), 'codex');
+    assert.equal(await swapCommand.inputValue(), 'gpt-6.1-sol');
+    assert.equal(await swapEffort.inputValue(), 'high');
+    await paneTab('%2').click();
+    assert(await swapForm.isVisible());
+    assert.equal(await swapCli.inputValue(), 'codex');
+    assert.equal(await swapCommand.inputValue(), '', 'Open form follows a new selected pane');
+    assert.equal(await swapEffort.inputValue(), '');
+    await paneTab('%3').click();
+    assert.equal(await swapCli.inputValue(), 'codex');
+    assert.equal(await swapCommand.inputValue(), 'gpt-6.1-sol');
+    assert.equal(await swapEffort.inputValue(), 'high');
+    await swapCli.focus();
+    assert(await swapCli.evaluate(el => document.activeElement === el));
+    await swapForm.locator('.cancel').click();
+    assert(await swapForm.isHidden());
+    assert(await swap.evaluate(el => document.activeElement === el));
+    await swap.click();
+    await swapEffort.press('Escape');
+    assert(await swapForm.isHidden(), 'Escape closes the sidebar Swap form');
+    assert(await swap.evaluate(el => document.activeElement === el));
+    await swap.click();
+    await swapForm.locator('[type="submit"]').click();
+    assert.equal(swaps.length, 0, 'Unchanged fields do not send a request');
+    assert.equal(await card('%3').locator('.feedback').textContent(), 'Change CLI, model, or effort first.');
+    await swapCommand.fill('');
+    await swapForm.locator('[type="submit"]').click();
+    assert.equal(swaps.length, 0, 'Clearing the only field still leaves all fields unchanged');
+    for (const [model, effort] of [['   ', '   '], [' gpt-6.1-sol ', ' high ']]) {
+      await swapCommand.fill(model);
+      await swapEffort.fill(effort);
+      await swapForm.locator('[type="submit"]').click();
+      assert.equal(swaps.length, 0, 'Blank or unchanged padded fields do not send a request');
+      assert.equal(await card('%3').locator('.feedback').textContent(), 'Change CLI, model, or effort first.');
+    }
+    assert.equal(await card('%3').locator('.feedback').textContent(), 'Change CLI, model, or effort first.');
+    for (const malformed of ['--model', '-bad', '--']) {
+      await swapCommand.fill(malformed);
+      await swapForm.locator('[type="submit"]').click();
+      assert.equal(swaps.length, 0, 'Leading hyphens are rejected before delivery');
+      assert.equal(await card('%3').locator('.feedback').textContent(), 'model must be one token');
+    }
+    await swapCommand.fill('gpt-6.1-sol');
+    await swapCli.evaluate(el => { const option = document.createElement('option'); option.value = 'unknown-provider'; option.textContent = 'unknown-provider'; el.append(option); el.value = option.value; });
+    await swapForm.locator('[type="submit"]').click();
+    assert.equal(swaps.length, 0, 'Unknown CLI is rejected before delivery');
+    assert.equal(await card('%3').locator('.feedback').textContent(), 'Unknown CLI');
+    await swapCli.evaluate(el => el.querySelector('[value="unknown-provider"]').remove());
+    await swapCli.selectOption('claude');
+    await swapCommand.fill('opus');
+    for (const error of ['Agent is busy', null]) {
+      swapError = error;
+      const started = new Promise(resolve => { swapStarted = resolve; });
+      await swapForm.locator('[type="submit"]').click();
+      await started;
+      assert(await swap.isDisabled());
+      assert(await swapForm.locator('input, select, button').evaluateAll(controls => controls.every(control => control.disabled)));
+      assert.deepEqual(swaps[swaps.length - 1], {pane: '%3', identity: 'first:%3', cli: 'claude', model: 'opus', effort: '-'});
+      finishSwap();
+      await page.waitForFunction(message => document.querySelector('.pane[data-pane="%3"] .feedback').textContent === message && !document.querySelector('#swap').disabled, error || 'Agent changed');
+      if (error) {
+        assert(await swapForm.isVisible());
+        assert.equal(await swapCommand.inputValue(), 'opus');
+        assert(await card('%3').locator('.feedback').evaluate(el => el.classList.contains('error')));
+        assert(await swapCli.evaluate(el => document.activeElement === el), 'Failed Swap restores CLI focus');
+      } else {
+        assert(await swapForm.isHidden());
+        assert(await swap.evaluate(el => document.activeElement === el), 'Successful Swap restores trigger focus');
+      }
+    }
+    assert.equal(swaps.length, 2);
+    const swapState = card('%3').locator('.swap-state');
+    assert(await swapState.evaluate(el => el.parentElement.matches('.actions') && el === el.parentElement.lastElementChild));
+    assert.equal(await card('%3').locator('.pane-heading .swap-state').count(), 0);
+    const swapPane = roles.find(pane => pane.id === '%3');
+    async function setSwapStatus(status) {
+      swapPane.swap = status;
+      await page.evaluate(() => refresh());
+      await page.waitForFunction(status => cards.get('%3:first:%3').latest.swap === status, status);
+    }
+    const checking = 'checking claude --model opus', failed = 'failed invalid model';
+    await page.evaluate(() => feedback(cards.get('%3:first:%3'), 'Message sent'));
+    await setSwapStatus(checking);
+    assert.equal(await swapState.textContent(), checking);
+    assert.equal(await card('%3').locator('.feedback').textContent(), 'Message sent');
+    assert(await swap.isDisabled());
+    assert(await swapForm.locator('input, select, button').evaluateAll(controls => controls.every(control => control.disabled)));
+    assert(await card('%3').locator('.output').evaluate(el => document.activeElement === el), 'Late checking poll moves focus from Swap to output');
+    await swapForm.evaluate(el => el.dispatchEvent(new Event('submit', {bubbles: true, cancelable: true})));
+    assert.equal(swaps.length, 2, 'Checking guards programmatic form submits');
+    await page.waitForTimeout(6100);
+    assert.equal(await swapState.textContent(), checking, 'Checking stays visible beyond five seconds');
+    await setSwapStatus(failed);
+    assert.equal(await swapState.textContent(), failed);
+    assert(await swapState.evaluate(el => el.classList.contains('error')));
+    assert(await swap.isEnabled());
+    await page.waitForTimeout(4200);
+    assert.equal(await swapState.textContent(), failed, 'Failed status lasts five seconds');
+    await page.waitForFunction(() => document.querySelector('.pane[data-pane="%3"] .swap-state').textContent === '', null, {timeout: 2000});
+    await page.waitForTimeout(1500);
+    assert.equal(await swapState.textContent(), '', 'Identical failed polls do not restart the timer');
+    await setSwapStatus('done claude');
+    assert.equal(await swapState.textContent(), 'done claude');
+    await page.waitForTimeout(4200);
+    assert.equal(await swapState.textContent(), 'done claude', 'Done status lasts five seconds');
+    await page.waitForFunction(() => document.querySelector('.pane[data-pane="%3"] .swap-state').textContent === '', null, {timeout: 2000});
+    await setSwapStatus(failed);
+    await page.waitForTimeout(2500);
+    await setSwapStatus('checking next model');
+    await page.waitForTimeout(3000);
+    assert.equal(await swapState.textContent(), 'checking next model', 'New checking cancels the previous status timer');
+    await setSwapStatus(checking + ' ' + 'x'.repeat(2000));
+    for (const width of [390, 320]) {
+      await page.setViewportSize({width, height: 812});
+      assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+      assert(await swapState.evaluate(el => el.getBoundingClientRect().right <= innerWidth));
+    }
+    await page.setViewportSize({width: 1440, height: 950});
+    await setSwapStatus('');
+    assert.equal(await swapState.textContent(), '');
+    assert.equal(await card('%3').locator('.feedback').textContent(), 'Message sent', 'Swap status never replaces send feedback');
+    await swap.click();
+    assert(await swapCli.evaluate(el => document.activeElement === el));
+    await setSwapStatus('checking external job');
+    assert(await swapCommand.isDisabled());
+    assert(await card('%3').locator('.output').evaluate(el => document.activeElement === el), 'External checking moves focus from the disabled Swap input');
+    await setSwapStatus('');
+    await swapForm.locator('.cancel').click();
+    await card('%3').locator('.message-form textarea').focus();
+    await setSwapStatus('checking while messaging');
+    assert(await card('%3').locator('.message-form textarea').evaluate(el => document.activeElement === el), 'Checking keeps message input focus');
+    await setSwapStatus('');
+    for (const scenario of [
+      {status: checking, error: 'Agent is busy'},
+      {status: checking},
+      {status: failed},
+      {status: 'done claude'},
+      {status: checking, finished: ''},
+      {status: '', after: 'done claude'},
+      {status: '', after: checking}
+    ]) {
+      await setSwapStatus('');
+      if (await swapForm.isVisible()) await swapForm.locator('.cancel').click();
+      await swap.click();
+      await swapCli.selectOption('claude');
+      await swapCommand.fill('opus');
+      swapError = scenario.error || null;
+      swapMessage = 'peon-code: checking claude --model opus';
+      const started = new Promise(resolve => { swapStarted = resolve; });
+      await swapForm.locator('[type="submit"]').click();
+      await started;
+      await setSwapStatus(scenario.status);
+      if (scenario.finished !== undefined) await setSwapStatus(scenario.finished);
+      finishSwap();
+      await page.waitForFunction(() => !cards.get('%3:first:%3').busy);
+      assert.equal(await card('%3').locator('.feedback').textContent(), scenario.error || '', 'Checking acknowledgments stay out of shared feedback');
+      assert.equal(await swapState.textContent(), scenario.finished !== undefined ? scenario.finished : scenario.status);
+      const checkingNow = scenario.status === checking && scenario.finished === undefined;
+      assert.equal(await swap.isDisabled(), checkingNow);
+      assert.equal(await swapForm.isVisible(), !!scenario.error);
+      const focused = checkingNow ? card('%3').locator('.output') : swap;
+      assert(await focused.evaluate(el => document.activeElement === el), 'Swap restores enabled focus after status polling');
+      assert.deepEqual(swaps[swaps.length - 1], {pane: '%3', identity: 'first:%3', cli: 'claude', model: 'opus', effort: '-'});
+      if (scenario.after) {
+        await setSwapStatus(scenario.after);
+        assert.equal(await swapState.textContent(), scenario.after);
+        assert.equal(await card('%3').locator('.feedback').textContent(), '');
+        if (scenario.after === checking) {
+          assert(await swap.isDisabled());
+          assert(await card('%3').locator('.output').evaluate(el => document.activeElement === el), 'Checking after the API response moves focus from Swap to output');
+        }
+      }
+    }
+    await setSwapStatus('');
+    for (const change of [
+      {model: 'gpt-next', payload: {cli: '-', model: 'gpt-next', effort: '-'}},
+      {cli: 'claude', payload: {cli: 'claude', model: '-', effort: '-'}},
+      {model: '', effort: 'xhigh', payload: {cli: '-', model: '-', effort: 'xhigh'}},
+      {model: '   ', effort: ' xhigh ', payload: {cli: '-', model: '-', effort: 'xhigh'}},
+      {model: ' gpt-6.1-sol ', effort: ' low ', payload: {cli: '-', model: '-', effort: 'low'}},
+      {model: ' new ', effort: ' low ', payload: {cli: '-', model: 'new', effort: 'low'}},
+      {cli: 'claude', model: '', effort: '', payload: {cli: 'claude', model: '-', effort: '-'}},
+      {cli: 'claude', model: '   ', effort: '   ', payload: {cli: 'claude', model: '-', effort: '-'}},
+      {model: '-', effort: 'low', payload: {cli: '-', model: '-', effort: 'low'}}
+    ]) {
+      if (await swapForm.isVisible()) await swapForm.locator('.cancel').click();
+      await swap.click();
+      if (change.model !== undefined) await swapCommand.fill(change.model);
+      if (change.effort !== undefined) await swapEffort.fill(change.effort);
+      if (change.cli) await swapCli.selectOption(change.cli);
+      swapError = null;
+      const started = new Promise(resolve => { swapStarted = resolve; });
+      await swapForm.locator('[type="submit"]').click();
+      await started;
+      assert.deepEqual(swaps[swaps.length - 1], {pane: '%3', identity: 'first:%3', ...change.payload}, 'Same CLI keeps other fields, changed CLI drops unchanged fields');
+      finishSwap();
+      await page.waitForFunction(() => !cards.get('%3:first:%3').busy);
+      assert(await swapForm.isHidden());
+    }
+    const reviewer = roles.find(pane => pane.id === '%2');
+    reviewer.cli = 'claude';
+    reviewer.agent_command = 'claude --model=sonnet --effort=low';
+    await page.evaluate(() => refresh());
+    for (const returnToOriginal of [false, true]) {
+      await paneTab('%3').click();
+      if (await swapForm.isVisible()) await swapForm.locator('.cancel').click();
+      await swap.click();
+      await swapCli.selectOption('claude');
+      await swapCommand.fill('opus');
+      swapError = returnToOriginal ? 'Old request failed' : null;
+      swapMessage = 'Agent changed';
+      const started = new Promise(resolve => { swapStarted = resolve; });
+      await swapForm.locator('[type="submit"]').click();
+      await started;
+      assert.deepEqual(swaps[swaps.length - 1], {pane: '%3', identity: 'first:%3', cli: 'claude', model: 'opus', effort: '-'});
+      await paneTab('%2').click();
+      assert.equal(await swapCli.inputValue(), 'claude');
+      assert.equal(await swapCommand.inputValue(), 'sonnet');
+      assert.equal(await swapEffort.inputValue(), 'low');
+      assert(await swapCommand.isDisabled(), 'Pending request keeps the global form disabled');
+      if (returnToOriginal) {
+        await paneTab('%3').click();
+        assert.equal(await swapCli.inputValue(), 'codex');
+        assert.equal(await swapCommand.inputValue(), 'gpt-6.1-sol');
+        assert.equal(await swapEffort.inputValue(), 'high');
+      }
+      const selected = returnToOriginal ? '%3' : '%2';
+      const before = await card(selected).locator('.feedback').textContent();
+      finishSwap();
+      await page.waitForFunction(() => !cards.get('%3:first:%3').busy);
+      assert(await swapForm.isVisible(), 'An old request does not close the new selected form');
+      assert(await swapCommand.isEnabled());
+      assert.equal(await card(selected).locator('.feedback').textContent(), before, 'An old response does not alter selected feedback');
+      assert(await paneTab(selected).evaluate(el => document.activeElement === el), 'An old response keeps tab focus');
+      assert.equal(await swapCommand.inputValue(), returnToOriginal ? 'gpt-6.1-sol' : 'sonnet');
+    }
+    await paneTab('%2').click();
+    swapError = null;
+    await swapEffort.fill('high');
+    const selectedStarted = new Promise(resolve => { swapStarted = resolve; });
+    await swapForm.locator('[type="submit"]').click();
+    await selectedStarted;
+    assert.deepEqual(swaps[swaps.length - 1], {pane: '%2', identity: 'first:%2', cli: '-', model: '-', effort: 'high'});
+    finishSwap();
+    await page.waitForFunction(() => !cards.get('%2:first:%2').busy);
+    assert(await swapForm.isHidden());
+    assert(await swap.evaluate(el => document.activeElement === el));
+    await paneTab('%3').click();
+    console.log('swap status: PASS (sidebar placement, supported provider list, CLI/model/effort prefill, cleared fields, leading hyphen rejection, Escape, unchanged fields, same CLI keep, cross CLI drop, invalid and unknown fields, selected prefill, open form tab changes, pending tab races, selected payload, cancel, pending controls, focus, actions row, mobile, persistent checking, five-second done and failed, unchanged polls, stale timer cancellation, separate feedback, status before response, fast completion)');
     const weeklyReset = await page.evaluate(() => new Date(2000000000 * 1000).toLocaleString(undefined, {month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit'}));
     assert.equal(await card('%3').locator('.meta').textContent(), 'alpha / manager / %3 / codex weekly 66.0% left, resets ' + weeklyReset);
     roles.find(pane => pane.id === '%3').cli = '';
@@ -129,8 +408,6 @@ const assert = require('node:assert/strict');
     responseVersion = '2.3.4';
     await page.waitForFunction(() => document.querySelector('#version').textContent === 'v2.3.4');
     assert(await page.locator('#version').evaluate(el => el.classList.contains('meta') && el.previousElementSibling.id === 'connection' && el === el.parentElement.lastElementChild), 'Version is muted text at the end of the connection row');
-    await promptButton('%3', 'Code summary').waitFor();
-    assert.equal(buttonGets, 1);
     assert(await page.locator('.top-links').evaluate(el => {
       const header = el.parentElement;
       return Math.abs(el.getBoundingClientRect().right - (header.getBoundingClientRect().right - parseFloat(getComputedStyle(header).paddingRight))) <= 1;
@@ -869,6 +1146,7 @@ const assert = require('node:assert/strict');
     assert(await summary.isDisabled());
     assert(await card('%3').locator('.prompt-buttons button').evaluateAll(buttons => buttons.every(button => button.disabled)));
     assert(await card('%3').locator('.add-button').isDisabled());
+    assert(await swap.isDisabled());
     assert(await card('%3').locator('.message-form button').isDisabled());
     assert(await card('%3').locator('.keys button').evaluateAll(buttons => buttons.every(button => button.disabled)));
     assert.equal(await card('%3').locator('.keys-toggle').getAttribute('aria-expanded'), 'true');

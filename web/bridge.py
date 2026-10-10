@@ -33,9 +33,13 @@ def panes(session=None):
                 role = ""
         try:
             project = tmux("display-message", "-p", "-t", pane, "#{?#{@peon_project_dir},#{@peon_project_dir},#{pane_current_path}}")
+            agent_command = tmux("display-message", "-p", "-t", pane, "#{@peon_cmd}")
+            swap = tmux("display-message", "-p", "-t", pane, "#{@peon_swap}")
         except subprocess.CalledProcessError:
             continue  # The pane may close between listing it and reading metadata.
         project = project[:-1] if project.endswith("\n") else project
+        agent_command = agent_command[:-1] if agent_command.endswith("\n") else agent_command
+        swap = swap[:-1] if swap.endswith("\n") else swap
         weekly = None
         try:
             used, resets = weekly_text.split()
@@ -53,7 +57,7 @@ def panes(session=None):
                 usage = dict(zip(("input", "cacheRead", "cacheWrite", "output"), map(int, counts)))
             except ValueError:
                 pass
-        result.append(dict(session=team, id=pane, identity=identity, name=name, command=command, cli=cli, role=role, projectDir=project, weekly=weekly, usage=usage))
+        result.append(dict(session=team, id=pane, identity=identity, name=name, command=command, agent_command=agent_command or command, swap=swap, cli=cli, role=role, projectDir=project, weekly=weekly, usage=usage))
     for team in {pane["session"] for pane in result}:
         group = sorted((pane for pane in result if pane["session"] == team), key=lambda pane: int(pane["id"][1:]))
         for index, pane in enumerate(group):

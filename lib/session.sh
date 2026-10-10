@@ -18,7 +18,7 @@ print_usage() {
       printf '  %-10s %-8s no transcript\n' "$name" "$bin"
       continue
     fi
-    if ! tokens=$(cli_call "$bin" usage_tokens "$file") ||
+    if ! tokens=$(cli_usage_sum "$bin" "$file") ||
       ! [[ $tokens =~ ^[0-9]+\ [0-9]+\ [0-9]+\ [0-9]+$ ]]; then
       printf '  %-10s %-8s no usage logged\n' "$name" "$bin"
       continue

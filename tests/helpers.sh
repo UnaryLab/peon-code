@@ -97,7 +97,9 @@ FAKE_TMUX
 #!/usr/bin/env bash
 exit 0
 FAKE_SLEEP
-  chmod +x "$bin_dir/tmux" "$bin_dir/sleep"
+  # Scope behavior has its own tests; other launch cases use the fallback on every host.
+  printf '#!/bin/sh\nexit 1\n' >"$bin_dir/systemd-run"
+  chmod +x "$bin_dir/tmux" "$bin_dir/sleep" "$bin_dir/systemd-run"
   printf '%s\n' "$bin_dir"
 }
 

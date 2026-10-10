@@ -1,12 +1,5 @@
 # shellcheck shell=bash
 
-launch_command_locked() {
-  local pane=$1 command=$2
-  printf '%s' "$command" | paste_only "$pane" || return 1
-  sleep 1
-  tmux send-keys -t "$pane" Enter
-}
-
 # The brief marker that identifies each agent's own thread, so two panes of
 # the same CLI in one directory do not both reopen the newest conversation.
 # The trailing comma closes the session name, so a session name that is a
@@ -58,12 +51,19 @@ if [ "$MAIN" -lt 0 ]; then
 fi
 
 create_agent_session "$SESSION" "$N" "$MAIN"
+if [ "$RESTART_DEAD" = yes ]; then
+  tmux set-option -t "$SESSION" @peon_restart 1
+else
+  tmux set-option -t "$SESSION" @peon_restart 0
+fi
 FAILED_AGENTS=()
 for i in "${!NAMES[@]}"; do
   tmux set -pt "${PANE_IDS[$i]}" @peon_name "${NAMES[$i]}"
   tmux set -pt "${PANE_IDS[$i]}" @peon_role_type "$(role_field "${ROLES[$i]}" type)"
   # The CLI binary, read by the watcher to pick the transcript parser.
   tmux set -pt "${PANE_IDS[$i]}" @peon_bin "${CMDS[$i]%% *}"
+  tmux set -pt "${PANE_IDS[$i]}" @peon_cmd "${CMDS[$i]}"
+  tmux set -pt "${PANE_IDS[$i]}" @peon_main "$((i == MAIN))"
   wait_shell_ready "${PANE_IDS[$i]}"
 done
 
@@ -142,7 +142,7 @@ done
 # a claude pane's brief once it settles. Agents that never started are named
 # in FAILED_AGENTS.
 launch_agents() {
-  local command bin physical_dir
+  local command bin physical_dir scope_command=""
   local project_dirs=()
   physical_dir=$(pwd -P)
   project_dirs=("$physical_dir")
@@ -154,6 +154,11 @@ launch_agents() {
       break
     done
   done
+  # Avoid OOMPolicy=stop in tmux pane scopes; the agent still dies if it is the OOM victim.
+  if command -v systemd-run >/dev/null 2>&1 &&
+    systemd-run --user --scope -q -p OOMPolicy=continue -- true >/dev/null 2>&1; then
+    scope_command="systemd-run --user --scope -q -p OOMPolicy=continue -- \"\${SHELL:-sh}\" -l"
+  fi
   for i in "${!NAMES[@]}"; do
     BRIEF=$(build_brief "$i")
     BRIEF_FILE="$BRIEF_DIR/$i.md"  # by index: a CLI-team name is the command, which can hold / or repeat
@@ -176,6 +181,20 @@ launch_agents() {
     # Quoted for the pane's shell: a qwen id can be a saved-chat tag, not a uuid.
     RID=${RID:+$(printf %q "$RID")}
     LAUNCH=$(cli_call "$BIN" launch_command "$BIN" "$ARGS" "$RID" "$Q" "$i")
+    tmux set -pt "${PANE_IDS[$i]}" @peon_launch \
+      "$(cli_call "$BIN" launch_command "$BIN" "$ARGS" "" "$Q" "$i" 2>/dev/null)"
+    if [ -n "$scope_command" ] &&
+      with_pane_delivery "${PANE_IDS[$i]}" launch_command_locked "${PANE_IDS[$i]}" "$scope_command"; then
+      # wait_shell_ready can return at once while the outer prompt is still
+      # on screen. Bash and zsh (including oh-my-zsh and slow rc files) keep the
+      # launch command as tty typeahead until the login shell rc files finish.
+      # An rc file that flushes tty input drops it, so wait_agent_ready times out.
+      # To handle that, capture the pane after the scope command echoes and wait
+      # until the capture changes (the inner shell has drawn its prompt) before
+      # pasting the launch command.
+      sleep 1
+      wait_shell_ready "${PANE_IDS[$i]}"
+    fi
     # The pane is still at its shell, whose prompt peon-code cannot predict, so
     # the box holds no text to check against: Enter follows the paste directly.
     with_pane_delivery "${PANE_IDS[$i]}" launch_command_locked "${PANE_IDS[$i]}" "$LAUNCH" ||
@@ -224,8 +243,8 @@ else
   fi
 fi
 # The context watcher outlives this launch: it runs until the session is
-# gone, compacting a pane whose context reaches compact-at tokens.
-if [ "$COMPACT_AT" -gt 0 ]; then
+# gone, compacting full contexts or restarting dead agent panes.
+if [ "$COMPACT_AT" -gt 0 ] || [ "$RESTART_DEAD" = yes ]; then
   WATCH_PID_FILE="/tmp/peon-code-watch-$UID/$SESSION.pid"
   WATCH_PID=$(cat "$WATCH_PID_FILE" 2>/dev/null) || WATCH_PID=""
   if [[ $WATCH_PID =~ ^[1-9][0-9]*$ ]] && [ "$WATCH_PID" != "$$" ]; then

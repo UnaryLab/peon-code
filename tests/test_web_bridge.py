@@ -31,12 +31,22 @@ class BridgeTests(unittest.TestCase):
     def test_project_directory_preserves_whitespace(self):
         project = '/work/project with spaces\tand\nnewlines '
         rows = 'team\t%1\tone\t1\tcodex\tmanager\t\t100:$1:201\t\t\t\n'
-        with patch.object(bridge, 'tmux', side_effect=[rows, project + '\n']):
+        with patch.object(bridge, 'tmux', side_effect=[rows, project + '\n', '\n', '\n']):
             self.assertEqual(bridge.panes()[0]['projectDir'], project)
+
+    def test_agent_command_preserves_full_command_or_uses_process_fallback(self):
+        rows = 'team\t%2\tworker\t1\tnode\tworker\t\t100:$1:202\t\t\tclaude\n'
+        for command in ('claude --model opus', '', 'claude\t--model\topus'):
+            with self.subTest(command=command), patch.object(bridge, 'tmux', side_effect=[rows, '/work/project\n', command + '\n', '\n']) as tmux:
+                pane = bridge.panes()[0]
+            self.assertEqual(pane['command'], 'node')
+            self.assertEqual(pane['agent_command'], command or 'node')
+            self.assertEqual(tmux.call_args_list[-2].args, ('display-message', '-p', '-t', '%2', '#{@peon_cmd}'))
+            self.assertEqual(len(tmux.call_args_list[0].args[-1].split('\t')), 11)
 
     def test_closed_pane_during_discovery_is_skipped(self):
         rows = 'team\t%1\tone\t1\tcodex\tmanager\t\t100:$1:201\t\t\t\nteam\t%2\ttwo\t1\tcodex\tworker\t\t100:$1:202\t\t\t\n'
-        with patch.object(bridge, 'tmux', side_effect=[rows, subprocess.CalledProcessError(1, 'tmux'), '/work/project\n']):
+        with patch.object(bridge, 'tmux', side_effect=[rows, subprocess.CalledProcessError(1, 'tmux'), '/work/project\n', '\n', '\n']):
             self.assertEqual([pane['id'] for pane in bridge.panes()], ['%2'])
 
     def test_pane_usage_values(self):
@@ -48,10 +58,10 @@ class BridgeTests(unittest.TestCase):
                 ('-1 2 3 4', None), ('+1 2 3 4', None), ('1.5 2 3 4', None),
                 ('1 2 true 4', None), ('1 2 3 ٤', None), ('1 2 3 4x', None)):
             rows = 'team\t%2\tworker\t1\tcodex\tworker\t\t100:$1:202\t\t' + text + '\t\n'
-            with self.subTest(text=text), patch.object(bridge, 'tmux', side_effect=[rows, '/work/project\n']) as tmux:
+            with self.subTest(text=text), patch.object(bridge, 'tmux', side_effect=[rows, '/work/project\n', '\n', '\n']) as tmux:
                 pane = bridge.panes()[0]
             self.assertEqual(pane['usage'], expected)
-            self.assertEqual(tmux.call_count, 2)
+            self.assertEqual(tmux.call_count, 4)
             self.assertTrue(tmux.call_args_list[0].args[-1].endswith('\t#{@peon_weekly}\t#{@peon_usage}\t#{@peon_bin}'))
             if expected is not None:
                 self.assertTrue(all(isinstance(count, int) for count in pane['usage'].values()))
@@ -59,10 +69,18 @@ class BridgeTests(unittest.TestCase):
     def test_pane_cli_is_populated_or_empty(self):
         for cli in ('codex', ''):
             rows = 'team\t%2\tworker\t1\tbash\tworker\t\t100:$1:202\t\t\t' + cli + '\n'
-            with self.subTest(cli=cli), patch.object(bridge, 'tmux', side_effect=[rows, '/work/project\n']) as tmux:
+            with self.subTest(cli=cli), patch.object(bridge, 'tmux', side_effect=[rows, '/work/project\n', '\n', '\n']) as tmux:
                 self.assertEqual(bridge.panes()[0]['cli'], cli)
-            self.assertEqual(tmux.call_count, 2)
+            self.assertEqual(tmux.call_count, 4)
             self.assertEqual(len(tmux.call_args_list[0].args[-1].split('\t')), 11)
+
+    def test_pane_swap_status_is_empty_or_keeps_the_stored_value(self):
+        rows = 'team\t%2\tworker\t1\tnode\tworker\t\t100:$1:202\t\t\tclaude\n'
+        for status in ('', 'checking claude --model opus', 'failed invalid model', 'done'):
+            with self.subTest(status=status), patch.object(bridge, 'tmux', side_effect=[rows, '/work/project\n', 'claude --model opus\n', status + '\n']) as tmux:
+                pane = bridge.panes()[0]
+            self.assertEqual(pane['swap'], status)
+            self.assertEqual(tmux.call_args_list[-1].args, ('display-message', '-p', '-t', '%2', '#{@peon_swap}'))
 
     def test_capture_keeps_ansi_and_background(self):
         pane = {'id': '%2', 'identity': '100:$1:202'}
@@ -176,8 +194,12 @@ class BridgeTests(unittest.TestCase):
                 tmux('-f', '/dev/null', 'new-session', '-d', '-s', name, 'sleep 60')
                 tmux('set-option', '-t', name, '@peon_code', '1')
                 tmux('set-option', '-p', '-t', name, '@peon_name', 'agent')
+                if name == 'old':
+                    tmux('set-option', '-p', '-t', name, '@peon_cmd', 'claude\t--model\topus')
                 with patch.object(bridge, 'tmux', side_effect=tmux):
                     pane = bridge.panes()[0]
+                    self.assertEqual(pane['agent_command'], 'claude\t--model\topus' if name == 'old' else pane['command'])
+                    self.assertEqual(pane['swap'], '')
                     self.assertRegex(pane['identity'], r'^\d+:\$\d+:\d+$')
                     self.assertEqual(bridge.panes()[0]['identity'], pane['identity'])
                     results.append(pane)

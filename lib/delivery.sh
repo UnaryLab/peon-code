@@ -3,6 +3,13 @@
 # shellcheck source=lib/cli.sh
 declare -F cli_call >/dev/null || source "$(dirname -- "${BASH_SOURCE[0]}")/cli.sh"
 
+launch_command_locked() {
+  local pane=$1 command=$2
+  printf '%s' "$command" | paste_only "$pane" || return 1
+  sleep 1
+  tmux send-keys -t "$pane" Enter
+}
+
 pane_identity_matches() {
   [ -n "${PEON_EXPECTED_IDENTITY:-}" ] || return 0
   [ "$(tmux display-message -p -t "$1" '#{pid}:#{session_id}:#{pane_pid}' 2>/dev/null)" = "$PEON_EXPECTED_IDENTITY" ] && return 0

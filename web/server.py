@@ -32,6 +32,21 @@ ASSETS = {"/": ("index.html", "text/html"), "/app.js": ("app.js", "text/javascri
           "/LICENSE": ("../LICENSE", "text/plain")}
 
 
+def available_clis():
+    result = []
+    for path in (ROOT / "lib" / "cli").glob("*.sh"):
+        if not path.is_file() or not re.fullmatch(r"[A-Za-z0-9._-]+", path.stem):
+            continue
+        name = re.escape(path.stem) + "_swap_args"
+        definition = r"(?m)^[ \t]*(?:function[ \t]+" + name + r"(?:[ \t]*\([ \t]*\))?|" + name + r"[ \t]*\([ \t]*\))[ \t]*\s*\{"
+        try:
+            if re.search(definition, path.read_text(encoding="utf-8")):
+                result.append(path.stem)
+        except (OSError, UnicodeError):
+            continue
+    return sorted(result)
+
+
 def validate_button(data):
     name, description, prompt = data.get("name"), data.get("description"), data.get("prompt")
     name = name.strip(" ") if isinstance(name, str) else name
@@ -72,6 +87,8 @@ def read_buttons():
 
 def run_delivery(args, text, identity, timeout=20):
     environment = dict(os.environ, PEON_EXPECTED_IDENTITY=identity)
+    if len(args) > 1 and args[1] == "swap":
+        environment["TMUX_PANE"] = ""
     process = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                stderr=subprocess.PIPE, text=True, env=environment,
                                start_new_session=True)
@@ -119,11 +136,13 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         parsed = urlsplit(self.path)
-        if not self.allowed(parsed.path in ("/api/panes", "/api/buttons")):
+        if not self.allowed(parsed.path in ("/api/panes", "/api/buttons", "/api/clis")):
             return
         if self.path in ASSETS:
             filename, mime = ASSETS[self.path]
             self.respond(200, (ROOT / "web" / filename).read_bytes(), mime)
+        elif parsed.path == "/api/clis":
+            self.respond(200, available_clis())
         elif parsed.path == "/api/buttons":
             try:
                 self.respond(200, read_buttons())
@@ -193,7 +212,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self.allowed(True):
             return
-        if self.path not in ("/api/explain", "/api/send", "/api/dismiss", "/api/keys", "/api/buttons", "/api/open"):
+        if self.path not in ("/api/explain", "/api/send", "/api/swap", "/api/dismiss", "/api/keys", "/api/buttons", "/api/open"):
             self.respond(404, {"error": "Not found"})
             return
         try:
@@ -274,7 +293,15 @@ class Handler(BaseHTTPRequestHandler):
             append = data.get("append", False)
             if self.path == "/api/send" and not isinstance(append, bool):
                 raise ValueError("append must be a boolean")
-            if self.path == "/api/keys":
+            if self.path == "/api/swap":
+                cli, model, effort = (data.get(field) for field in ("cli", "model", "effort"))
+                for field, value in (("CLI", cli), ("Model", model), ("Effort", effort)):
+                    if not isinstance(value, str) or not re.fullmatch(r"(-|[A-Za-z0-9._=/][A-Za-z0-9._=/-]*)", value):
+                        raise ValueError(field + " must be one token, or - to keep its value")
+                if cli != "-" and cli not in available_clis():
+                    raise ValueError("Unknown CLI")
+                text = ""
+            elif self.path == "/api/keys":
                 key = data.get("key")
                 if key not in ("Tab", "Up", "Down", "Enter", "Escape", "Backspace"):
                     raise ValueError("Allowed keys: Tab, Up, Down, Enter, Escape, Backspace")
@@ -286,13 +313,16 @@ class Handler(BaseHTTPRequestHandler):
                 target = next((p for p in panes(self.server.session) if p["id"] == pane and p.get("identity") == identity), None)
                 if not isinstance(identity, str) or target is None:
                     raise ValueError("Agent changed or closed; refresh before sending")
-                action = "key" if self.path == "/api/keys" else "explain" if self.path == "/api/explain" else "send"
+                action = "swap" if self.path == "/api/swap" else "key" if self.path == "/api/keys" else "explain" if self.path == "/api/explain" else "send"
                 args = [str(ROOT / "peon-code.sh"), action]
                 if action == "send" and append:
                     args.append("--append")
                 if action == "key" and key == "Enter":
                     args.append("--submit")
-                args.append(pane)
+                if action == "swap":
+                    args.extend([target["name"], cli, model, effort, target["session"]])
+                else:
+                    args.append(pane)
                 if action == "key":
                     args.append("BSpace" if key == "Backspace" else key)
                 elif action == "send":

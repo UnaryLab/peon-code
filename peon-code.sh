@@ -12,6 +12,7 @@
 #   ./peon-code.sh key [--submit] <pane-id> <name>
 #   ./peon-code.sh explain <pane-id> < selected-text
 #   ./peon-code.sh rebrief <name|all> [<session>]
+#   ./peon-code.sh swap <name> <cli|-> <model|-> <effort|-> [<session>]
 #   ./peon-code.sh compact [<name|all>] [<session>]
 #   ./peon-code.sh clear [<name|all>] [<session>]
 #   ./peon-code.sh watch [<session>] [<tokens>]
@@ -78,6 +79,8 @@ peon-code.sh key [--submit] <pane-id> <name>   press Tab, Up, Down, Enter, Escap
 peon-code.sh rebrief <name|all> [<session>]     send an agent its launch brief again,
                                                 for after it compacts its conversation
                                                 (session defaults to the current directory name)
+peon-code.sh swap <name> <cli|-> <model|-> <effort|-> [<session>]
+                                                replace a running agent's CLI, model, or effort
 peon-code.sh compact [<name|all>] [<session>]   send /compact to an agent pane, then send
                                                 its brief again once compaction ends,
                                                 skipping any blocked pane (typed text,
@@ -89,11 +92,12 @@ peon-code.sh clear [<name|all>] [<session>]     send /clear to an agent pane, th
                                                 pane (typed text, dialog, menu, copy mode)
                                                 (name and session default to all and the
                                                 current directory name)
-peon-code.sh watch [<session>] [<tokens>]      compact an agent pane whose context reaches
-                                                <tokens> (default 250000); reads its
-                                                transcript when it changes, at most once
-                                                a minute; every launch starts it, so run
-                                                it by hand only after killing that one
+peon-code.sh watch [<session>] [<tokens>]      restart dead agents and compact an agent
+                                                pane whose context reaches <tokens> (default
+                                                250000); reads its transcript when it changes,
+                                                at most once a minute; started by each launch
+                                                unless compact-at is 0 and restart-dead is no;
+                                                run it by hand only after killing that one
 peon-code.sh list                               agent panes of every session
 peon-code.sh uninstall [bin-dir]                remove both installed command symlinks
 peon-code.sh -h                                 this help
@@ -181,6 +185,14 @@ case "${1:-}" in
   key) shift; cmd_key "$@"; exit 0 ;;
   explain) shift; cmd_explain "$@"; exit 0 ;;
   rebrief) shift; cmd_rebrief "$@"; exit 0 ;;
+  swap) shift; cmd_swap "$@"; exit $? ;;
+  __swap_job)
+    shift
+    swap_job "$@" &
+    swap_job_pid=$!
+    trap 'kill -TERM "$swap_job_pid" 2>/dev/null || true; wait "$swap_job_pid" 2>/dev/null || true; exit 143' INT TERM HUP
+    wait "$swap_job_pid"
+    exit $? ;;
   compact) shift; cmd_compact "$@"; exit 0 ;;
   clear) shift; cmd_clear "$@"; exit 0 ;;
   watch) shift; cmd_watch "$@"; exit 0 ;;

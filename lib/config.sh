@@ -53,12 +53,18 @@ read_conf() {
     local tokens=()
     read -ra tokens <<<"$line"
     n=${#tokens[@]}
-    # The one setting line: "compact-at <tokens>" is the context size at
-    # which the watcher compacts a pane; 0 turns the watcher off.
+    # "compact-at <tokens>" is the context size at which the watcher
+    # compacts a pane; 0 turns compaction off.
     if [ "${tokens[0]}" = compact-at ]; then
       [ "$n" -eq 2 ] && [[ ${tokens[1]} =~ ^[0-9]+$ ]] ||
         die "$conf line $lineno: compact-at takes one number of tokens: $line"
       COMPACT_AT=${tokens[1]}
+      continue
+    fi
+    if [ "${tokens[0]}" = restart-dead ]; then
+      [ "$n" -eq 2 ] && [[ ${tokens[1]} =~ ^(yes|no)$ ]] ||
+        die "$conf line $lineno: restart-dead takes yes or no: $line"
+      RESTART_DEAD=${tokens[1]}
       continue
     fi
     [ "$n" -ge 3 ] || die "$conf line $lineno: need name, command, and role (got $n): $line"
@@ -118,6 +124,7 @@ load_team() {
   ROLES=()
   MAIN_INDEX=-1
   COMPACT_AT=250000
+  RESTART_DEAD=yes
   if [ $# -gt 0 ]; then
     # CLI agent commands win; the name is the command string, no role.
     for arg in "$@"; do

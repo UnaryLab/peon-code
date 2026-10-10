@@ -90,6 +90,143 @@ test_cli_provider_parsers
 # shellcheck source=tests/helpers.sh
 source "$ROOT/tests/helpers.sh"
 
+# shellcheck disable=SC2034,SC2317 # Variables and mocks are used by the evaluated launch functions.
+test_launch_scope() (
+  local bin_dir="$TEST_DIR/scope-bin" bare_dir="$TEST_DIR/scope-bare-bin" mode pane
+  local SCOPE_LOG="$TEST_DIR/scope-probe.log" SCOPE_PROBE_RC=0 pasted="$TEST_DIR/scope-pasted.log"
+  local BRIEF_DIR="$TEST_DIR/scope-briefs" BRIEF BRIEF_FILE Q BIN ARGS RID LAUNCH i
+  local NAMES=(first second) CMDS=('scope_agent --flag value' 'scope_function --flag value')
+  local PANE_IDS=(%1 %2) RESUME_IDS=('' '') FAILED_AGENTS=()
+  export SCOPE_LOG SCOPE_PROBE_RC
+  # shellcheck source=lib/cli.sh
+  source "$ROOT/lib/cli.sh"
+  # shellcheck source=lib/delivery.sh
+  source "$ROOT/lib/delivery.sh"
+  mkdir -p "$bin_dir" "$bare_dir" "$BRIEF_DIR"
+  ln -s "$(command -v cat)" "$bin_dir/cat"
+  ln -s "$(command -v cat)" "$bare_dir/cat"
+  ln -s "$(type -P true)" "$bin_dir/true"
+  cat >"$bin_dir/systemd-run" <<'SCOPE'
+#!/bin/sh
+printf '%s\n' "$*" >>"$SCOPE_LOG"
+[ "$SCOPE_PROBE_RC" -eq 0 ] || exit "$SCOPE_PROBE_RC"
+while [ "$1" != -- ]; do shift; done
+shift
+exec "$@"
+SCOPE
+  chmod +x "$bin_dir/systemd-run"
+  tmux() { :; }
+  sleep() { :; }
+  build_brief() { printf 'launch brief'; }
+  with_pane_delivery() { shift; "$@"; }
+  paste_only() { { printf '%s:' "$1"; cat; printf '\n'; } >>"$pasted"; }
+  wait_shell_ready() { printf '%s\n' "$1" >>"$TEST_DIR/scope-waits.log"; }
+  wait_agent_ready() { :; }
+  eval "$(sed -n '/^launch_agents() {/,/^}/p' "$ROOT/lib/launch.sh")"
+  for mode in supported missing failed; do
+    : >"$SCOPE_LOG"
+    : >"$pasted"
+    : >"$TEST_DIR/scope-waits.log"
+    SCOPE_PROBE_RC=0
+    [ "$mode" != failed ] || SCOPE_PROBE_RC=1
+    if [ "$mode" = missing ]; then
+      PATH="$bare_dir" launch_agents
+      [ ! -s "$SCOPE_LOG" ] || fail 'launch ran a missing systemd-run'
+    else
+      PATH="$bin_dir" launch_agents
+      [ "$(cat "$SCOPE_LOG")" = '--user --scope -q -p OOMPolicy=continue -- true' ] ||
+        fail 'launch did not probe the scope flags exactly once'
+    fi
+    if [ "$mode" = supported ]; then
+      for pane in %1 %2; do
+        sed -n "s/^$pane://p" "$pasted" >"$TEST_DIR/scope-$pane.commands"
+        # shellcheck disable=SC2016 # This expansion belongs to the pane shell.
+        [ "$(head -1 "$TEST_DIR/scope-$pane.commands")" = 'systemd-run --user --scope -q -p OOMPolicy=continue -- "${SHELL:-sh}" -l' ] ||
+          fail 'scope shell was not sent before the CLI command'
+      done
+      [ "$(cat "$TEST_DIR/scope-waits.log")" = $'%1\n%2' ] || fail 'launch did not wait for both scoped shells'
+      [ "$(wc -l <"$pasted")" -eq 4 ] || fail 'scoped launch sent the wrong number of commands'
+    else
+      [ ! -s "$TEST_DIR/scope-waits.log" ] || fail 'launch waited for an unsupported scope shell'
+      [ "$(wc -l <"$pasted")" -eq 2 ] || fail 'unscoped launch sent extra commands'
+    fi
+    for pane in %1 %2; do
+      [ "$pane" != %1 ] || grep -Fq -- '%1:scope_agent --flag value ' "$pasted" || fail 'alias launch command changed'
+      [ "$pane" != %2 ] || grep -Fq -- '%2:scope_function --flag value ' "$pasted" || fail 'function launch command changed'
+    done
+  done
+)
+test_launch_scope
+
+test_scope_shell_commands() (
+  local socket="peon-scope-shell-test-$$" session mode index pane line i
+  local home_dir="$TEST_DIR/scope-home" work_dir="$TEST_DIR/scope-work" agent="$TEST_DIR/scope-agent"
+  local SCOPE_LOG="$TEST_DIR/scope-shell.log" SCOPE_PROBE_RC=0 SCOPE_AGENT_LOG SHELL
+  SHELL=$(command -v bash)
+  export SCOPE_LOG SCOPE_PROBE_RC SCOPE_AGENT_LOG SHELL
+  tmux() { command tmux -L "$socket" -f /dev/null "$@"; }
+  mkdir -p "$home_dir" "$work_dir"
+  printf 'alias scope_agent=%q\n. %q\n' "$(printf %q "$agent") --alias" "$home_dir/.bashrc" >"$home_dir/.bash_profile"
+  printf 'scope_function() { %q --function "$@"; }\n' "$agent" >"$home_dir/.bashrc"
+  cat >"$agent" <<'AGENT'
+#!/bin/sh
+printf '%s\n' "$PWD" "${SCOPE_VALUE:-}" "$@" >"$SCOPE_AGENT_LOG"
+AGENT
+  chmod +x "$agent"
+  trap '[ -z "${session:-}" ] || tmux kill-session -t "=$session" 2>/dev/null || true' EXIT
+  for mode in supported failed; do
+    SCOPE_PROBE_RC=0
+    [ "$mode" != failed ] || SCOPE_PROBE_RC=1
+    for index in 1 2; do
+      socket="peon-scope-shell-$mode-$index-$$"
+      session="scope-shell-$mode-$index-$$"
+      SCOPE_AGENT_LOG="$TEST_DIR/scope-agent-$mode-$index.log"
+      PATH="$TEST_DIR/scope-bin:$PATH" HOME="$home_dir" tmux new-session -d -s "$session" -c "$work_dir" "exec $(printf %q "$SHELL") -l"
+      pane=$(tmux list-panes -t "$session" -F '#{pane_id}')
+      while IFS= read -r line; do
+        case $line in scope_function*) line="SCOPE_VALUE=inline $line" ;; esac
+        tmux send-keys -t "$pane" "$line" Enter
+        command sleep 0.2
+      done <"$TEST_DIR/scope-%$index.commands"
+      for ((i = 0; i < 100; i++)); do
+        [ ! -s "$SCOPE_AGENT_LOG" ] || break
+        command sleep 0.05
+      done
+      [ -s "$SCOPE_AGENT_LOG" ] || fail "$mode scope did not run shell command $index: $(tmux capture-pane -pt "$pane")"
+      if [ "$index" -eq 1 ]; then
+        printf '%s\n' "$work_dir" '' --alias --flag value 'launch brief' >"$TEST_DIR/scope-agent.expected"
+      else
+        printf '%s\n' "$work_dir" inline --function --flag value 'launch brief' >"$TEST_DIR/scope-agent.expected"
+      fi
+      cmp "$TEST_DIR/scope-agent.expected" "$SCOPE_AGENT_LOG" || fail "$mode scope changed shell command $index"
+      tmux kill-session -t "=$session"
+      session=""
+    done
+  done
+  [ "$(grep -Fxc -- "--user --scope -q -p OOMPolicy=continue -- $SHELL -l" "$SCOPE_LOG")" -eq 4 ] ||
+    fail 'scope shell received unexpected arguments'
+)
+test_scope_shell_commands
+
+test_agent_ready_scope() (
+  local polls=0 fake_cur=systemd-run
+  # shellcheck source=lib/tmux.sh
+  source "$ROOT/lib/tmux.sh"
+  tmux() { printf '%s\n' "$fake_cur"; }
+  sleep() {
+    polls=$((polls + 1))
+    case $polls in 1) fake_cur=bash ;; 2) fake_cur=node ;; esac
+  }
+  wait_agent_ready %1 || fail 'agent did not become ready after scope startup'
+  [ "$polls" -eq 2 ] || fail 'systemd-run was accepted as a ready agent'
+  fake_cur=systemd-run
+  polls=0
+  sleep() { polls=$((polls + 1)); }
+  if wait_agent_ready %1; then fail 'stuck systemd-run was accepted as a ready agent'; fi
+  [ "$polls" -eq 100 ] || fail 'stuck scope did not reach the readiness timeout'
+)
+test_agent_ready_scope
+
 test_copilot_captured_input() (
   local capture box rc=0
   # shellcheck source=lib/input.sh

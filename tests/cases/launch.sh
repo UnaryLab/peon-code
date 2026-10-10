@@ -26,6 +26,7 @@ test_unique_buffers_and_launch_failure() {
     fail "a launch with a dead agent succeeded"
   assert_contains "$TEST_DIR/launch.err" "agents failed to start; killed session launch: ./missing-agent"
   assert_contains "$log" "set-option -t launch @peon_code 1"
+  assert_contains "$log" "set-option -t launch @peon_restart 1"
   assert_contains "$log" "set -pt %1 @peon_role_type"
   assert_contains "$log" "list-panes -t launch:agents"
   assert_contains "$log" "kill-session -t =launch"
@@ -51,7 +52,7 @@ test_launch_with_prompt_box() {
   local prompt_box='work on main
 ❯ [12:34:56]'
   mkdir -p "$home_dir" "$work_dir"
-  printf 'boss claude -\n' >"$work_dir/peon-code.conf"
+  printf 'restart-dead no\nboss claude -\n' >"$work_dir/peon-code.conf"
 
   : >"$log"
   (
@@ -81,7 +82,7 @@ test_headless_launch_order() {
   local prompt_box='work on main
 ❯ [12:34:56]'
   mkdir -p "$home_dir" "$work_dir"
-  printf 'boss claude -\n' >"$work_dir/peon-code.conf"
+  printf 'restart-dead no\nboss claude -\n' >"$work_dir/peon-code.conf"
 
   : >"$log"
   # shellcheck disable=SC2094  # both streams append to the one file on purpose
@@ -112,6 +113,7 @@ test_all_commands_before_readiness() {
   local work_dir="$TEST_DIR/all-launches-work" pane launch_line ready_line brief_line
   mkdir -p "$bin_dir" "$state_dir" "$home_dir" "$work_dir"
   cp "$fake_bin/sleep" "$bin_dir/sleep"
+  cp "$fake_bin/systemd-run" "$bin_dir/systemd-run"
   cat >"$bin_dir/tmux" <<'FAKE_TMUX'
 #!/usr/bin/env bash
 case ${1:-} in
@@ -155,7 +157,7 @@ esac
 exec "$LAUNCH_BASE_TMUX" "$@"
 FAKE_TMUX
   chmod +x "$bin_dir/tmux"
-  printf 'compact-at 0\nfirst claude -\nsecond claude -\nlast codex -\n' >"$work_dir/peon-code.conf"
+  printf 'compact-at 0\nrestart-dead no\nfirst claude -\nsecond claude -\nlast codex -\n' >"$work_dir/peon-code.conf"
   : >"$log"
   (
     cd "$work_dir"
@@ -196,10 +198,10 @@ test_attached_launch_notes() {
 
 test_codex_normal_screen() {
   local fake_bin=$1 work_dir="$TEST_DIR/codex-normal-work" home_dir="$TEST_DIR/home-codex-normal"
-  local log="$TEST_DIR/codex-normal.log" mode launch plain own
+  local log="$TEST_DIR/codex-normal.log" mode launch plain own fresh
   mkdir -p "$work_dir" "$home_dir/.codex/sessions"
   work_dir=$(cd "$work_dir" && pwd)
-  printf 'plain codex -\nown codex --no-alt-screen --model test -\n' >"$work_dir/peon-code.conf"
+  printf 'restart-dead no\nplain codex -\nown codex --no-alt-screen --model test -\n' >"$work_dir/peon-code.conf"
   printf '{"cwd":"%s"}\nagent plain of peon-code session codex-normal, in pane\n' "$work_dir" \
     >"$home_dir/.codex/sessions/rollout-11111111-1111-1111-1111-111111111111.jsonl"
   printf '{"cwd":"%s"}\nagent own of peon-code session codex-normal, in pane\n' "$work_dir" \
@@ -225,14 +227,95 @@ test_codex_normal_screen() {
       assert_contains "$log" 'buffer-content:codex resume 11111111-1111-1111-1111-111111111111 --no-alt-screen'
       assert_contains "$log" 'buffer-content:codex resume 22222222-2222-2222-2222-222222222222 --no-alt-screen --model test'
     fi
+    fresh=$(grep -F ' @peon_launch ' "$log")
+    [ "$(printf '%s\n' "$fresh" | wc -l | tr -d ' ')" = 2 ] || fail 'fresh launch commands were not saved for both panes'
+    assert_contains <(printf '%s\n' "$fresh") 'set -pt %1 @peon_launch codex --no-alt-screen '
+    assert_contains <(printf '%s\n' "$fresh") 'set -pt %2 @peon_launch codex --no-alt-screen --model test '
+    assert_contains <(printf '%s\n' "$fresh") '/0.md'
+    assert_not_contains <(printf '%s\n' "$fresh") 'resume '
+    assert_not_contains <(printf '%s\n' "$fresh") '11111111-1111-1111-1111-111111111111'
+    assert_not_contains <(printf '%s\n' "$fresh") '22222222-2222-2222-2222-222222222222'
+  done
+}
+
+test_claude_launch_warnings_once() {
+  local fake_bin=$1 work_dir="$TEST_DIR/claude-warnings-work" home_dir="$TEST_DIR/home-claude-warnings"
+  local log="$TEST_DIR/claude-warnings.log" warning
+  mkdir -p "$work_dir" "$home_dir"
+  printf 'compact-at 0\nrestart-dead no\n*boss codex -\nworker claude --settings custom.json --dangerously-skip-permissions -\n' >"$work_dir/peon-code.conf"
+  (
+    cd "$work_dir"
+    PATH="$fake_bin:$PATH" HOME="$home_dir" CODEX_HOME="$home_dir/.codex" TMPDIR="$TEST_DIR" \
+      FAKE_TMUX_LOG="$log" FAKE_TMUX_MODE=launch FAKE_TMUX_PANES=2 FAKE_TMUX_CMD=node \
+      FAKE_TMUX_CAPTURE=$'work\n❯ [12:34:56]' \
+      "$ROOT/peon-code.sh" claude-warnings
+  ) >"$TEST_DIR/claude-warnings.out" 2>"$TEST_DIR/claude-warnings.err" </dev/null || fail 'Claude warning launch failed'
+  for warning in \
+    'peon-code: worker passes its own --settings, so it may stay fullscreen' \
+    'peon-code: worker passes its own --settings, so its weekly limit is not recorded' \
+    'peon-code: worker passes its own --settings, so it gets no git deny file' \
+    'peon-code: worker passes --dangerously-skip-permissions, so the git deny file has no effect'; do
+    [ "$(grep -Fxc -- "$warning" "$TEST_DIR/claude-warnings.err")" = 1 ] ||
+      fail "Claude launch warning did not occur once: $warning"
+  done
+}
+
+test_resume_args() (
+  # shellcheck source=lib/cli.sh
+  source "$ROOT/lib/cli.sh"
+  [ "$(cli_call claude resume_args thread)" = ' --resume thread' ] || fail 'Claude resume arguments changed'
+  [ "$(cli_call codex resume_args thread)" = ' resume thread' ] || fail 'Codex resume arguments changed'
+  [ -z "$(cli_call claude resume_args '')" ] || fail 'Claude added resume arguments without an id'
+  [ -z "$(cli_call codex resume_args '')" ] || fail 'Codex added resume arguments without an id'
+  if cli_call copilot resume_args thread; then fail 'unsupported provider returned resume arguments'; fi
+)
+
+test_restart_watcher_launch() {
+  local fake_bin=$1 bin_dir="$TEST_DIR/restart-bin" work_dir="$TEST_DIR/restart-work"
+  local home_dir="$TEST_DIR/home-restart" log="$TEST_DIR/restart-launch.log" restart compact expected
+  mkdir -p "$bin_dir" "$work_dir" "$home_dir"
+  cat >"$bin_dir/nohup" <<'FAKE_NOHUP'
+#!/bin/sh
+printf '%s\n' "$*" >"$WATCH_LAUNCH_LOG"
+FAKE_NOHUP
+  chmod +x "$bin_dir/nohup"
+  for restart in yes no; do
+    for compact in 0 250000; do
+      printf 'restart-dead %s\ncompact-at %s\nsolo codex -\n' "$restart" "$compact" >"$work_dir/peon-code.conf"
+      : >"$TEST_DIR/restart-watch.log"
+      : >"$log"
+      (
+        cd "$work_dir"
+        PATH="$bin_dir:$fake_bin:$PATH" HOME="$home_dir" CODEX_HOME="$home_dir/.codex" TMPDIR="$TEST_DIR" \
+          WATCH_LAUNCH_LOG="$TEST_DIR/restart-watch.log" FAKE_TMUX_LOG="$log" \
+          FAKE_TMUX_MODE=launch FAKE_TMUX_CMD=node \
+          "$ROOT/peon-code.sh" restart-test
+      ) >"$TEST_DIR/restart-launch.out" 2>"$TEST_DIR/restart-launch.err" </dev/null || fail 'restart launch failed'
+      expected=0
+      [ "$restart" != yes ] || expected=1
+      assert_contains "$log" "set-option -t restart-test @peon_restart $expected"
+      if [ "$restart" = yes ] || [ "$compact" -gt 0 ]; then
+        # The fake launcher runs in the background, like the real watcher.
+        for _ in 1 2 3 4 5; do
+          [ ! -s "$TEST_DIR/restart-watch.log" ] || break
+          command sleep 0.1
+        done
+        assert_contains "$TEST_DIR/restart-watch.log" "$ROOT/peon-code.sh watch restart-test $compact"
+      else
+        [ ! -s "$TEST_DIR/restart-watch.log" ] || fail 'watcher started with both features off'
+      fi
+    done
   done
 }
 
 fake_bin=$(make_fake_commands)
+test_resume_args
 test_unique_buffers_and_launch_failure "$fake_bin"
 test_launch_with_prompt_box "$fake_bin"
 test_headless_launch_order "$fake_bin"
 test_all_commands_before_readiness "$fake_bin"
 test_attached_launch_notes
 test_codex_normal_screen "$fake_bin"
+test_claude_launch_warnings_once "$fake_bin"
+test_restart_watcher_launch "$fake_bin"
 echo "launch: PASS"

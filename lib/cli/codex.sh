@@ -1,12 +1,22 @@
 # shellcheck shell=bash
 
+codex_swap_args() { cli_swap_args "$1" "$2" "$3" codex; }
+
+codex_quit_command() { printf '%s\n' /exit; }
+
+codex_probe_command() { printf '%s\n' "$1$2 exec \"reply ok\""; }
+
+codex_resume_args() {
+  [ -z "$1" ] || printf ' resume %s' "$1"
+}
+
 codex_launch_command() {
   local BIN=$1 ARGS=$2 RID=$3 Q=$4
   case "$ARGS " in
     *" --no-alt-screen "*) ;;
     *) ARGS="$ARGS --no-alt-screen" ;;
   esac
-  printf '%s\n' "$BIN${RID:+ resume $RID}$ARGS $Q"
+  printf '%s\n' "$BIN$(codex_resume_args "$RID")$ARGS $Q"
 }
 
 codex_trust_project() {
@@ -73,6 +83,65 @@ codex_trust_project() {
 codex_resume_dir() {
   dir="${CODEX_HOME:-$HOME/.codex}/sessions"
   cwd="\"cwd\":\"$PWD\""
+}
+
+codex_own_thread() {
+  local first=""
+  IFS= read -r first <"$1" || true
+  case $first in *'"thread_source":"subagent"'*|*'"source":{"subagent"'*) return 1 ;; esac
+  return 0
+}
+
+codex_thread_ids() {
+  awk '
+    function field(record, key, value) {
+      if (!match(record, "\"" key "\"[[:space:]]*:[[:space:]]*\"[^\"]+\"")) return ""
+      value = substr(record, RSTART, RLENGTH)
+      sub(/^[^:]*:[[:space:]]*"/, "", value); sub(/"$/, "", value)
+      return value
+    }
+    /"type"[[:space:]]*:[[:space:]]*"session_meta"/ {
+      if (!match($0, /"payload"[[:space:]]*:[[:space:]]*\{/)) exit
+      payload = substr($0, RSTART + RLENGTH)
+      printf "%s\t%s\n", field(payload, "id"), field($0, "parent_thread_id")
+      exit
+    }
+  ' "$1" 2>/dev/null
+}
+
+# parent_thread_id includes guardians; 30 days and depth 5 bound saved-thread scans.
+codex_child_threads() {
+  local own=$1 root file metadata own_id id parent index child depth path duplicate
+  local files=() ids=() parents=() queue=() depths=() seen=("$own")
+  root="${CODEX_HOME:-$HOME/.codex}/sessions"
+  [ -d "$root" ] || return 0
+  metadata=$(codex_thread_ids "$own") || return 0
+  own_id=${metadata%%$'\t'*}
+  [ -n "$own_id" ] || return 0
+  queue=("$own_id")
+  depths=(0)
+  while IFS= read -r file; do
+    [ "$file" != "$own" ] || continue
+    metadata=$(codex_thread_ids "$file") || continue
+    id=${metadata%%$'\t'*}
+    parent=${metadata#*$'\t'}
+    [ -n "$id" ] && [ -n "$parent" ] || continue
+    files+=("$file"); ids+=("$id"); parents+=("$parent")
+  done < <(find "$root" -name '*.jsonl' -type f -mtime -30 2>/dev/null)
+  for ((index=0; index<${#queue[@]}; index++)); do
+    depth=${depths[$index]}
+    [ "$depth" -lt 5 ] || continue
+    for ((child=0; child<${#files[@]}; child++)); do
+      [ "${parents[$child]}" = "${queue[$index]}" ] || continue
+      duplicate=0
+      for path in "${seen[@]}"; do [ "$path" != "${files[$child]}" ] || duplicate=1; done
+      [ "$duplicate" = 0 ] || continue
+      printf '%s\n' "${files[$child]}"
+      seen+=("${files[$child]}")
+      queue+=("${ids[$child]}")
+      depths+=("$((depth + 1))")
+    done
+  done
 }
 
 codex_resume_id() {

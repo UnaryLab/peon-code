@@ -4,6 +4,29 @@ CASE_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=tests/helpers.sh
 . "$CASE_DIR/../helpers.sh"
 
+# shellcheck disable=SC2034 # Config functions read and set these globals.
+test_restart_dead_config() (
+  local CONF="$TEST_DIR/restart.conf" CONF_GIVEN=1 DEFAULT_CONF="" SCRIPT_DIR="$ROOT"
+  local value RESTART_DEAD COMPACT_AT NAMES CMDS ROLES MAIN_INDEX
+  # shellcheck source=lib/config.sh
+  source "$ROOT/lib/config.sh"
+  die() { printf '%s\n' "$*" >&2; exit 1; }
+  load_team claude
+  [ "$RESTART_DEAD" = yes ] || fail 'restart-dead did not default to yes'
+  for value in yes no; do
+    printf 'restart-dead %s\nsolo codex -\n' "$value" >"$CONF"
+    load_team
+    [ "$RESTART_DEAD" = "$value" ] || fail "restart-dead did not read $value"
+  done
+  for value in '' true 'yes extra'; do
+    printf 'restart-dead %s\nsolo codex -\n' "$value" >"$CONF"
+    if (load_team) 2>"$TEST_DIR/restart-config.err"; then
+      fail "restart-dead accepted invalid value: $value"
+    fi
+    assert_contains "$TEST_DIR/restart-config.err" 'restart-dead takes yes or no'
+  done
+)
+
 test_config_loading() {
   local fake_bin=$1 log="$TEST_DIR/tmux-config.log" home_dir="$TEST_DIR/home-config"
   local config_dir="$TEST_DIR/config" work_dir="$TEST_DIR/config-work" line brief_file
@@ -204,6 +227,7 @@ test_writer_gitignore() {
 }
 
 fake_bin=$(make_fake_commands)
+test_restart_dead_config
 test_config_loading "$fake_bin"
 test_shipped_roles
 test_role_frontmatter "$fake_bin"

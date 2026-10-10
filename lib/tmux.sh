@@ -50,7 +50,7 @@ wait_agent_ready() {
   for ((i = 0; i < 100; i++)); do
     cur=$(tmux display -pt "$pane" '#{pane_current_command}' 2>/dev/null) || cur=""
     case $cur in
-      sh|bash|zsh|fish|dash|ksh|"") sleep 0.2 ;;
+      sh|bash|zsh|fish|dash|ksh|systemd-run|"") sleep 0.2 ;;
       *) return 0 ;;
     esac
   done

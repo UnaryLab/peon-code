@@ -145,6 +145,54 @@ FAKE_TMUX
   assert_not_contains "$log" "send-keys"
 }
 
+test_resume_excludes_inherited_threads() (
+  local marker='agent impl of peon-code session own-thread-test,'
+  local store="$TEST_DIR/own-threads" parent fork late line provider
+  mkdir -p "$store/codex" "$store/claude/parent/subagents"
+  # shellcheck source=lib/resume.sh
+  source "$ROOT/lib/resume.sh"
+  # shellcheck disable=SC2317,SC2034 # Lookup reads provider directory locals through dynamic scope.
+  codex_resume_dir() { dir="$store/codex"; cwd=""; }
+  # shellcheck disable=SC2317,SC2034
+  claude_resume_dir() { dir="$store/claude"; cwd=""; }
+  # shellcheck disable=SC2317,SC2034
+  other_resume_dir() { dir="$store/codex"; cwd=""; }
+  for provider in codex claude; do
+    parent="$store/$provider/parent.jsonl"
+    printf '{"type":"session_meta"}\n%s\n' "$marker" >"$parent"
+    # A consuming grep must not close the pipe before head finishes 20 large records.
+    awk 'BEGIN { for (i=0; i<24; i++) { for (j=0; j<10000; j++) printf "x"; print "" } }' >>"$parent"
+    [ "$(last_thread_file "$marker" "$provider")" = "$parent" ] || fail "$provider lost early marker with large records"
+  done
+  sleep 1
+  fork="$store/codex/fork.jsonl"
+  printf '{"thread_source":"subagent","parent_thread_id":"parent"}\n%s\n' "$marker" >"$fork"
+  [ "$(last_thread_file "$marker" codex)" = "$store/codex/parent.jsonl" ] || fail 'resume picked inherited Codex fork'
+  printf '{"cwd":"%s","thread_source":"guardian_review","source":{"subagent":{"other":"guardian"}},"parent_thread_id":"parent"}\n%s\n' "$PWD" "$marker" >"$store/codex/guardian.jsonl"
+  [ "$(last_thread_file "$marker" codex)" = "$store/codex/parent.jsonl" ] || fail 'resume picked inherited Codex guardian'
+  rm -f "$store/codex/guardian.jsonl"
+  printf '%s\n' "$marker" >"$store/claude/parent/subagents/agent-child.jsonl"
+  [ "$(last_thread_file "$marker" claude)" = "$store/claude/parent.jsonl" ] || fail 'resume picked Claude subagent path'
+  for provider in codex claude; do
+    late="$store/$provider/late.jsonl"
+    : >"$late"
+    for ((line=1; line<=20; line++)); do printf 'record\n' >>"$late"; done
+    printf '%s\n' "$marker" >>"$late"
+    [ "$(last_thread_file "$marker" "$provider")" = "$store/$provider/parent.jsonl" ] || fail "$provider resumed a late inherited marker"
+  done
+  cli_call other own_thread "$fork" || fail 'missing own_thread concern rejected a transcript'
+  [ "$(last_thread_file "$marker" other)" = "$fork" ] || fail 'missing own_thread concern did not accept a transcript'
+  printf '{"type":"session_meta"}\n{"thread_source":"subagent"}\n{"source":{"subagent":{"other":"guardian"}}}\n' >"$store/later-source.jsonl"
+  cli_call codex own_thread "$store/later-source.jsonl" || fail 'Codex own_thread scanned past its first line'
+  mkdir -p "$store/other"
+  # shellcheck disable=SC2317,SC2034
+  other_resume_dir() { dir="$store/other"; cwd=""; }
+  for ((line=1; line<20; line++)); do printf 'record\n' >>"$store/other/boundary.jsonl"; done
+  printf '%s\n' "$marker" >>"$store/other/boundary.jsonl"
+  [ "$(last_thread_file "$marker" other)" = "$store/other/boundary.jsonl" ] || fail 'lookup rejected marker on line 20'
+)
+
+test_resume_excludes_inherited_threads
 fake_bin=$(make_fake_commands)
 test_resume_picks_each_agent_thread "$fake_bin"
 test_resume_picker_answered "$fake_bin"

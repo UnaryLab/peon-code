@@ -41,6 +41,14 @@
     <div class="workspace">
       <div class="sidebar">
         <nav id="agents" aria-label="Agents in this session"></nav>
+        <button id="swap" type="button" class="swap" aria-expanded="false" aria-controls="swap-form" data-tip="Change this agent's CLI or model" disabled>Swap agent</button>
+        <form id="swap-form" class="swap-form" hidden>
+          <label>CLI<select name="cli" required></select></label>
+          <label>Model<input name="model" placeholder="Keep current model"></label>
+          <label>Effort<input name="effort" placeholder="Keep current effort"></label>
+          <button type="submit">Save</button>
+          <button type="button" class="cancel">Cancel</button>
+        </form>
         <button id="dismiss" type="button" data-tip="Stop all agents in this session" hidden>Close session</button>
         <p id="dismiss-status" class="feedback" role="status" hidden></p>
       </div>
@@ -58,6 +66,7 @@
         <button class="discard" data-tip="Discard the saved draft" hidden>Discard saved text</button>
         <button type="button" class="add-button" aria-label="Add button" data-tip="Add a saved prompt button">+</button>
         <span class="selection-note"></span>
+        <span class="swap-state" role="status"></span>
       </div>
       <form class="button-form" hidden>
         <label>Name<input name="name" maxlength="80" required></label>

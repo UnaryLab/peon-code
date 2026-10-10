@@ -1,5 +1,15 @@
 # shellcheck shell=bash
 
+claude_swap_args() { cli_swap_args "$1" "$2" "$3" claude; }
+
+claude_quit_command() { printf '%s\n' /exit; }
+
+claude_probe_command() { printf '%s\n' "$1$2 -p \"reply ok\" --max-turns 1"; }
+
+claude_resume_args() {
+  [ -z "$1" ] || printf ' --resume %s' "$1"
+}
+
 claude_launch_command() {
   local BIN=$1 ARGS=$2 RID=$3 i=$5
   local SETTINGS
@@ -23,7 +33,7 @@ claude_launch_command() {
         echo "peon-code: ${NAMES[$i]} passes --dangerously-skip-permissions, so the git deny file has no effect" >&2 ;;
     esac
   fi
-  printf '%s\n' "$BIN${RID:+ --resume $RID}$ARGS$SETTINGS"
+  printf '%s\n' "$BIN$(claude_resume_args "$RID")$ARGS$SETTINGS"
 }
 
 claude_trust_project() {
@@ -75,6 +85,20 @@ PYTHON
 # shellcheck disable=SC2034
 claude_resume_dir() {
   dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/${PWD//[^A-Za-z0-9]/-}"
+}
+
+claude_own_thread() {
+  case $1 in */subagents/*) return 1 ;; esac
+  return 0
+}
+
+claude_child_threads() {
+  local own=$1 name file dir
+  name=${own##*/}
+  dir=$(dirname -- "$own")
+  for file in "$dir/${name%.jsonl}"/subagents/agent-*.jsonl; do
+    [ ! -f "$file" ] || printf '%s\n' "$file"
+  done
 }
 
 claude_resume_id() {
@@ -157,6 +181,7 @@ claude_brief_after_start() {
       2) echo "peon-code: no Enter sent to ${NAMES[$i]} ${PANE_IDS[$i]}: the brief is in its box for you to submit" >&2 ;;
     esac
   else
+    PASTE_RC=3
     echo "peon-code: ${NAMES[$i]} is still on a dialog or starting up. Answer it, then run: peon-code rebrief ${NAMES[$i]}" >&2
   fi
 }
