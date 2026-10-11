@@ -579,7 +579,7 @@ document.addEventListener('selectionchange', () => {
     }
   }
 });
-function scrollAnchor(output, saved) {
+function scrollAnchor(output, saved, rolled = 0) {
   const viewport = output.getBoundingClientRect(), style = getComputedStyle(output);
   const range = document.createRange();
   function lineTop(offset) {
@@ -606,20 +606,24 @@ function scrollAnchor(output, saved) {
     let index = text.slice(0, start).split('\n').length - 1;
     const oldLines = text.split('\n'), windows = oldLines.map((_, i) => oldLines.slice(i, i + 3).join('\n')), counts = new Map();
     for (const window of windows) counts.set(window, (counts.get(window) || 0) + 1);
-    let top;
+    let top, fallback;
     for (; index < oldLines.length; index++) {
       top = lineTop(start);
-      if (top === null || top >= viewport.bottom - parseFloat(style.paddingBottom)) return null;
-      if (oldLines[index].trim() && counts.get(windows[index]) === 1) break;
+      if (top === null || top >= viewport.bottom - parseFloat(style.paddingBottom)) break;
+      if (oldLines[index].trim()) {
+        const candidate = {text: windows[index], pixelOffset: top - viewport.top, index, lineCount: oldLines.length};
+        if (!fallback) fallback = candidate;
+        if (counts.get(windows[index]) === 1) { anchor = candidate; break; }
+      }
       start += oldLines[index].length + 1;
     }
-    if (index === oldLines.length) return null;
-    anchor = {text: oldLines.slice(index, index + 3).join('\n'), pixelOffset: top - viewport.top, index, lineCount: oldLines.length};
+    anchor = anchor || fallback;
+    if (!anchor) return null;
   }
   return {anchor, restore() {
     const following = anchor.text.split('\n');
     const lines = output.textContent.split('\n'), matches = i => following.every((line, j) => lines[i + j] === line);
-    const expected = anchor.index + lines.length - anchor.lineCount;
+    const expected = anchor.index - rolled + lines.length - anchor.lineCount;
     let match = -1;
     for (let i = 0; i < lines.length; i++) if (matches(i) && (match < 0 || Math.abs(i - expected) < Math.abs(match - expected))) match = i;
     if (match < 0) return false;
@@ -638,11 +642,13 @@ function updateOutput(card) {
   const fullHistory = card.latest.history <= card.latest.capturedLines;
   card.fullHistory = fullHistory;
   if (key === card.rendered) return;
+  const start = Math.max(0, (card.latest.history || 0) - card.latest.capturedLines);
+  const rolled = Math.max(0, start - (card.renderedStart ?? start));
   const outputs = [...card.el.querySelectorAll('.output')];
   for (const [index, output] of outputs.entries()) {
     const screen = output.parentElement, restoring = 'savedAnchor' in screen;
     const atEnd = output.scrollHeight - output.scrollTop - output.clientHeight < 40;
-    const anchor = restoring ? screen.savedAnchor && scrollAnchor(output, screen.savedAnchor) : atEnd ? null : scrollAnchor(output);
+    const anchor = restoring ? screen.savedAnchor && scrollAnchor(output, screen.savedAnchor, rolled) : atEnd ? null : scrollAnchor(output, undefined, rolled);
     const fromBottom = output.scrollHeight - output.scrollTop;
     if (index === 0) renderAnsi(output, card.latest.output, card.latest.defaultStyle);
     else output.replaceChildren(...[...outputs[0].childNodes].map(node => node.cloneNode(true)));
@@ -654,6 +660,7 @@ function updateOutput(card) {
     screen.outputScrollTop = output.scrollTop;
   }
   card.rendered = key;
+  card.renderedStart = start;
 }
 async function refresh() {
   if (refreshing) { refreshRequested = true; return; }
