@@ -57,8 +57,8 @@
   </main>
   <template id="pane-template">
     <article class="pane" hidden>
-      <header class="pane-heading"><div><h2></h2><p class="meta"></p></div><span class="state">Live</span></header>
-      <pre tabindex="0" class="output" aria-label="Agent output"></pre>
+      <header class="pane-heading"><div><h2></h2><p class="meta"></p></div><span class="state">Live</span><button type="button" class="stack-order" aria-label="Screens stacked vertically, switch to side by side" data-tip="Stack screens vertically or side by side">↕</button><button type="button" class="add-screen" aria-label="Add screen" data-tip="Show this pane in another screen">+</button></header>
+      <div class="screens"><div class="screen"><pre tabindex="0" class="output" aria-label="Agent output"></pre></div></div>
       <form class="message-form"><textarea rows="2" placeholder="Ask this agent something… (Shift+Enter to send)" aria-label="Message this agent"></textarea><button type="submit" data-tip="Send the message to this agent">Send ↗</button></form>
       <div class="actions">
         <button class="explain" data-tip="Ask this agent to explain the selected output" disabled>Explain selection</button>

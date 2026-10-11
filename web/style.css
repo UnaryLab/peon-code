@@ -42,11 +42,18 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 6
 .pane > .message-form { order: 1; }
 .pane > .feedback { order: 2; }
 .pane-heading { flex-shrink: 0; padding: 6px 12px; display: flex; justify-content: space-between; align-items: center; gap: 12px; border-bottom: 1px solid var(--line); }
-.pane-heading > div { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; min-width: 0; overflow-wrap: anywhere; }
+.pane-heading > div { display: flex; flex: 1; align-items: baseline; gap: 12px; flex-wrap: wrap; min-width: 0; overflow-wrap: anywhere; }
 h2 { font-size: 16px; margin: 0; }
 .meta { font: 12px ui-monospace, monospace; color: var(--muted); margin: 0; }
 .state { font-size: 12px; color: var(--muted); }
 #swap { margin-top: 8px; }
+/* The first screen sizes tmux: vertical stacks shrink rows; horizontal stacks shrink columns and reflow text. */
+.screens { display: flex; flex: 1; flex-direction: column; min-height: 0; }
+.screens.horizontal { flex-direction: row; }
+.screen { position: relative; display: flex; flex: 1; min-width: 0; min-height: 0; }
+.screen + .screen { border-top: 1px solid var(--line); }
+.screens.horizontal > .screen + .screen { border-top: 0; border-left: 1px solid var(--line); }
+.close-screen { position: absolute; top: 4px; right: 4px; }
 .output { flex: 1; min-height: 0; margin: 0; padding: 12px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: var(--output-font, 13px)/1.6 ui-monospace, SFMono-Regular, Consolas, monospace; user-select: text; overscroll-behavior: contain; scrollbar-color: #777 transparent; color: #d0d0d0; background: #000; }
 .output ::selection, .output::selection { background: Highlight; color: HighlightText; }
 .actions { display: flex; flex-shrink: 0; gap: 8px; align-items: center; flex-wrap: wrap; border-top: 1px solid var(--line); padding: 4px 12px; }
@@ -63,7 +70,9 @@ h2 { font-size: 16px; margin: 0; }
 #config-help { color: var(--muted); }
 .keys, .key-buttons, .key-shortcuts { display: flex; align-items: center; justify-content: flex-start; gap: 4px; flex-wrap: wrap; }
 .keys { flex-shrink: 0; padding: 0 12px 4px; }
-.keys button, .font-smaller, .font-larger { background: transparent; font-size: 12px; padding: 2px 6px; touch-action: none; user-select: none; }
+.keys button, .font-smaller, .font-larger, .add-screen, .close-screen, .stack-order { background: transparent; font-size: 12px; padding: 2px 6px; touch-action: none; user-select: none; }
+.add-screen, .stack-order, .close-screen { flex-shrink: 0; line-height: 1; height: 24px; min-width: 24px; width: 24px; padding: 0; }
+.close-screen { background: var(--panel); }
 .keys-toggle::after { content: " \25B8"; content: " \25B8" / ""; }
 .keys-toggle[aria-expanded="true"]::after { content: " \25BE"; content: " \25BE" / ""; }
 .keys-toggle[aria-expanded="true"] { background: #eef0ec; }
@@ -89,6 +98,6 @@ form button { align-self: center; white-space: nowrap; }
   .sidebar { flex: none; }
   #agents { flex: none; flex-direction: row; overflow-x: auto; }
   #agents .tab { flex-shrink: 0; }
-  .output { flex: none; height: 70vh; height: 70dvh; }
+  .screens { flex: none; height: 70vh; height: 70dvh; }
 }
 #project-path { flex-shrink: 0; margin: 0 0 4px; font: 13px ui-monospace, monospace; color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; }

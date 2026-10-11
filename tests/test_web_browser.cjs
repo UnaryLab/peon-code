@@ -109,7 +109,7 @@ const assert = require('node:assert/strict');
     const paneTab = id => page.locator(`#agents [data-key="${id}:${roles.find(pane => pane.id === id).identity}"]`);
     const sessionTab = name => page.locator(`#sessions [data-key="${name}"]`);
     async function selectFirstLine() {
-      await card('%3').locator('.output').evaluate(el => {
+      await card('%3').locator('.output').first().evaluate(el => {
         el.scrollTop = 0;
         const nodes = el.querySelectorAll('span'); const range = document.createRange();
         range.setStart(nodes[0].firstChild, 0); range.setEnd(nodes[1].firstChild, nodes[1].textContent.length);
@@ -123,10 +123,10 @@ const assert = require('node:assert/strict');
     }
     async function checkTabFocus(id) {
       const before = keyCount;
-      await card(id).locator('.output').press('Tab');
+      await card(id).locator('.output').first().press('Tab');
       assert(await card(id).locator('.message-form textarea').evaluate(el => document.activeElement === el));
       await card(id).locator('.message-form textarea').press('Shift+Tab');
-      assert(await card(id).locator('.output').evaluate(el => document.activeElement === el));
+      assert(await card(id).locator('.output').first().evaluate(el => document.activeElement === el));
       assert.equal(keyCount, before, 'Focus navigation stays in the browser');
     }
     await page.goto(url); await page.waitForSelector('.pane:not([hidden])');
@@ -255,7 +255,7 @@ const assert = require('node:assert/strict');
     assert.equal(await card('%3').locator('.feedback').textContent(), 'Message sent');
     assert(await swap.isDisabled());
     assert(await swapForm.locator('input, select, button').evaluateAll(controls => controls.every(control => control.disabled)));
-    assert(await card('%3').locator('.output').evaluate(el => document.activeElement === el), 'Late checking poll moves focus from Swap to output');
+    assert(await card('%3').locator('.output').first().evaluate(el => document.activeElement === el), 'Late checking poll moves focus from Swap to output');
     await swapForm.evaluate(el => el.dispatchEvent(new Event('submit', {bubbles: true, cancelable: true})));
     assert.equal(swaps.length, 2, 'Checking guards programmatic form submits');
     await page.waitForTimeout(6100);
@@ -293,7 +293,7 @@ const assert = require('node:assert/strict');
     assert(await swapCli.evaluate(el => document.activeElement === el));
     await setSwapStatus('checking external job');
     assert(await swapCommand.isDisabled());
-    assert(await card('%3').locator('.output').evaluate(el => document.activeElement === el), 'External checking moves focus from the disabled Swap input');
+    assert(await card('%3').locator('.output').first().evaluate(el => document.activeElement === el), 'External checking moves focus from the disabled Swap input');
     await setSwapStatus('');
     await swapForm.locator('.cancel').click();
     await card('%3').locator('.message-form textarea').focus();
@@ -328,7 +328,7 @@ const assert = require('node:assert/strict');
       const checkingNow = scenario.status === checking && scenario.finished === undefined;
       assert.equal(await swap.isDisabled(), checkingNow);
       assert.equal(await swapForm.isVisible(), !!scenario.error);
-      const focused = checkingNow ? card('%3').locator('.output') : swap;
+      const focused = checkingNow ? card('%3').locator('.output').first() : swap;
       assert(await focused.evaluate(el => document.activeElement === el), 'Swap restores enabled focus after status polling');
       assert.deepEqual(swaps[swaps.length - 1], {pane: '%3', identity: 'first:%3', cli: 'claude', model: 'opus', effort: '-'});
       if (scenario.after) {
@@ -337,7 +337,7 @@ const assert = require('node:assert/strict');
         assert.equal(await card('%3').locator('.feedback').textContent(), '');
         if (scenario.after === checking) {
           assert(await swap.isDisabled());
-          assert(await card('%3').locator('.output').evaluate(el => document.activeElement === el), 'Checking after the API response moves focus from Swap to output');
+          assert(await card('%3').locator('.output').first().evaluate(el => document.activeElement === el), 'Checking after the API response moves focus from Swap to output');
         }
       }
     }
@@ -573,7 +573,7 @@ const assert = require('node:assert/strict');
     assert(await card('%3').isVisible());
     dismissedSession = null;
     await sessionTab('zeta').waitFor();
-    const selectableOutput = card('%3').locator('.output');
+    const selectableOutput = card('%3').locator('.output').first();
     await checkTabFocus('%3');
     const navigationKeyCount = keyCount;
     await card('%3').locator('.message-form textarea').focus();
@@ -636,15 +636,15 @@ const assert = require('node:assert/strict');
     await checkTabFocus('%3');
     await page.waitForFunction(() => !cards.get('%3:first:%3').busy);
     keyDelay = 0;
-    await card('%3').locator('.output').press('ArrowDown');
+    await card('%3').locator('.output').first().press('ArrowDown');
     await page.waitForFunction(() => document.querySelector('.pane:not([hidden]) .feedback').textContent === 'Key sent');
     assert.deepEqual(keyRequest, {pane: '%3', identity: 'first:%3', key: 'Down'});
-    await card('%3').locator('.output').press('Backspace');
+    await card('%3').locator('.output').first().press('Backspace');
     await page.waitForFunction(() => document.querySelector('.pane:not([hidden]) .feedback').textContent === 'Key sent' && !document.querySelector('.pane:not([hidden]) .keys-toggle').disabled);
     assert.deepEqual(keyRequest, {pane: '%3', identity: 'first:%3', key: 'Backspace'});
     const controlKeyCount = keyCount;
-    await card('%3').locator('.output').press('1');
-    await card('%3').locator('.output').press('y');
+    await card('%3').locator('.output').first().press('1');
+    await card('%3').locator('.output').first().press('y');
     assert.equal(keyCount, controlKeyCount);
     await Promise.all([page.waitForResponse('**/api/keys'), selectableOutput.press('Control+c')]);
     assert.deepEqual(keyRequest, {pane: '%3', identity: 'first:%3', key: 'C-c'});
@@ -680,7 +680,7 @@ const assert = require('node:assert/strict');
     keyDelay = 0;
     await card('%3').locator('.keys-toggle').click();
     console.log('Ctrl+C: PASS (focused output, selected text copy, key button, busy keyboard, busy button, pending key state)');
-    const colors = await card('%3').locator('.output').evaluate(el => ({
+    const colors = await card('%3').locator('.output').first().evaluate(el => ({
       bg: getComputedStyle(el).backgroundColor, fg: getComputedStyle(el).color,
       spans: [...el.querySelectorAll('span')].slice(0, 8).map(span => ({text: span.textContent, fg: getComputedStyle(span).color, bg: getComputedStyle(span).backgroundColor, bold: getComputedStyle(span).fontWeight, italic: getComputedStyle(span).fontStyle}))
     }));
@@ -694,7 +694,7 @@ const assert = require('node:assert/strict');
     const widths = await card('%3').evaluate(el => [el.getBoundingClientRect().width, el.parentElement.getBoundingClientRect().width]);
     assert.equal(widths[0], widths[1]);
     assert(await page.evaluate(() => document.documentElement.scrollHeight <= innerHeight));
-    assert(await card('%3').locator('.output').evaluate(el => el.getBoundingClientRect().height > innerHeight * 0.65));
+    assert(await card('%3').locator('.output').first().evaluate(el => el.getBoundingClientRect().height > innerHeight * 0.65));
     const resized = await card('%3').evaluate(el => {
       const textarea = el.querySelector('.message-form textarea'); const original = textarea.style.height;
       textarea.style.height = '10000px';
@@ -775,7 +775,7 @@ const assert = require('node:assert/strict');
     assert.deepEqual(keyRequest, {pane: '%5', identity: 'first:%5', key: 'Enter'});
     assert.equal(keyCount, menuKeyCount + 1);
     await card('%5').locator('.message-form textarea').fill('Keep the shortcut draft');
-    await card('%5').locator('.output').evaluate(el => {
+    await card('%5').locator('.output').first().evaluate(el => {
       const node = el.querySelector('span').firstChild, range = document.createRange();
       range.setStart(node, 0); range.setEnd(node, 4);
       getSelection().removeAllRanges(); getSelection().addRange(range);
@@ -808,7 +808,7 @@ const assert = require('node:assert/strict');
     screen['%5'] = 'Answered\n';
     await page.waitForFunction(() => !document.querySelector('#agents [data-key="%5:first:%5"]').classList.contains('needs-answer'));
     assert.equal(await sessionTab('alpha').evaluate(el => el.classList.contains('needs-answer')), false);
-    assert((await card('%5').locator('.output').textContent()).includes('Enter to confirm'));
+    assert((await card('%5').locator('.output').first().textContent()).includes('Enter to confirm'));
     assert.equal(await shortcuts.count(), 0);
     assert.deepEqual(await card('%5').locator('.keys button:visible').allTextContents(), ['Keys', 'Up', 'Down', 'Tab', 'Enter', 'Esc', 'Backspace', 'Ctrl+C']);
     const backspace = card('%5').locator('.key-buttons button[data-key="Backspace"]');
@@ -897,11 +897,11 @@ const assert = require('node:assert/strict');
     await paneTab('%3').click(); assert.equal(await sessionTab('alpha').evaluate(el => el.classList.contains('unread')), false);
     await selectFirstLine();
     assert.equal(await page.evaluate(() => getSelection().toString()), firstLine);
-    const frozen = await card('%3').locator('.output').textContent(); revision['%3'] = 3;
+    const frozen = await card('%3').locator('.output').first().textContent(); revision['%3'] = 3;
     await page.waitForTimeout(1400);
-    assert.equal(await card('%3').locator('.output').textContent(), frozen);
+    assert.equal(await card('%3').locator('.output').first().textContent(), frozen);
     assert.equal(await page.evaluate(() => getSelection().toString()), firstLine);
-    await card('%3').locator('.output').click({button: 'right', position: {x: 24, y: 24}});
+    await card('%3').locator('.output').first().click({button: 'right', position: {x: 24, y: 24}});
     await page.waitForFunction(() => document.querySelector('.pane:not([hidden]) .feedback').textContent === 'target box busy');
     assert.deepEqual(sent[0], {pane: '%3', identity: 'first:%3', text: firstLine});
     blocked = false; await card('%3').locator('.explain').click();
@@ -910,12 +910,12 @@ const assert = require('node:assert/strict');
     assert.equal(await card('%3').locator('.state').textContent(), 'Live');
     assert(await card('%3').locator('.explain').isDisabled());
     await selectFirstLine();
-    await card('%3').locator('.output').click({button: 'right', position: {x: 24, y: 24}});
+    await card('%3').locator('.output').first().click({button: 'right', position: {x: 24, y: 24}});
     await page.waitForFunction(() => document.querySelector('.pane:not([hidden]) .state').textContent === 'Live');
     assert.deepEqual(sent[2], {pane: '%3', identity: 'first:%3', text: firstLine});
     explainDelay = 300;
     await selectFirstLine(); await card('%3').locator('.explain').click();
-    await card('%3').locator('.output').evaluate(el => {
+    await card('%3').locator('.output').first().evaluate(el => {
       const node = el.querySelector('span').firstChild; const range = document.createRange();
       range.setStart(node, 0); range.setEnd(node, 4);
       getSelection().removeAllRanges(); getSelection().addRange(range);
@@ -926,7 +926,7 @@ const assert = require('node:assert/strict');
     assert(await card('%3').locator('.explain').isEnabled());
     await clearSelection('%3');
     async function selectRepeatedLine(second) {
-      await card('%3').locator('.output').evaluate((el, second) => {
+      await card('%3').locator('.output').first().evaluate((el, second) => {
         const text = 'A line of agent output.';
         const node = [...el.querySelectorAll('span')].find(span => span.textContent.includes(text)).firstChild;
         const first = node.textContent.indexOf(text);
@@ -947,7 +947,7 @@ const assert = require('node:assert/strict');
     await clearSelection('%3');
     await selectFirstLine(); await card('%3').locator('.explain').click();
     await paneTab('%2').click();
-    await card('%2').locator('.output').evaluate(el => {
+    await card('%2').locator('.output').first().evaluate(el => {
       const node = el.querySelector('span').firstChild; const range = document.createRange();
       range.setStart(node, 0); range.setEnd(node, 4);
       getSelection().removeAllRanges(); getSelection().addRange(range);
@@ -1091,7 +1091,7 @@ const assert = require('node:assert/strict');
     assert.equal(await page.locator('#project-path').textContent(), 'Folder: /work/zeta project');
     assert(await paneTab('%8').evaluate(el => el.classList.contains('unread')));
     await paneTab('%8').click(); assert.equal(await sessionTab('zeta').evaluate(el => el.classList.contains('unread')), false);
-    assert(await card('%8').locator('.output').evaluate(el => el.scrollTop > 0));
+    assert(await card('%8').locator('.output').first().evaluate(el => el.scrollTop > 0));
     await sessionTab('alpha').click(); assert(await card('%3').isVisible());
     assert.equal(await card('%3').locator('.message-form textarea').inputValue(), 'New draft');
     await paneTab('%5').click(); assert.equal(await sessionTab('alpha').evaluate(el => el.classList.contains('unread')), false);
@@ -1099,8 +1099,61 @@ const assert = require('node:assert/strict');
     await paneTab('%2').click(); await paneTab('%3').click();
     assert.equal(await card('%3').locator('.state').textContent(), 'Paused');
     await clearSelection('%3');
+    const screenOutputs = card('%3').locator('.output');
+    await card('%3').locator('.add-screen').click();
+    assert.equal(await screenOutputs.count(), 2);
+    assert.equal(await card('%3').locator('.screen').first().locator('.close-screen').count(), 0, 'The first screen has no close button');
+    const extraOutput = screenOutputs.nth(1);
+    assert(await extraOutput.evaluate(el => el.scrollHeight - el.scrollTop - el.clientHeight <= 1), 'An added screen starts at the bottom');
+    const screens = card('%3').locator('.screens'), stackOrder = card('%3').locator('.stack-order');
+    assert.equal(await screens.evaluate(el => el.classList.contains('horizontal')), false, 'Screens start in vertical order');
+    const firstVertical = await screenOutputs.first().boundingBox(), secondVertical = await extraOutput.boundingBox();
+    assert(secondVertical.y >= firstVertical.y + firstVertical.height - 1 && Math.abs(secondVertical.x - firstVertical.x) <= 1, 'Vertical screens stack top to bottom');
+    const verticalGrid = new URL((await page.waitForRequest('**/api/panes*')).url()).searchParams;
+    // Pause polling and pending resize refreshes so the next request comes from the order toggle.
+    await page.waitForFunction(() => {
+      if (refreshing) return false;
+      clearTimeout(refreshTimer); clearTimeout(resizeTimer); return true;
+    });
+    const horizontalRequest = page.waitForRequest('**/api/panes*');
+    await stackOrder.click();
+    assert.equal(await stackOrder.getAttribute('aria-label'), 'Screens side by side, switch to vertical');
+    assert(await screens.evaluate(el => el.classList.contains('horizontal')), 'The order button switches to horizontal screens');
+    const firstHorizontal = await screenOutputs.first().boundingBox(), secondHorizontal = await extraOutput.boundingBox();
+    assert(secondHorizontal.x >= firstHorizontal.x + firstHorizontal.width - 1 && Math.abs(secondHorizontal.y - firstHorizontal.y) <= 1, 'Horizontal screens sit side by side');
+    const horizontalGrid = new URL((await horizontalRequest).url()).searchParams;
+    assert(Number(horizontalGrid.get('cols')) > 0 && Number(horizontalGrid.get('cols')) < Number(verticalGrid.get('cols')), 'Horizontal order requests fewer terminal columns');
+    await page.waitForFunction(() => {
+      if (refreshing) return false;
+      clearTimeout(refreshTimer); clearTimeout(resizeTimer); return true;
+    });
+    const verticalRequest = page.waitForRequest('**/api/panes*');
+    await stackOrder.click();
+    assert.equal(await stackOrder.getAttribute('aria-label'), 'Screens stacked vertically, switch to side by side');
+    assert.equal(await screens.evaluate(el => el.classList.contains('horizontal')), false, 'The order button returns to vertical screens');
+    const restoredGrid = new URL((await verticalRequest).url()).searchParams;
+    assert.equal(restoredGrid.get('cols'), verticalGrid.get('cols'), 'Vertical order restores the terminal columns');
+    await screenOutputs.first().evaluate(el => { el.scrollTop = el.scrollHeight; });
+    await extraOutput.evaluate(el => { el.scrollTop = 0; });
+    await page.waitForFunction(() => document.querySelector('.pane[data-pane="%3"] .screen:nth-child(2)').outputScrollTop === 0);
+    const screenDistance = await extraOutput.evaluate(el => el.scrollHeight - el.scrollTop - el.clientHeight);
+    assert(screenDistance > 0, 'The extra screen has output to scroll');
+    const previousRevision = revision['%3'], previousMenu = menu['%3'];
+    const addedOutput = '\nExtra screen output.\n';
+    revision['%3']++;
+    menu['%3'] = (previousMenu || '') + addedOutput;
+    await page.waitForFunction(text => [...document.querySelectorAll('.pane[data-pane="%3"] .output')].every(el => el.textContent.endsWith(text)), addedOutput);
+    assert(await screenOutputs.first().evaluate(el => el.scrollHeight - el.scrollTop - el.clientHeight <= 1), 'The first screen follows new output at the bottom');
+    assert(await extraOutput.evaluate((el, distance) => Math.abs(el.scrollHeight - el.scrollTop - el.clientHeight - distance) <= 1, screenDistance), 'The extra screen holds its distance from the bottom');
+    assert.equal(await screenOutputs.first().innerHTML(), await extraOutput.innerHTML(), 'Every screen has the same rendered output');
+    await card('%3').locator('.close-screen').click();
+    assert.equal(await screenOutputs.count(), 1);
+    assert(await screenOutputs.first().evaluate(el => document.activeElement === el), 'Closing a screen focuses the first output');
+    revision['%3'] = previousRevision; menu['%3'] = previousMenu;
+    await page.waitForFunction(revision => document.querySelector('.pane[data-pane="%3"] .output').textContent.endsWith(String(revision)), previousRevision);
+    console.log('extra screens: PASS (add, bottom start, vertical order, horizontal order, terminal columns, independent scrolling, new output, rendered DOM, close, focus)');
     joinedHistory = true;
-    const historyOutput = card('%3').locator('.output');
+    const historyOutput = card('%3').locator('.output').first();
     await page.waitForFunction(() => document.querySelector('.pane[data-pane="%3"] .output').textContent.startsWith('Logical 40 '));
     const wideHeight = await historyOutput.evaluate(el => el.scrollHeight);
     assert(await historyOutput.evaluate(el => el.scrollWidth <= el.clientWidth));
@@ -1110,7 +1163,7 @@ const assert = require('node:assert/strict');
     await page.setViewportSize({width: 1440, height: 950});
     for (const [lines, first] of [[2000, 20], [3000, 0]]) {
       await historyOutput.evaluate(el => { el.scrollTop = 300; });
-      await page.waitForFunction(() => cards.get('%3:first:%3').scrollTop === 300);
+      await page.waitForFunction(() => cards.get('%3:first:%3').el.querySelector('.screen').outputScrollTop === 300);
       await historyOutput.evaluate(el => { el.scrollTop = 100; });
       await page.waitForFunction(first => document.querySelector('.pane[data-pane="%3"] .output').textContent.startsWith('Logical ' + first + ' '), first);
       assert(historyRequests.some(request => request.pane === '%3' && request.lines === lines));
@@ -1123,11 +1176,11 @@ const assert = require('node:assert/strict');
     await page.waitForFunction(() => document.querySelector('.pane[data-pane="%3"] .output').textContent.startsWith("It's quoted"));
     await historyOutput.evaluate(el => { el.scrollTop = el.scrollHeight; });
     await page.waitForFunction(() => cards.get('%3:first:%3').lines === 1000);
-    await card('%3').locator('.output').evaluate(el => { el.scrollTop = 0; });
-    await card('%3').locator('.output').hover(); await page.mouse.wheel(0, 200);
+    await card('%3').locator('.output').first().evaluate(el => { el.scrollTop = 0; });
+    await card('%3').locator('.output').first().hover(); await page.mouse.wheel(0, 200);
     await page.waitForFunction(() => document.querySelector('.pane:not([hidden]) .output').scrollTop > 0);
     await page.screenshot({path: '/tmp/peon-code-web-desktop.png', fullPage: true});
-    const fontOutput = card('%3').locator('.output');
+    const fontOutput = card('%3').locator('.output').first();
     const fontSize = await fontOutput.evaluate(el => parseFloat(getComputedStyle(el).fontSize));
     await page.locator('.session-row .font-larger').hover();
     await tooltip.waitFor({state: 'visible'});
@@ -1209,7 +1262,7 @@ const assert = require('node:assert/strict');
     assert.equal(await paneTab('%3').textContent(), 'Boss · 1.00M · closed');
     assert.equal(await paneTab('%3').locator('.figure').textContent(), ' · 1.00M · closed');
     await card('%3').locator('.message-form textarea').fill('');
-    await card('%3').locator('.output').click({position: {x: 24, y: 24}});
+    await card('%3').locator('.output').first().click({position: {x: 24, y: 24}});
     await page.waitForFunction(() => getSelection().isCollapsed);
     await page.evaluate(() => { document.querySelector('#connection').textContent = 'Waiting refresh'; });
     await page.waitForFunction(() => document.querySelector('#connection').textContent === '0 sessions connected with total 0 agents');
@@ -1219,14 +1272,14 @@ const assert = require('node:assert/strict');
       return [closed.selected, closed.busy, closed.el.querySelector('.message-form textarea').value];
     }), [firstLine, false, '']);
     const closedKeyCount = keyCount;
-    await card('%3').locator('.output').press('Escape');
+    await card('%3').locator('.output').first().press('Escape');
     assert.equal(await page.evaluate(() => cards.get('%3:first:%3').selected), firstLine);
     assert.equal(keyCount, closedKeyCount, 'Closed Escape keeps saved text');
     await checkTabFocus('%3');
     assert.equal(await page.evaluate(() => cards.get('%3:first:%3').selected), firstLine);
     await card('%3').locator('.message-form textarea').fill('Keep this draft');
     const deliveries = sent.length;
-    await card('%3').locator('.output').click({button: 'right'});
+    await card('%3').locator('.output').first().click({button: 'right'});
     assert.equal(sent.length, deliveries);
     empty = false;
     roles.splice(0, roles.length, {id: '%3', identity: 'restarted:%3', name: 'New boss', role: 'manager', session: 'alpha'});

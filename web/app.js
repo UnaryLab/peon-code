@@ -375,11 +375,74 @@ function updateKeys(card) {
   });
   card.el.querySelector('.key-shortcuts').replaceChildren(...buttons);
 }
+function wireScreen(card, screen) {
+  const output = screen.querySelector('.output');
+  screen.outputScrollTop = output.scrollTop;
+  output.onscroll = () => {
+    if (card.el.hidden || card.closed) return;
+    const scrollingUp = output.scrollTop < screen.outputScrollTop;
+    screen.outputScrollTop = output.scrollTop;
+    if ([...card.el.querySelectorAll('.output')].every(other => other.scrollHeight - other.scrollTop - other.clientHeight < 40)) card.lines = 1000;
+    else if (scrollingUp && output.scrollTop < 200 && !card.selected && getSelection().isCollapsed && card.latest?.history > card.lines && card.latest.capturedLines === card.lines && card.lines < 200000) {
+      card.lines += 1000;
+    }
+  };
+  output.onkeydown = event => {
+    if (event.ctrlKey && event.key === 'c' && !event.shiftKey && !event.altKey && !event.metaKey && !event.isComposing && getSelection().isCollapsed && !card.closed) {
+      event.preventDefault(); send(card, 'keys', 'C-c'); return;
+    }
+    if (event.ctrlKey || event.altKey || event.metaKey || event.isComposing || card.closed) return;
+    if (event.key === 'Escape' && card.selected) {
+      event.preventDefault(); setSelection(card, ''); getSelection().removeAllRanges(); return;
+    }
+    if (card.busy) return;
+    const key = {ArrowUp: 'Up', ArrowDown: 'Down', Enter: 'Enter', Escape: 'Escape', Backspace: 'Backspace'}[event.key];
+    if (typeof key === 'string') { event.preventDefault(); send(card, 'keys', key); }
+  };
+  output.oncontextmenu = event => {
+    if (card.selected.trim() && !card.busy && !card.closed) {
+      event.preventDefault(); send(card, 'explain', card.selected);
+    }
+  };
+}
 function createCard(pane) {
   const el = document.querySelector('#pane-template').content.firstElementChild.cloneNode(true);
   el.dataset.pane = pane.id;
   el.dataset.key = paneKey(pane);
-  const card = {el, id: pane.id, key: paneKey(pane), lines: 1000, scrollTop: 0, fullHistory: false, selected: '', selectionRevision: 0, draftRevision: 0, busy: false, closed: false, unread: false, needsAnswer: false, boxText: '', boxSince: 0, waitingText: false, latest: null, rendered: null, keysOpen: false};
+  const card = {el, id: pane.id, key: paneKey(pane), stack: 'vertical', lines: 1000, fullHistory: false, selected: '', selectionRevision: 0, draftRevision: 0, busy: false, closed: false, unread: false, needsAnswer: false, boxText: '', boxSince: 0, waitingText: false, latest: null, rendered: null, keysOpen: false};
+  const stackOrder = el.querySelector('.stack-order');
+  stackOrder.onclick = () => {
+    const positions = [...el.querySelectorAll('.output')].map(output => ({output, atEnd: output.scrollHeight - output.scrollTop - output.clientHeight < 40, top: output.scrollTop, fromBottom: output.scrollHeight - output.scrollTop}));
+    card.stack = card.stack === 'vertical' ? 'horizontal' : 'vertical';
+    el.querySelector('.screens').classList.toggle('horizontal', card.stack === 'horizontal');
+    stackOrder.textContent = card.stack === 'horizontal' ? '↔' : '↕';
+    stackOrder.setAttribute('aria-label', card.stack === 'horizontal' ? 'Screens side by side, switch to vertical' : 'Screens stacked vertically, switch to side by side');
+    for (const {output, atEnd, top, fromBottom} of positions) {
+      output.scrollTop = atEnd ? output.scrollHeight : card.fullHistory ? top : output.scrollHeight - fromBottom;
+      output.parentElement.outputScrollTop = output.scrollTop;
+    }
+    scheduleRefresh();
+  };
+  wireScreen(card, el.querySelector('.screen'));
+  el.querySelector('.add-screen').onclick = () => {
+    const positions = [...el.querySelectorAll('.output')].map(output => ({output, atEnd: output.scrollHeight - output.scrollTop - output.clientHeight < 40, top: output.scrollTop, fromBottom: output.scrollHeight - output.scrollTop}));
+    const screen = el.querySelector('.screen').cloneNode(true);
+    const close = document.createElement('button');
+    close.type = 'button'; close.className = 'close-screen'; close.textContent = 'x';
+    close.setAttribute('aria-label', 'Close screen'); close.dataset.tip = 'Close this screen';
+    close.onclick = () => { screen.remove(); el.querySelector('.output').focus(); scheduleRefresh(); };
+    screen.append(close);
+    el.querySelector('.screens').append(screen);
+    wireScreen(card, screen);
+    for (const {output, atEnd, top, fromBottom} of positions) {
+      output.scrollTop = atEnd ? output.scrollHeight : card.fullHistory ? top : output.scrollHeight - fromBottom;
+      output.parentElement.outputScrollTop = output.scrollTop;
+    }
+    const output = screen.querySelector('.output');
+    output.scrollTop = output.scrollHeight;
+    screen.outputScrollTop = output.scrollTop;
+    scheduleRefresh();
+  };
   const keysToggle = el.querySelector('.keys-toggle');
   keysToggle.onclick = () => {
     card.keysOpen = !card.keysOpen;
@@ -435,33 +498,6 @@ function createCard(pane) {
     } catch (error) { feedback(card, error.message, true); }
     finally { card.busy = false; setSelection(card, card.selected); }
   };
-  el.querySelector('.output').onscroll = event => {
-    const output = event.currentTarget;
-    if (card.el.hidden || card.closed) return;
-    const scrollingUp = output.scrollTop < card.scrollTop;
-    card.scrollTop = output.scrollTop;
-    if (output.scrollHeight - output.scrollTop - output.clientHeight < 40) card.lines = 1000;
-    else if (scrollingUp && output.scrollTop < 200 && !card.selected && getSelection().isCollapsed && card.latest?.history > card.lines && card.latest.capturedLines === card.lines && card.lines < 200000) {
-      card.lines += 1000;
-    }
-  };
-  el.querySelector('.output').onkeydown = event => {
-    if (event.ctrlKey && event.key === 'c' && !event.shiftKey && !event.altKey && !event.metaKey && !event.isComposing && getSelection().isCollapsed && !card.closed) {
-      event.preventDefault(); send(card, 'keys', 'C-c'); return;
-    }
-    if (event.ctrlKey || event.altKey || event.metaKey || event.isComposing || card.closed) return;
-    if (event.key === 'Escape' && card.selected) {
-      event.preventDefault(); setSelection(card, ''); getSelection().removeAllRanges(); return;
-    }
-    if (card.busy) return;
-    const key = {ArrowUp: 'Up', ArrowDown: 'Down', Enter: 'Enter', Escape: 'Escape', Backspace: 'Backspace'}[event.key];
-    if (typeof key === 'string') { event.preventDefault(); send(card, 'keys', key); }
-  };
-  el.querySelector('.output').oncontextmenu = event => {
-    if (card.selected.trim() && !card.busy && !card.closed) {
-      event.preventDefault(); send(card, 'explain', card.selected);
-    }
-  };
   el.querySelector('.discard').onclick = () => {
     if (card.busy) return;
     el.remove(); cards.delete(card.key);
@@ -486,8 +522,8 @@ document.addEventListener('selectionchange', () => {
   const selection = getSelection();
   const range = !selection.isCollapsed && selection.rangeCount ? selection.getRangeAt(0) : null;
   for (const card of cards.values()) {
-    const output = card.el.querySelector('.output');
-    if (range && output.contains(range.startContainer) && output.contains(range.endContainer)) {
+    const selected = range && [...card.el.querySelectorAll('.output')].some(output => output.contains(range.startContainer) && output.contains(range.endContainer));
+    if (selected) {
       card.selectionRevision++;
       setSelection(card, selection.toString());
     } else if (card.selected && !card.closed) {
@@ -503,15 +539,18 @@ function updateOutput(card) {
   const preserveTop = card.fullHistory && fullHistory;
   card.fullHistory = fullHistory;
   if (key === card.rendered) return;
-  const output = card.el.querySelector(".output");
-  const atEnd = output.scrollHeight - output.scrollTop - output.clientHeight < 40;
-  const oldScrollTop = output.scrollTop;
-  const fromBottom = output.scrollHeight - output.scrollTop;
-  renderAnsi(output, card.latest.output, card.latest.defaultStyle);
+  const outputs = [...card.el.querySelectorAll('.output')];
+  for (const [index, output] of outputs.entries()) {
+    const atEnd = output.scrollHeight - output.scrollTop - output.clientHeight < 40;
+    const oldScrollTop = output.scrollTop;
+    const fromBottom = output.scrollHeight - output.scrollTop;
+    if (index === 0) renderAnsi(output, card.latest.output, card.latest.defaultStyle);
+    else output.replaceChildren(...[...outputs[0].childNodes].map(node => node.cloneNode(true)));
+    if (atEnd) output.scrollTop = output.scrollHeight;
+    else output.scrollTop = preserveTop ? oldScrollTop : output.scrollHeight - fromBottom;
+    output.parentElement.outputScrollTop = output.scrollTop;
+  }
   card.rendered = key;
-  if (atEnd) output.scrollTop = output.scrollHeight;
-  else output.scrollTop = preserveTop ? oldScrollTop : output.scrollHeight - fromBottom;
-  card.scrollTop = output.scrollTop;
 }
 async function refresh() {
   if (refreshing) { refreshRequested = true; return; }
