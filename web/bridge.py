@@ -66,7 +66,7 @@ def panes(session=None):
     return sorted(result, key=lambda pane: (pane["session"], {"manager": 0, "reviewer": 1, "worker": 2}[pane["role"]], int(pane["id"][1:])))
 
 
-def snapshot(pane, lines=1000):
+def snapshot(pane, lines=1000, rows=None):
     output = tmux("capture-pane", "-p", "-e", "-N", "-J", "-t", pane["id"], "-S", "-" + str(lines))
     visible = tmux("capture-pane", "-p", "-t", pane["id"])
     styled = tmux("capture-pane", "-p", "-e", "-N", "-t", pane["id"])
@@ -80,9 +80,16 @@ def snapshot(pane, lines=1000):
             style += "," + active
     except subprocess.CalledProcessError:
         style = ""
-    identity, history, cursor = tmux("display-message", "-p", "-t", pane["id"], "#{pid}:#{session_id}:#{pane_pid}\t#{history_size}\t#{cursor_y}").rstrip("\n").split("\t")
+    identity, history, cursor, height = tmux("display-message", "-p", "-t", pane["id"], "#{pid}:#{session_id}:#{pane_pid}\t#{history_size}\t#{cursor_y}\t#{pane_height}").rstrip("\n").split("\t")
     if identity != pane["identity"]:
         return None
+    if rows is not None:
+        output_rows = output.splitlines(keepends=True)
+        for _ in range(max(0, int(height) - rows)):
+            if not output_rows or re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[^[]?", "", output_rows[-1]).strip():
+                break
+            output_rows.pop()
+        output = "".join(output_rows)
     cy = int(cursor) if re.fullmatch(r"[0-9]+", cursor) else -1
     menu = False
     if 0 <= cy < len(screen):

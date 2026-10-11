@@ -95,9 +95,10 @@ const newSession = document.querySelector('#new-session');
 const newSessionForm = document.querySelector('#new-session-form');
 const newSessionStatus = document.querySelector('#new-session-status');
 function closeNewSession() {
+  const focused = document.activeElement;
   newSessionForm.hidden = true;
   newSession.setAttribute('aria-expanded', 'false');
-  newSession.focus();
+  if (newSessionForm.contains(focused) || focused === newSession || focused === document.body) newSession.focus();
 }
 newSession.onclick = () => {
   if (!newSessionForm.hidden) { closeNewSession(); return; }
@@ -150,16 +151,11 @@ document.querySelector('#dismiss').onclick = async () => {
   if (!session || dismissing || !confirm('Close session ' + session + '? Its agents stop.')) return;
   dismissing = true;
   updateNavigation();
-  const status = document.querySelector('#dismiss-status');
-  status.hidden = false;
-  status.classList.remove('error');
-  status.textContent = 'Closing session ' + session;
   try {
     await api('/api/dismiss', {session});
-    status.hidden = true;
     dismissed = session;
   }
-  catch (error) { status.textContent = error.message; status.classList.add('error'); }
+  catch (error) { alert(error.message); }
   finally { dismissing = false; updateNavigation(); }
 };
 const swap = document.querySelector('#swap');
@@ -222,9 +218,12 @@ function updateSwap() {
 const renderNavigation = updateNavigation;
 updateNavigation = () => { renderNavigation(); updateSwap(); };
 function closeSwap() {
+  const focused = document.activeElement;
   swapForm.hidden = true;
   swap.setAttribute('aria-expanded', 'false');
-  (swap.disabled ? cards.get(currentPane())?.el.querySelector('.output') : swap)?.focus();
+  if (swapForm.contains(focused) || !focused.matches('input, textarea') || !focused.value) {
+    (swap.disabled ? cards.get(currentPane())?.el.querySelector('.output') : swap)?.focus();
+  }
 }
 swap.onclick = () => {
   if (swap.disabled) return;
@@ -268,7 +267,9 @@ swapForm.onsubmit = async event => {
     if (revision === swapRevision && card.key === currentPane() && card.latest.identity === identity) {
       feedback(card, message, error);
       if (succeeded) closeSwap();
-      else (swapForm.elements.cli.disabled ? card.el.querySelector('.output') : swapForm.elements.cli).focus();
+      else if (swapForm.contains(document.activeElement) || !document.activeElement.matches('input, textarea') || !document.activeElement.value) {
+        (swapForm.elements.cli.disabled ? card.el.querySelector('.output') : swapForm.elements.cli).focus();
+      }
     }
   }
 };
@@ -733,7 +734,7 @@ async function refresh() {
       dismissed = null;
     }
     if (openedSession && panes.some(pane => pane.session === openedSession && !pane.closed)) {
-      navigation.session = openedSession;
+      if (!document.activeElement.matches('input, textarea') || !document.activeElement.value) navigation.session = openedSession;
       openedSession = null;
     }
     reconcileNavigation(panes, initial);

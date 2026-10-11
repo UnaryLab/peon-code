@@ -221,7 +221,7 @@ class Handler(BaseHTTPRequestHandler):
                 result = []
                 for pane in current:
                     try:
-                        captured = snapshot(pane, lines) if pane["id"] == target else snapshot(pane)
+                        captured = snapshot(pane, lines, rows) if pane["id"] == target else snapshot(pane)
                         if captured is not None:
                             result.append(captured)
                     except subprocess.CalledProcessError:

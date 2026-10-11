@@ -153,11 +153,12 @@ class WebTests(unittest.TestCase):
     def test_browser_size_breaks_once_and_resizes_only_viewed_pane(self):
         group = [dict(id="%" + str(index), session="team") for index in (1, 2, 3)]
         fake = SizingTmux(group)
-        with patch.object(web, "panes", return_value=group), patch.object(web, "tmux", side_effect=fake) as tmux, patch.object(web, "snapshot", side_effect=lambda pane, *args: pane):
+        with patch.object(web, "panes", return_value=group), patch.object(web, "tmux", side_effect=fake) as tmux, patch.object(web, "snapshot", side_effect=lambda pane, *args: pane) as snapshot:
             for _ in range(2):
                 status, body = self.request("GET", "/api/panes?cols=120&rows=35&session=team&pane=%252")
                 self.assertEqual(status, 200)
                 self.assertEqual(json.loads(body)["panes"], group)
+                self.assertEqual([call.args for call in snapshot.call_args_list[-3:]], [(group[0],), (group[1], 1000, 35), (group[2],)])
         self.assertEqual(fake.order["team"], "%1 %2 %3")
         self.assertEqual([call.args for call in tmux.call_args_list if call.args[0] == "break-pane"], [
             ("break-pane", "-d", "-s", "%1", "-n", "p1"),
@@ -503,10 +504,10 @@ refresh().then(parameters => {document.querySelector('#result').textContent = JS
         panes = [dict(id="%2"), dict(id="%3")]
         with patch.object(web, "panes", return_value=panes):
             for lines in (1000, 2000, 200000):
-                with self.subTest(lines=lines), patch.object(web, "snapshot", side_effect=lambda pane, lines=1000: dict(pane, output="terminal", history=2500)) as snapshot:
+                with self.subTest(lines=lines), patch.object(web, "snapshot", side_effect=lambda pane, lines=1000, rows=None: dict(pane, output="terminal", history=2500)) as snapshot:
                     status, body = self.request("GET", "/api/panes?pane=%252&lines=" + str(lines))
                     self.assertEqual(status, 200)
-                    self.assertEqual(snapshot.call_args_list[0].args, (panes[0], lines))
+                    self.assertEqual(snapshot.call_args_list[0].args, (panes[0], lines, None))
                     self.assertEqual(snapshot.call_args_list[1].args, (panes[1],))
                     self.assertEqual([pane["history"] for pane in json.loads(body)["panes"]], [2500, 2500])
 
@@ -840,7 +841,7 @@ refresh().then(parameters => {document.querySelector('#result').textContent = JS
         pane = dict(id="%2", identity="100:$1:202")
         visible = "› wrapped input\ncontinues here\nHint below cursor\nwraps here\n"
         styled = "› wrapped input\ncontinues here\n\x1b[2mHint below cursor\nwraps here\x1b[0m\n"
-        with patch.object(bridge, "tmux", side_effect=["› wrapped inputcontinues here\nHint below cursorwraps here\n", visible, styled, "", "0", "100:$1:202\t1500\t1\n"]) as tmux:
+        with patch.object(bridge, "tmux", side_effect=["› wrapped inputcontinues here\nHint below cursorwraps here\n", visible, styled, "", "0", "100:$1:202\t1500\t1\t30\n"]) as tmux:
             result = bridge.snapshot(pane, 2000)
         self.assertEqual(tmux.call_args_list[0].args,
                          ("capture-pane", "-p", "-e", "-N", "-J", "-t", "%2", "-S", "-2000"))
