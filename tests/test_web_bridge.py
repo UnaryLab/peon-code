@@ -87,6 +87,7 @@ class BridgeTests(unittest.TestCase):
         with patch.object(bridge, 'tmux', side_effect=['\x1b[38;2;1;2;3mtext\x1b[0m', '› 2. Continue\n', '\x1b[31m› 2. Continue\x1b[0m\n', 'fg=#abcdef,bg=#123456\n', '0', '100:$1:202\t1500\t0\t30\n']) as tmux:
             bridge.snapshot(pane, 2000)
         self.assertIn('-e', tmux.call_args_list[0].args)
+        self.assertNotIn('-J', tmux.call_args_list[0].args)
         self.assertEqual(tmux.call_args_list[0].args[-2:], ('-S', '-2000'))
         self.assertEqual(pane['history'], 1500)
         self.assertEqual(pane['cursorY'], 0)

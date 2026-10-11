@@ -653,8 +653,9 @@ refresh().then(parameters => {document.querySelector('#result').textContent = JS
     def test_dismiss_session_validation_and_authentication(self):
         session = "team 'quoted' $(literal)"
         with patch.object(web, "panes", return_value=[dict(session=session)]) as panes, \
-                patch.object(web.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "closed", "")) as run:
+                patch.object(web.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "closed", "")) as run, contextlib.redirect_stderr(io.StringIO()) as error:
             status, body = self.request("POST", "/api/dismiss", dict(session=session))
+            self.assertEqual(error.getvalue(), "Closing team " + session + "…\n")
             self.assertEqual((status, json.loads(body)), (200, {"message": "closed"}))
             panes.assert_called_once_with("team")
             run.assert_called_once_with([str(ROOT / "peon-code.sh"), "dismiss", session],
@@ -837,16 +838,17 @@ refresh().then(parameters => {document.querySelector('#result').textContent = JS
                     (lock / "owner").unlink(missing_ok=True)
                     lock.rmdir()
 
-    def test_snapshot_joins_history_but_keeps_visible_screen_rows(self):
+    def test_snapshot_keeps_physical_history_and_visible_screen_rows(self):
         pane = dict(id="%2", identity="100:$1:202")
         visible = "› wrapped input\ncontinues here\nHint below cursor\nwraps here\n"
         styled = "› wrapped input\ncontinues here\n\x1b[2mHint below cursor\nwraps here\x1b[0m\n"
-        with patch.object(bridge, "tmux", side_effect=["› wrapped inputcontinues here\nHint below cursorwraps here\n", visible, styled, "", "0", "100:$1:202\t1500\t1\t30\n"]) as tmux:
+        with patch.object(bridge, "tmux", side_effect=[styled, visible, styled, "", "0", "100:$1:202\t1500\t1\t30\n"]) as tmux:
             result = bridge.snapshot(pane, 2000)
         self.assertEqual(tmux.call_args_list[0].args,
-                         ("capture-pane", "-p", "-e", "-N", "-J", "-t", "%2", "-S", "-2000"))
+                         ("capture-pane", "-p", "-e", "-N", "-t", "%2", "-S", "-2000"))
         self.assertEqual(tmux.call_args_list[1].args, ("capture-pane", "-p", "-t", "%2"))
         self.assertEqual(tmux.call_args_list[2].args, ("capture-pane", "-p", "-e", "-N", "-t", "%2"))
+        self.assertEqual(result["output"], styled)
         self.assertEqual(result["screen"], visible)
         self.assertEqual(result["styledScreen"], styled)
         self.assertEqual(result["cursorY"], 1)

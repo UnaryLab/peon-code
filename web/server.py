@@ -305,6 +305,7 @@ class Handler(BaseHTTPRequestHandler):
                 session = data.get("session")
                 if not isinstance(session, str) or not session or not any(p["session"] == session for p in panes(self.server.session)):
                     raise ValueError("Session changed or closed; refresh before closing")
+                print("Closing team " + session + "…", file=sys.stderr, flush=True)
                 result = subprocess.run([str(ROOT / "peon-code.sh"), "dismiss", session],
                                         stdin=subprocess.DEVNULL, capture_output=True, text=True,
                                         timeout=10, start_new_session=True)

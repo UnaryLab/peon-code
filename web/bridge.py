@@ -67,7 +67,7 @@ def panes(session=None):
 
 
 def snapshot(pane, lines=1000, rows=None):
-    output = tmux("capture-pane", "-p", "-e", "-N", "-J", "-t", pane["id"], "-S", "-" + str(lines))
+    output = tmux("capture-pane", "-p", "-e", "-N", "-t", pane["id"], "-S", "-" + str(lines))
     visible = tmux("capture-pane", "-p", "-t", pane["id"])
     styled = tmux("capture-pane", "-p", "-e", "-N", "-t", pane["id"])
     screen = visible.split("\n")
