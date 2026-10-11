@@ -577,6 +577,67 @@ test_watch_first_usage() (
 )
 test_watch_first_usage
 
+test_watch_shared_beat() (
+  local session="peon-watch-shared-beat-$$" ticks=0
+  local first="$TEST_DIR/watch-beat-first.jsonl" second="$TEST_DIR/watch-beat-second.jsonl"
+  local log="$TEST_DIR/watch-beat.log"
+  # shellcheck source=lib/watch.sh
+  source "$ROOT/lib/watch.sh"
+  printf '%s\n' '{"requestId":"first-a","message":{"usage":{"input_tokens":100,"output_tokens":10}}}' >"$first"
+  printf '%s\n' '{"type":"user","message":{"content":"brief"}}' >"$second"
+  : >"$log"
+  tmux() {
+    case $1 in
+      display) echo 100 ;;
+      has-session) ticks=$((ticks + 1)); [ "$ticks" -le 6 ] ;;
+      show-options) case $* in *@peon_bin*) echo claude ;; esac ;;
+      set) printf '%s %s\n' "$ticks" "$*" >>"$log" ;;
+      *) return 0 ;;
+    esac
+  }
+  session_name() { echo "$1"; }
+  list_agent_panes() { printf '%%0 first\n%%1 second\n'; }
+  last_thread_file() {
+    case $1 in
+      *'agent first '*) printf '%s\n' "$first" ;;
+      *'agent second '*) printf '%s\n' "$second" ;;
+    esac
+  }
+  date() {
+    if [ "$1" != +%s ]; then command date "$@"; return; fi
+    case $ticks in
+      1) echo 100 ;; 2) echo 120 ;; 3) echo 130 ;;
+      4) echo 159 ;; 5) echo 160 ;; 6) echo 220 ;;
+    esac
+  }
+  sleep() {
+    case $ticks in
+      1)
+        assert_contains "$log" '1 set -pt %0 @peon_usage 100 0 0 10'
+        printf '%s\n' '{"requestId":"second-a","message":{"usage":{"input_tokens":200,"output_tokens":20}}}' >>"$second"
+        ;;
+      2)
+        assert_contains "$log" '2 set -pt %1 @peon_usage 200 0 0 20'
+        printf '%s\n' '{"requestId":"first-b","message":{"usage":{"input_tokens":50,"output_tokens":5}}}' >>"$first"
+        ;;
+      3)
+        [ "$(wc -l <"$log")" -eq 2 ] || fail 'watch re-read the first pane before the shared beat'
+        printf '%s\n' '{"requestId":"second-b","message":{"usage":{"input_tokens":75,"output_tokens":7}}}' >>"$second"
+        ;;
+      4)
+        [ "$(wc -l <"$log")" -eq 2 ] || fail 'watch re-read a pane before the shared beat'
+        ;;
+      5|6)
+        [ "$(cat "$log")" = "$(printf '1 set -pt %%0 @peon_usage 100 0 0 10\n2 set -pt %%1 @peon_usage 200 0 0 20\n5 set -pt %%0 @peon_usage 150 0 0 15\n5 set -pt %%1 @peon_usage 275 0 0 27\n')" ] ||
+          fail "watch did not re-read both changed panes on the shared beat, or read unchanged panes: $(cat "$log")"
+        ;;
+    esac
+    command sleep "$1"
+  }
+  PEON_WATCH_MIN=60 PEON_WATCH_TICK=0.01 cmd_watch "$session" 1000000 || fail 'watch failed on the shared read beat'
+)
+test_watch_shared_beat
+
 test_watch_ignores_old_transcript() (
   local socket="peon-watch-old-test-$$" session="watch-old-test-$$" pane ticks=0
   local transcripts="$TEST_DIR/watch-old-transcripts" old_transcript new_transcript
@@ -616,7 +677,7 @@ test_watch_ignores_old_transcript() (
         ;;
     esac
   }
-  TZ=EST5 PEON_WATCH_MIN=0 PEON_WATCH_TICK=0.01 cmd_watch "$session" 1000000 || fail 'watch failed with a pre-session transcript'
+  TZ=EST5 PEON_WATCH_MIN=60 PEON_WATCH_TICK=0.01 cmd_watch "$session" 1000000 || fail 'watch failed with a pre-session transcript'
 )
 test_watch_ignores_old_transcript
 

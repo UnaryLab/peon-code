@@ -3,7 +3,7 @@
 # shellcheck source=lib/cli.sh
 declare -F cli_call >/dev/null || source "$(dirname -- "${BASH_SOURCE[0]}")/cli.sh"
 
-# Scan every five seconds, read changed transcripts at most once a minute,
+# Scan every five seconds, re-read changed transcripts on one shared minute beat,
 # and compact a pane that has reached the threshold.
 # Context size comes from the usage record its CLI writes to the transcript.
 # Only claude and codex are known to log usage; another CLI is named once
@@ -155,7 +155,8 @@ watch_restart_agent() {
 # (a huge system prompt) is reported once rather than on each changed reading.
 cmd_watch() {
   local session threshold panes id name bin file new_file tokens weekly usage owner pid_file
-  local now size last_size last_read last_lookup min=${PEON_WATCH_MIN:-60}
+  local now size last_size last_lookup min=${PEON_WATCH_MIN:-60}
+  local last_beat=0 beat_time
   local created stamp ref exit_trap cleanup restart current state count launch capture hash last_hash pending
   local unwatched="" disarmed="" files="" reads="" lookups=""
   local states="" restarts="" capped=""
@@ -194,6 +195,7 @@ cmd_watch() {
     else
       panes=$(list_agent_panes "$session") || true
     fi
+    beat_time=$(date +%s)
     while read -r id name; do
       [ -n "$id" ] || continue
       [ -n "$name" ] || continue
@@ -262,15 +264,15 @@ cmd_watch() {
         esac
         continue
       fi
-      # Refresh the transcript path at the read interval. A pane id never
-      # repeats within a session.
+      # Retry missing paths every scan; refresh cached paths at their lookup interval.
+      # A pane id never repeats within a session.
       file=$(printf '%s\n' "$files" | sed -n "s|^$id ||p")
       now=$(date +%s)
       last_lookup=$(printf '%s\n' "$lookups" | sed -n "s|^$id ||p")
       if [ -z "$last_lookup" ] || [ "$((now - last_lookup))" -ge "$min" ]; then
         new_file=$(last_thread_file "agent $name of peon-code session $session," "$bin" "$ref") || new_file=""
         lookups=$(printf '%s\n' "$lookups" | sed "/^$id /d")
-        lookups="$lookups"$'\n'"$id $now"
+        [ -z "$new_file" ] || lookups="$lookups"$'\n'"$id $now"
         if [ "$new_file" != "$file" ]; then
           file=$new_file
           files=$(printf '%s\n' "$files" | sed "/^$id /d")
@@ -280,9 +282,8 @@ cmd_watch() {
       fi
       [ -n "$file" ] || continue
       size=$(wc -c 2>/dev/null <"$file") || continue
-      now=$(date +%s)
-      read -r last_size last_read <<<"$(printf '%s\n' "$reads" | sed -n "s|^$id ||p")"
-      if [ -n "$last_read" ] && { [ "$size" -eq "$last_size" ] || [ "$((now - last_read))" -lt "$min" ]; }; then
+      read -r last_size <<<"$(printf '%s\n' "$reads" | sed -n "s|^$id ||p")"
+      if [ -n "$last_size" ] && { [ "$size" -eq "$last_size" ] || [ "$((beat_time - last_beat))" -lt "$min" ]; }; then
         continue
       fi
       weekly=$(cli_call "$bin" weekly_limit "$file") || weekly=""
@@ -294,9 +295,8 @@ cmd_watch() {
       tokens=$(context_tokens "$bin" "$file")
       # Retry every tick until the transcript has context tokens or usage.
       [ -n "$tokens" ] || [ -n "$usage" ] || continue
-      now=$(date +%s)
       reads=$(printf '%s\n' "$reads" | sed "/^$id /d")
-      reads="$reads"$'\n'"$id $size $now"
+      reads="$reads"$'\n'"$id $size"
       [ -n "$tokens" ] || continue
       if [ "$tokens" -lt "$threshold" ]; then
         disarmed=${disarmed// $id / }
@@ -311,6 +311,7 @@ cmd_watch() {
       # the watcher's own pane for a target.
       TMUX_PANE='' "$SCRIPT_DIR/peon-code.sh" compact "$name" "$session" || true
     done <<<"$panes"
+    if [ "$((beat_time - last_beat))" -ge "$min" ]; then last_beat=$beat_time; fi
     sleep "${PEON_WATCH_TICK:-5}"
   done
   if [ "$(cat "$pid_file" 2>/dev/null)" = "$$" ]; then
