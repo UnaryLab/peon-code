@@ -151,6 +151,7 @@ class Handler(BaseHTTPRequestHandler):
         elif parsed.path == "/api/panes":
             query = parse_qs(parsed.query, keep_blank_values=True)
             target = query.get("pane", [None])[0]
+            resize_session = query.get("session", [None])[0]
             try:
                 lines = int(query.get("lines", ["1000"])[0])
                 # Capture at most 200000 history lines; raise this with the client limit if needed.
@@ -172,24 +173,46 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 current = panes(self.server.session)
                 if cols is not None:
-                    # Detached tmux windows default to 80x24. The browser shows one pane
-                    # at a time, so stack full-width panes sized to its output area.
-                    # A terminal client that attaches later sets the window size.
-                    # With several browser tabs, the last poll sets the size.
+                    # Detached panes need separate windows so their widths stay independent.
+                    # Resize only the named session's viewed pane; restore joined panes on attach.
+                    # With several browser tabs, the last poll for a pane sets its size.
                     for session in sorted({pane["session"] for pane in current}):
                         try:
                             window = session + ":agents"
                             if tmux("list-clients", "-t", "=" + session).strip():
-                                if tmux("show-options", "-wv", "-t", window, "window-size").strip() == "manual":
+                                session_panes = [row.split("\t") for row in tmux("list-panes", "-s", "-t", "=" + session, "-F", "#{pane_id}\t#{window_name}").splitlines()]
+                                outside = {pane for pane, name in session_panes if name != "agents"}
+                                if tmux("show-options", "-wv", "-t", window, "window-size").strip() == "manual" or outside:
+                                    order = tmux("show-options", "-qv", "-t", session, "@peon_pane_order").split()
+                                    if not order:
+                                        order = sorted((pane for pane, _ in session_panes), key=lambda pane: int(pane[1:]))
+                                    for pane in order:
+                                        if pane in outside:
+                                            tmux("join-pane", "-d", "-s", pane, "-t", window)
+                                    order = [pane for pane in order if any(pane == existing for existing, _ in session_panes)]
+                                    for index, pane in enumerate(order):
+                                        joined = tmux("list-panes", "-t", window, "-F", "#{pane_id}").split()
+                                        if joined[index] != pane:
+                                            tmux("swap-pane", "-d", "-s", pane, "-t", joined[index])
                                     tmux("set", "-w", "-t", window, "-u", "window-size")
+                                    tmux("set-option", "-w", "-t", window, "main-pane-width", "60%")
                                     tmux("select-layout", "-t", window, "main-vertical")
+                                    tmux("set-option", "-u", "-t", session, "@peon_pane_order")
                                 continue
-                            count = len(tmux("list-panes", "-t", window).splitlines())
-                            # Each pane's top border consumes one additional row.
-                            height = min((rows + 1) * count, 10000)
-                            if tmux("display-message", "-p", "-t", window, "#{window_width}x#{window_height}").strip() != f"{cols}x{height}":
-                                tmux("resize-window", "-t", window, "-x", str(cols), "-y", str(height))
-                                tmux("select-layout", "-t", window, "even-vertical")
+                            if session != resize_session or not any(pane["id"] == target and pane["session"] == session for pane in current):
+                                continue
+                            if not tmux("show-options", "-qv", "-t", session, "@peon_pane_order").strip():
+                                order = tmux("list-panes", "-t", window, "-F", "#{pane_id}").split()
+                                tmux("set-option", "-t", session, "@peon_pane_order", " ".join(order))
+                            for pane in tmux("list-panes", "-s", "-t", "=" + session, "-F", "#{pane_id}").split():
+                                if int(tmux("display-message", "-p", "-t", pane, "#{window_panes}").strip()) > 1:
+                                    tmux("break-pane", "-d", "-s", pane, "-n", "p" + pane[1:])
+                            window = tmux("display-message", "-p", "-t", target, "#{window_id}").strip()
+                            width, height, pane_height = map(int, tmux("display-message", "-p", "-t", window, "#{window_width}\t#{window_height}\t#{pane_height}").split())
+                            # A single broken pane has no border; agents retains its top border row.
+                            desired_height = rows + height - pane_height
+                            if (width, height) != (cols, desired_height):
+                                tmux("resize-window", "-t", window, "-x", str(cols), "-y", str(desired_height))
                         except (OSError, subprocess.TimeoutExpired, subprocess.CalledProcessError):
                             errors = self.server.__dict__.setdefault("resize_errors", set())
                             if session not in errors:

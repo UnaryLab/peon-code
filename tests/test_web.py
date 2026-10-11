@@ -30,6 +30,66 @@ web = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(web)
 
 
+class SizingTmux:
+    """Track pane windows across polls so duplicate breaks and joins fail."""
+    def __init__(self, group):
+        self.group = group
+        self.windows = {pane["id"]: pane["session"] + ":agents" for pane in group}
+        self.layout = {window: [pane for pane, owner in self.windows.items() if owner == window] for window in self.windows.values()}
+        self.order = {}
+        self.sizes = {}
+        self.attached = set()
+        self.mode = {}
+
+    def __call__(self, command, *args):
+        target = args[args.index("-t") + 1].lstrip("=") if "-t" in args else None
+        if command == "list-clients":
+            return "client\n" if target in self.attached else ""
+        if command == "show-options":
+            return self.order.get(target, "") if args[-1] == "@peon_pane_order" else self.mode.get(target, "latest")
+        if command == "list-panes":
+            selected = [pane for pane in self.group if pane["session"] == target] if "-s" in args else [next(pane for pane in self.group if pane["id"] == identity) for identity in self.layout[target]]
+            if "#{window_name}" in args[-1]:
+                return "\n".join(pane["id"] + "\t" + self.windows[pane["id"]].split(":")[-1] for pane in selected)
+            return "\n".join(pane["id"] for pane in selected)
+        if command == "display-message":
+            window = self.windows.get(target, target)
+            if args[-1] == "#{window_panes}":
+                return str(list(self.windows.values()).count(window))
+            if args[-1] == "#{window_id}":
+                return window
+            width, height = map(int, self.sizes.get(window, "80x24").split("x"))
+            return f"{width}\t{height}\t{height - int(window.endswith(':agents'))}"
+        if command == "set-option" and args[-1] == "@peon_pane_order":
+            self.order.pop(target, None)
+        elif command == "set-option" and "@peon_pane_order" in args:
+            self.order[target] = args[-1]
+        elif command == "break-pane":
+            pane = args[args.index("-s") + 1]
+            assert list(self.windows.values()).count(self.windows[pane]) > 1
+            session = next(item["session"] for item in self.group if item["id"] == pane)
+            self.layout[self.windows[pane]].remove(pane)
+            self.windows[pane] = session + ":" + args[-1]
+            self.layout[self.windows[pane]] = [pane]
+        elif command == "join-pane":
+            pane = args[args.index("-s") + 1]
+            assert self.windows[pane] != target
+            self.layout.pop(self.windows[pane])
+            self.windows[pane] = target
+            self.layout[target].insert(1, pane)
+        elif command == "swap-pane":
+            pane = args[args.index("-s") + 1]
+            layout = self.layout[self.windows[pane]]
+            source, destination = layout.index(pane), layout.index(target)
+            layout[source], layout[destination] = layout[destination], layout[source]
+        elif command == "resize-window":
+            self.sizes[target] = args[args.index("-x") + 1] + "x" + args[args.index("-y") + 1]
+            self.mode[target] = "manual"
+        elif command == "set" and "-u" in args:
+            self.mode[target] = "latest"
+        return ""
+
+
 class WebTests(unittest.TestCase):
     def setUp(self):
         self.config = tempfile.TemporaryDirectory()
@@ -90,32 +150,67 @@ class WebTests(unittest.TestCase):
             self.assertEqual(status, 200)
             self.assertEqual(json.loads(body)["version"], expected)
 
-    def test_browser_size_stacks_detached_panes_and_skips_matching_windows(self):
-        group = [dict(id="%" + str(index), session="team") for index in range(4)]
-        for size, expected in (("80x24\n", 5), ("120x144\n", 3)):
-            outcomes = ["", "%0\n%1\n%2\n%3\n", size, "", ""]
-            with self.subTest(size=size), patch.object(web, "panes", return_value=group), patch.object(web, "tmux", side_effect=outcomes) as tmux, patch.object(web, "snapshot", side_effect=lambda pane: pane):
-                status, body = self.request("GET", "/api/panes?cols=120&rows=35")
+    def test_browser_size_breaks_once_and_resizes_only_viewed_pane(self):
+        group = [dict(id="%" + str(index), session="team") for index in (1, 2, 3)]
+        fake = SizingTmux(group)
+        with patch.object(web, "panes", return_value=group), patch.object(web, "tmux", side_effect=fake) as tmux, patch.object(web, "snapshot", side_effect=lambda pane, *args: pane):
+            for _ in range(2):
+                status, body = self.request("GET", "/api/panes?cols=120&rows=35&session=team&pane=%252")
+                self.assertEqual(status, 200)
+                self.assertEqual(json.loads(body)["panes"], group)
+        self.assertEqual(fake.order["team"], "%1 %2 %3")
+        self.assertEqual([call.args for call in tmux.call_args_list if call.args[0] == "break-pane"], [
+            ("break-pane", "-d", "-s", "%1", "-n", "p1"),
+            ("break-pane", "-d", "-s", "%2", "-n", "p2")])
+        self.assertEqual([call.args for call in tmux.call_args_list if call.args[0] == "resize-window"], [
+            ("resize-window", "-t", "team:p2", "-x", "120", "-y", "35")])
+        self.assertEqual(fake.sizes, {"team:p2": "120x35"})
+        self.assertNotIn("select-layout", [call.args[0] for call in tmux.call_args_list])
+
+    def test_browser_size_attached_client_joins_saved_order_and_restores_once(self):
+        group = [dict(id="%" + str(index), session="team") for index in (1, 2, 10)]
+        for order in ("%1 %2 %10", "%2 %10 %1", ""):
+            fake = SizingTmux(group)
+            fake.windows.update({"%1": "team:p1", "%2": "team:p2"})
+            fake.layout = {"team:agents": ["%10"], "team:p1": ["%1"], "team:p2": ["%2"]}
+            fake.order["team"] = order
+            fake.attached.add("team")
+            with self.subTest(order=order), patch.object(web, "panes", return_value=group), patch.object(web, "tmux", side_effect=fake) as tmux, patch.object(web, "snapshot", side_effect=lambda pane, *args: pane):
+                for _ in range(2):
+                    self.assertEqual(self.request("GET", "/api/panes?cols=120&rows=35&session=other")[0], 200)
+            joined = [call.args for call in tmux.call_args_list if call.args[0] == "join-pane"]
+            self.assertEqual(joined, [("join-pane", "-d", "-s", pane, "-t", "team:agents") for pane in (order.split() if order else ["%1", "%2", "%10"]) if pane != "%10"])
+            self.assertEqual(fake.layout["team:agents"], order.split() if order else ["%1", "%2", "%10"])
+            restored = [call.args for call in tmux.call_args_list if call.args[0] in ("set", "set-option", "select-layout")]
+            self.assertEqual(restored, [
+                ("set", "-w", "-t", "team:agents", "-u", "window-size"),
+                ("set-option", "-w", "-t", "team:agents", "main-pane-width", "60%"),
+                ("select-layout", "-t", "team:agents", "main-vertical"),
+                ("set-option", "-u", "-t", "team", "@peon_pane_order")])
+            self.assertNotIn("team", fake.order)
+            self.assertFalse(fake.sizes)
+
+    def test_browser_size_attached_client_releases_manual_size(self):
+        for mode in ("manual", "latest"):
+            fake = SizingTmux([dict(id="%2", session="team")])
+            fake.attached.add("team")
+            fake.mode["team:agents"] = mode
+            with self.subTest(mode=mode), patch.object(web, "tmux", side_effect=fake) as tmux, patch.object(web, "snapshot", side_effect=lambda pane: pane):
+                self.assertEqual(self.request("GET", "/api/panes?cols=120&rows=35")[0], 200)
+            self.assertEqual(any(call.args[0] == "select-layout" for call in tmux.call_args_list), mode == "manual")
+
+    def test_browser_size_resizes_requested_session_without_filtering_panes(self):
+        self.server.session = None
+        group = [dict(id="%1", session="a"), dict(id="%2", session="b")]
+        for query, resized in (("&session=a&pane=%251", True), ("&pane=%251", False), ("&session=a", False), ("&session=a&pane=%252", False)):
+            fake = SizingTmux(group)
+            with self.subTest(query=query), patch.object(web, "panes", return_value=group) as panes, patch.object(web, "tmux", side_effect=fake) as tmux, patch.object(web, "snapshot", side_effect=lambda pane, *args: pane):
+                status, body = self.request("GET", "/api/panes?cols=120&rows=35" + query)
             self.assertEqual(status, 200)
             self.assertEqual(json.loads(body)["panes"], group)
-            self.assertEqual(tmux.call_count, expected)
-            self.assertEqual(tmux.call_args_list[0].args, ("list-clients", "-t", "=team"))
-            if expected >= 3:
-                self.assertEqual(tmux.call_args_list[1].args, ("list-panes", "-t", "team:agents"))
-                self.assertEqual(tmux.call_args_list[2].args, ("display-message", "-p", "-t", "team:agents", "#{window_width}x#{window_height}"))
-            if expected == 5:
-                self.assertEqual(tmux.call_args_list[3].args, ("resize-window", "-t", "team:agents", "-x", "120", "-y", "144"))
-                self.assertEqual(tmux.call_args_list[4].args, ("select-layout", "-t", "team:agents", "even-vertical"))
-
-    def test_browser_size_attached_client_releases_manual_size_only_once(self):
-        for mode, expected in (("manual\n", 4), ("latest\n", 2)):
-            with self.subTest(mode=mode), patch.object(web, "tmux", side_effect=["client\n", mode, "", ""]) as tmux, patch.object(web, "snapshot", side_effect=lambda pane: pane):
-                self.assertEqual(self.request("GET", "/api/panes?cols=120&rows=35")[0], 200)
-            self.assertEqual(tmux.call_count, expected)
-            self.assertEqual(tmux.call_args_list[1].args, ("show-options", "-wv", "-t", "team:agents", "window-size"))
-            if expected == 4:
-                self.assertEqual(tmux.call_args_list[2].args, ("set", "-w", "-t", "team:agents", "-u", "window-size"))
-                self.assertEqual(tmux.call_args_list[3].args, ("select-layout", "-t", "team:agents", "main-vertical"))
+            panes.assert_called_once_with(None)
+            self.assertEqual(fake.sizes, {"a:agents": "120x36"} if resized else {})
+            self.assertFalse(any("b:agents" in call.args for call in tmux.call_args_list))
 
     def test_browser_size_validation_and_poll_without_dimensions(self):
         for query in ("cols=10&rows=35", "cols=120&rows=abc", "cols=501&rows=35", "cols=120&rows=301", "cols=120&rows=4", "cols=120", "rows=35", "cols=&rows=35"):
@@ -131,18 +226,17 @@ class WebTests(unittest.TestCase):
     def test_browser_size_tmux_failures_leave_poll_available(self):
         group = [dict(id="%0", session="team"), dict(id="%1", session="other")]
         for index, failure in enumerate((subprocess.CalledProcessError(1, "tmux"), subprocess.TimeoutExpired("tmux", 5), OSError("tmux unavailable"))):
-            with self.subTest(failure=failure), patch.object(web, "panes", return_value=group), patch.object(web, "tmux", side_effect=["", "%1\n", "80x24\n", failure, "client\n", "latest\n"]) as tmux, patch.object(web, "snapshot", side_effect=lambda pane: pane), contextlib.redirect_stderr(io.StringIO()) as error:
-                status, body = self.request("GET", "/api/panes?cols=120&rows=35")
+            fake = SizingTmux(group)
+            def failing(command, *args):
+                if command == "resize-window":
+                    raise failure
+                return fake(command, *args)
+            with self.subTest(failure=failure), patch.object(web, "panes", return_value=group), patch.object(web, "tmux", side_effect=failing), patch.object(web, "snapshot", side_effect=lambda pane, *args: pane), contextlib.redirect_stderr(io.StringIO()) as error:
+                status, body = self.request("GET", "/api/panes?cols=120&rows=35&session=other&pane=%251")
             self.assertEqual(status, 200)
             self.assertEqual(json.loads(body)["panes"], group)
-            self.assertEqual(tmux.call_count, 6)
             self.assertEqual(len(error.getvalue().splitlines()), int(index == 0))
         self.assertEqual(self.server.resize_errors, {"other"})
-
-    def test_browser_size_caps_total_window_height(self):
-        with patch.object(web, "tmux", side_effect=["", "%0\n" * 40, "80x24\n", "", ""]) as tmux, patch.object(web, "snapshot", side_effect=lambda pane: pane):
-            self.assertEqual(self.request("GET", "/api/panes?cols=120&rows=300")[0], 200)
-        self.assertEqual(tmux.call_args_list[3].args, ("resize-window", "-t", "team:agents", "-x", "120", "-y", "10000"))
 
     def test_real_browser_measurement_uses_output_line_height(self):
         chrome = shutil.which("google-chrome") or shutil.which("chromium")
@@ -152,7 +246,7 @@ class WebTests(unittest.TestCase):
         span = source[source.index("const cellMeasure ="):source.index("let dragging =")]
         measure = source[source.index("async function refresh() {"):source.index('    const {panes, initial, version} = await api("/api/panes"')]
         script = '''const output = document.querySelector('.output');
-const cards = new Map([['active', {id: '%2', lines: 1000, el: {hidden: false, querySelector: () => output}}]]);
+const cards = new Map([['active', {id: '%2', lines: 1000, latest: {session: 'team'}, el: {hidden: false, querySelector: () => output}}]]);
 let refreshTimer, refreshing = false, refreshRequested = false;
 function currentPane() {return 'active';}
 ''' + span + measure + '''return parameters;} catch (error) {throw error;}}
@@ -178,6 +272,7 @@ refresh().then(parameters => {document.querySelector('#result').textContent = JS
             self.assertAlmostEqual(result["lineHeight"], 20.8, delta=0.02)
             self.assertAlmostEqual(result["height"], result["lineHeight"], delta=0.02)
             self.assertIn("rows=20", result["parameters"].split("&"))
+            self.assertIn("session=team", result["parameters"].split("&"))
 
     def test_real_tmux_browser_size_gives_each_pane_exact_content_dimensions(self):
         socket = "peon-web-size-check-" + str(os.getpid())
@@ -191,17 +286,69 @@ refresh().then(parameters => {document.querySelector('#result').textContent = JS
                 tmux("split-window", "-t", session + ":agents")
                 tmux("select-layout", "-t", session + ":agents", "tiled")
             group = [dict(id=pane, session=session) for pane in tmux("list-panes", "-t", session + ":agents", "-F", "#{pane_id}").splitlines()]
-            with patch.object(web, "panes", return_value=group), patch.object(web, "tmux", side_effect=tmux), patch.object(web, "snapshot", side_effect=lambda pane: pane):
-                self.assertEqual(self.request("GET", "/api/panes?cols=120&rows=35")[0], 200)
-            self.assertEqual(tmux("list-panes", "-t", session + ":agents", "-F", "#{pane_width}x#{pane_height}").splitlines(), ["120x35"] * 4)
+            with patch.object(web, "panes", return_value=group), patch.object(web, "tmux", side_effect=tmux), patch.object(web, "snapshot", side_effect=lambda pane, *args: pane):
+                for pane, cols, rows in ((group[1]["id"], 120, 35), (group[-1]["id"], 90, 40)):
+                    query = f"/api/panes?cols={cols}&rows={rows}&session={session}&pane=" + pane.replace("%", "%25")
+                    self.assertEqual(self.request("GET", query)[0], 200)
+                    self.assertEqual(tmux("display-message", "-p", "-t", pane, "#{pane_width}x#{pane_height}").strip(), f"{cols}x{rows}")
+                self.assertEqual(tmux("display-message", "-p", "-t", group[1]["id"], "#{pane_width}x#{pane_height}").strip(), "120x35")
+            self.assertEqual(len(tmux("list-windows", "-t", session).splitlines()), 4)
         finally:
             subprocess.run(["tmux", "-L", socket, "kill-session", "-t", "=" + session], capture_output=True, timeout=5)
+
+    def test_real_tmux_restore_keeps_pane_order_with_nonzero_base_index(self):
+        socket = "peon-web-restore-check-" + str(os.getpid())
+        session = "browser-restore-check"
+        def tmux(*args):
+            return subprocess.run(["tmux", "-L", socket, "-f", "/dev/null", *args], capture_output=True, text=True, timeout=5, check=True).stdout
+        with tempfile.TemporaryDirectory() as directory:
+            fake = Path(directory) / "tmux"
+            fake.write_text('#!/bin/sh\ncase "$1" in attach|switch-client) exit 0 ;; esac\nexec "$REAL_TMUX" -L "$RESTORE_SOCKET" -f /dev/null "$@"\n')
+            fake.chmod(0o755)
+            for restore in ("browser", "terminal"):
+                for custom_order in (False, True):
+                    with self.subTest(restore=restore, custom_order=custom_order):
+                        try:
+                            tmux("new-session", "-d", "-s", session, "-n", "agents", "-x", "120", "-y", "100")
+                            tmux("set-option", "-w", "-t", session + ":agents", "pane-base-index", "5")
+                            for _ in range(2):
+                                tmux("split-window", "-t", session + ":agents")
+                                tmux("select-layout", "-t", session + ":agents", "tiled")
+                            order = tmux("list-panes", "-t", session + ":agents", "-F", "#{pane_id}").splitlines()
+                            if custom_order:
+                                tmux("swap-pane", "-d", "-s", order[0], "-t", order[-1])
+                                order = tmux("list-panes", "-t", session + ":agents", "-F", "#{pane_id}").splitlines()
+                            group = [dict(id=pane, session=session) for pane in order]
+                            query = "/api/panes?cols=100&rows=35&session=" + session + "&pane=" + order[1].replace("%", "%25")
+                            with patch.object(web, "panes", return_value=group), patch.object(web, "tmux", side_effect=tmux), patch.object(web, "snapshot", side_effect=lambda pane, *args: pane):
+                                self.assertEqual(self.request("GET", query)[0], 200)
+                            self.assertEqual(len(tmux("list-windows", "-t", session).splitlines()), 3)
+                            if restore == "browser":
+                                def attached(command, *args):
+                                    return "client" if command == "list-clients" else tmux(command, *args)
+                                with patch.object(web, "panes", return_value=group), patch.object(web, "tmux", side_effect=attached), patch.object(web, "snapshot", side_effect=lambda pane, *args: pane):
+                                    self.assertEqual(self.request("GET", query)[0], 200)
+                            else:
+                                master, slave = pty.openpty()
+                                try:
+                                    environment = dict(os.environ, PATH=directory + os.pathsep + os.environ.get("PATH", ""), REAL_TMUX=shutil.which("tmux"), RESTORE_SOCKET=socket, TMUX="")
+                                    result = subprocess.run(["bash", "-ec", 'source "$1/lib/session.sh"; goto_session "$2"', "bash", str(ROOT), session], stdin=slave, capture_output=True, text=True, timeout=5, env=environment, start_new_session=True)
+                                    self.assertEqual(result.returncode, 0, result.stderr)
+                                finally:
+                                    os.close(slave)
+                                    os.close(master)
+                            self.assertEqual(tmux("list-panes", "-t", session + ":agents", "-F", "#{pane_id}").splitlines(), order)
+                            self.assertEqual(tmux("list-panes", "-t", session + ":agents", "-F", "#{pane_index}").splitlines(), ["5", "6", "7"])
+                            self.assertEqual(len(tmux("list-windows", "-t", session).splitlines()), 1)
+                            self.assertEqual(tmux("show-options", "-qv", "-t", session, "@peon_pane_order"), "")
+                        finally:
+                            subprocess.run(["tmux", "-L", socket, "kill-session", "-t", "=" + session], capture_output=True, timeout=5)
 
     def test_terminal_attach_unsets_browser_size_before_attach_or_switch(self):
         with tempfile.TemporaryDirectory() as directory:
             fake = Path(directory) / "tmux"
             log = Path(directory) / "calls"
-            fake.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$TEST_LOG"\ncase "$1" in\nshow-options) printf "%s\\n" "$TEST_MODE" ;;\nset|select-layout) exit "$TEST_FAILURE" ;;\nesac\n')
+            fake.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$TEST_LOG"\ncase "$1" in\nshow-options) case "$*" in *window-size) printf "%s\\n" "$TEST_MODE" ;; esac ;;\nset|set-option|select-layout) exit "$TEST_FAILURE" ;;\nesac\n')
             fake.chmod(0o755)
             master, slave = pty.openpty()
             try:
@@ -210,9 +357,12 @@ refresh().then(parameters => {document.querySelector('#result').textContent = JS
                     environment = dict(os.environ, PATH=directory + os.pathsep + os.environ.get("PATH", ""), TEST_LOG=str(log), TMUX=attached, TEST_MODE=mode, TEST_FAILURE=failure)
                     result = subprocess.run(["bash", "-ec", 'source "$1/lib/session.sh"; goto_session team', "bash", str(ROOT)], stdin=slave, capture_output=True, text=True, timeout=5, env=environment, start_new_session=True)
                     self.assertEqual(result.returncode, 0, result.stderr)
-                    expected = ["show-options -wv -t team:agents window-size"]
+                    expected = ["show-options -qv -t team @peon_pane_order", "list-panes -s -t =team -F #{pane_id}",
+                                "show-options -wv -t team:agents window-size"]
                     if mode == "manual":
-                        expected += ["set -w -t team:agents -u window-size", "select-layout -t team:agents main-vertical"]
+                        expected += ["set -w -t team:agents -u window-size", "set-option -w -t team:agents main-pane-width 60%",
+                                     "select-layout -t team:agents main-vertical"]
+                    expected += ["set-option -u -t team @peon_pane_order"]
                     self.assertEqual(log.read_text().splitlines(), expected + [action + " -t =team"])
             finally:
                 os.close(slave)

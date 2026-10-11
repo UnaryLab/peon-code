@@ -273,6 +273,7 @@ swapForm.onsubmit = async event => {
   }
 };
 function renderButtons(card) {
+  const following = [...card.el.querySelectorAll('.output')].filter(output => !card.el.hidden && output.scrollHeight - output.scrollTop - output.clientHeight < 40);
   card.el.querySelector('.prompt-buttons').replaceChildren(...actionButtons.map(action => {
     const button = document.createElement('button');
     button.type = 'button'; button.textContent = action.name;
@@ -281,6 +282,10 @@ function renderButtons(card) {
     button.onclick = () => send(card, 'send', action.prompt, false);
     return button;
   }));
+  for (const output of following) {
+    output.scrollTop = output.scrollHeight;
+    output.parentElement.outputScrollTop = output.scrollTop;
+  }
 }
 function feedback(card, message, error = false) {
   card.el.querySelector('.feedback').textContent = message;
@@ -375,13 +380,37 @@ function updateKeys(card) {
   });
   card.el.querySelector('.key-shortcuts').replaceChildren(...buttons);
 }
+function saveScreens(card, remove = false) {
+  clearTimeout(card.screensTimer);
+  card.screensTimer = null;
+  try {
+    if (remove) {
+      if (![...cards.values()].some(other => other !== card && other.screensKey === card.screensKey)) localStorage.removeItem(card.screensKey);
+      return;
+    }
+    const screens = [...card.el.querySelectorAll('.screen')].map(screen => {
+      const output = screen.querySelector('.output');
+      if (!card.el.hidden && !('savedAnchor' in screen)) screen.anchor = output.scrollHeight - output.scrollTop - output.clientHeight < 40 ? null : scrollAnchor(output)?.anchor || null;
+      return {anchor: screen.anchor || null};
+    });
+    if (card.stack === 'vertical' && screens.length === 1 && !screens[0].anchor) localStorage.removeItem(card.screensKey);
+    else localStorage.setItem(card.screensKey, JSON.stringify({stack: card.stack, screens}));
+  } catch {}
+}
+window.addEventListener('pagehide', () => {
+  for (const card of cards.values()) if (card.screensTimer) saveScreens(card);
+});
 function wireScreen(card, screen) {
   const output = screen.querySelector('.output');
   screen.outputScrollTop = output.scrollTop;
   output.onscroll = () => {
     if (card.el.hidden || card.closed) return;
     const scrollingUp = output.scrollTop < screen.outputScrollTop;
+    if (output.scrollTop !== screen.outputScrollTop) screen.anchorRemainder = 0;
     screen.outputScrollTop = output.scrollTop;
+    screen.anchor = output.scrollHeight - output.scrollTop - output.clientHeight < 40 ? null : scrollAnchor(output)?.anchor || null;
+    clearTimeout(card.screensTimer);
+    card.screensTimer = setTimeout(() => saveScreens(card), 300);
     if ([...card.el.querySelectorAll('.output')].every(other => other.scrollHeight - other.scrollTop - other.clientHeight < 40)) card.lines = 1000;
     else if (scrollingUp && output.scrollTop < 200 && !card.selected && getSelection().isCollapsed && card.latest?.history > card.lines && card.latest.capturedLines === card.lines && card.lines < 200000) {
       card.lines += 1000;
@@ -410,27 +439,37 @@ function createCard(pane) {
   el.dataset.pane = pane.id;
   el.dataset.key = paneKey(pane);
   const card = {el, id: pane.id, key: paneKey(pane), stack: 'vertical', lines: 1000, fullHistory: false, selected: '', selectionRevision: 0, draftRevision: 0, busy: false, closed: false, unread: false, needsAnswer: false, boxText: '', boxSince: 0, waitingText: false, latest: null, rendered: null, keysOpen: false};
+  card.screensKey = 'peon-screens:' + pane.session + '/' + pane.name;
+  let saved;
+  try {
+    const value = JSON.parse(localStorage.getItem(card.screensKey));
+    if (value && ['vertical', 'horizontal'].includes(value.stack) && Array.isArray(value.screens) && value.screens.length && value.screens.every(screen => screen && (screen.anchor === null || (screen.anchor && typeof screen.anchor.text === 'string' && Number.isFinite(screen.anchor.pixelOffset) && Number.isInteger(screen.anchor.index) && Number.isInteger(screen.anchor.lineCount))))) saved = value;
+  } catch {}
   const stackOrder = el.querySelector('.stack-order');
-  stackOrder.onclick = () => {
-    const positions = [...el.querySelectorAll('.output')].map(output => ({output, atEnd: output.scrollHeight - output.scrollTop - output.clientHeight < 40, top: output.scrollTop, fromBottom: output.scrollHeight - output.scrollTop}));
-    card.stack = card.stack === 'vertical' ? 'horizontal' : 'vertical';
+  const updateStack = () => {
     el.querySelector('.screens').classList.toggle('horizontal', card.stack === 'horizontal');
     stackOrder.textContent = card.stack === 'horizontal' ? '↔' : '↕';
     stackOrder.setAttribute('aria-label', card.stack === 'horizontal' ? 'Screens side by side, switch to vertical' : 'Screens stacked vertically, switch to side by side');
+  };
+  stackOrder.onclick = () => {
+    const positions = [...el.querySelectorAll('.output')].map(output => ({output, atEnd: output.scrollHeight - output.scrollTop - output.clientHeight < 40, top: output.scrollTop, fromBottom: output.scrollHeight - output.scrollTop}));
+    card.stack = card.stack === 'vertical' ? 'horizontal' : 'vertical';
+    updateStack();
     for (const {output, atEnd, top, fromBottom} of positions) {
       output.scrollTop = atEnd ? output.scrollHeight : card.fullHistory ? top : output.scrollHeight - fromBottom;
       output.parentElement.outputScrollTop = output.scrollTop;
     }
+    saveScreens(card);
     scheduleRefresh();
   };
   wireScreen(card, el.querySelector('.screen'));
-  el.querySelector('.add-screen').onclick = () => {
+  const addScreen = (persist = true) => {
     const positions = [...el.querySelectorAll('.output')].map(output => ({output, atEnd: output.scrollHeight - output.scrollTop - output.clientHeight < 40, top: output.scrollTop, fromBottom: output.scrollHeight - output.scrollTop}));
     const screen = el.querySelector('.screen').cloneNode(true);
     const close = document.createElement('button');
     close.type = 'button'; close.className = 'close-screen'; close.textContent = 'x';
     close.setAttribute('aria-label', 'Close screen'); close.dataset.tip = 'Close this screen';
-    close.onclick = () => { screen.remove(); el.querySelector('.output').focus(); scheduleRefresh(); };
+    close.onclick = () => { screen.remove(); el.querySelector('.output').focus(); saveScreens(card); scheduleRefresh(); };
     screen.append(close);
     el.querySelector('.screens').append(screen);
     wireScreen(card, screen);
@@ -441,8 +480,14 @@ function createCard(pane) {
     const output = screen.querySelector('.output');
     output.scrollTop = output.scrollHeight;
     screen.outputScrollTop = output.scrollTop;
-    scheduleRefresh();
+    if (persist) { saveScreens(card); scheduleRefresh(); }
   };
+  el.querySelector('.add-screen').onclick = () => addScreen();
+  if (saved) {
+    card.stack = saved.stack; updateStack();
+    for (let i = 1; i < saved.screens.length; i++) addScreen(false);
+    [...el.querySelectorAll('.screen')].forEach((screen, i) => { screen.savedAnchor = screen.anchor = saved.screens[i].anchor; });
+  }
   const keysToggle = el.querySelector('.keys-toggle');
   keysToggle.onclick = () => {
     card.keysOpen = !card.keysOpen;
@@ -500,6 +545,7 @@ function createCard(pane) {
   };
   el.querySelector('.discard').onclick = () => {
     if (card.busy) return;
+    saveScreens(card, true);
     el.remove(); cards.delete(card.key);
     reconcileNavigation(navigation.panes.filter(pane => paneKey(pane) !== card.key));
   };
@@ -532,23 +578,79 @@ document.addEventListener('selectionchange', () => {
     }
   }
 });
+function scrollAnchor(output, saved) {
+  const viewport = output.getBoundingClientRect(), style = getComputedStyle(output);
+  const range = document.createRange();
+  function lineTop(offset) {
+    const walker = document.createTreeWalker(output, NodeFilter.SHOW_TEXT);
+    let node;
+    while ((node = walker.nextNode())) {
+      if (offset < node.length) {
+        range.setStart(node, offset); range.setEnd(node, offset + 1);
+        return range.getBoundingClientRect().top;
+      }
+      offset -= node.length;
+    }
+    return null;
+  }
+  let anchor = saved;
+  if (!anchor) {
+    const x = viewport.left + parseFloat(style.paddingLeft) + 1, y = viewport.top + parseFloat(style.paddingTop) + 1;
+    const caret = document.caretPositionFromPoint?.(x, y) || document.caretRangeFromPoint?.(x, y);
+    const node = caret?.offsetNode || caret?.startContainer;
+    if (!node || !output.contains(node)) return null;
+    range.selectNodeContents(output); range.setEnd(node, caret.offset ?? caret.startOffset);
+    const text = output.textContent, offset = range.toString().length;
+    let start = text.slice(0, offset).lastIndexOf('\n') + 1;
+    let index = text.slice(0, start).split('\n').length - 1;
+    const oldLines = text.split('\n'), windows = oldLines.map((_, i) => oldLines.slice(i, i + 3).join('\n')), counts = new Map();
+    for (const window of windows) counts.set(window, (counts.get(window) || 0) + 1);
+    let top;
+    for (; index < oldLines.length; index++) {
+      top = lineTop(start);
+      if (top === null || top >= viewport.bottom - parseFloat(style.paddingBottom)) return null;
+      if (oldLines[index].trim() && counts.get(windows[index]) === 1) break;
+      start += oldLines[index].length + 1;
+    }
+    if (index === oldLines.length) return null;
+    anchor = {text: oldLines.slice(index, index + 3).join('\n'), pixelOffset: top - viewport.top, index, lineCount: oldLines.length};
+  }
+  return {anchor, restore() {
+    const following = anchor.text.split('\n');
+    const lines = output.textContent.split('\n'), matches = i => following.every((line, j) => lines[i + j] === line);
+    const expected = anchor.index + lines.length - anchor.lineCount;
+    let match = -1;
+    for (let i = 0; i < lines.length; i++) if (matches(i) && (match < 0 || Math.abs(i - expected) < Math.abs(match - expected))) match = i;
+    if (match < 0) return false;
+    const top = lineTop(lines.slice(0, match).join('\n').length + (match ? 1 : 0));
+    if (top === null) return false;
+    // Carry fractions because some browsers round scrollTop to whole pixels.
+    const target = output.scrollTop + top - output.getBoundingClientRect().top - anchor.pixelOffset + (output.parentElement.anchorRemainder || 0);
+    output.scrollTop = target;
+    output.parentElement.anchorRemainder = target - output.scrollTop;
+    return true;
+  }};
+}
 function updateOutput(card) {
   if (!card.latest || card.latest.capturedLines < card.lines || card.selected || dragging || card.el.hidden) return;
   const key = JSON.stringify([card.latest.output, card.latest.defaultStyle]);
   const fullHistory = card.latest.history <= card.latest.capturedLines;
-  const preserveTop = card.fullHistory && fullHistory;
   card.fullHistory = fullHistory;
   if (key === card.rendered) return;
   const outputs = [...card.el.querySelectorAll('.output')];
   for (const [index, output] of outputs.entries()) {
+    const screen = output.parentElement, restoring = 'savedAnchor' in screen;
     const atEnd = output.scrollHeight - output.scrollTop - output.clientHeight < 40;
-    const oldScrollTop = output.scrollTop;
+    const anchor = restoring ? screen.savedAnchor && scrollAnchor(output, screen.savedAnchor) : atEnd ? null : scrollAnchor(output);
     const fromBottom = output.scrollHeight - output.scrollTop;
     if (index === 0) renderAnsi(output, card.latest.output, card.latest.defaultStyle);
     else output.replaceChildren(...[...outputs[0].childNodes].map(node => node.cloneNode(true)));
-    if (atEnd) output.scrollTop = output.scrollHeight;
-    else output.scrollTop = preserveTop ? oldScrollTop : output.scrollHeight - fromBottom;
-    output.parentElement.outputScrollTop = output.scrollTop;
+    if (restoring ? !anchor?.restore() : atEnd || !anchor?.restore()) {
+      output.scrollTop = restoring || atEnd ? output.scrollHeight : output.scrollHeight - fromBottom;
+      screen.anchorRemainder = 0;
+    }
+    delete screen.savedAnchor;
+    screen.outputScrollTop = output.scrollTop;
   }
   card.rendered = key;
 }
@@ -570,6 +672,8 @@ async function refresh() {
       const rows = Math.floor((output.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom)) / cell.height);
       if (cols >= 20 && cols <= 500 && rows >= 5 && rows <= 300) {
         query.set('cols', cols); query.set('rows', rows);
+        query.set('session', visible.latest.session);
+        query.set('pane', visible.id);
       }
     }
     const parameters = query.toString();
@@ -620,7 +724,7 @@ async function refresh() {
           card.boxText = ''; card.boxSince = 0; card.waitingText = false;
           setSelection(card, card.selected);
           panes.push({...card.latest, closed: true});
-        } else { card.el.remove(); cards.delete(key); }
+        } else { saveScreens(card, true); card.el.remove(); cards.delete(key); }
       }
     }
     document.querySelector('#empty').hidden = !!panes.length;

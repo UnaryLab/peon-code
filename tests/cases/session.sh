@@ -163,3 +163,58 @@ fake_bin=$(make_fake_commands)
 test_session_ownership "$fake_bin"
 test_detach "$fake_bin"
 echo "session: PASS"
+
+# shellcheck disable=SC2317 # goto_session calls the private terminal fixture.
+test_goto_session_joins_windows() (
+  local bin_dir="$TEST_DIR/attach-bin" log="$TEST_DIR/attach.log" saved_order live_order expected_order attached action
+  mkdir -p "$bin_dir"
+  cat >"$bin_dir/tmux" <<'TMUX'
+#!/bin/sh
+printf '%s\n' "$*" >>"$ATTACH_LOG"
+case $1 in
+  show-options) case "$*" in *window-size) printf 'manual\n' ;; *) printf '%s\n' "$SAVED_ORDER" ;; esac ;;
+  list-panes) case "$*" in *' -s '*) printf '%%10\n%%2\n%%1\n' ;; *) cat "$ATTACH_ORDER" ;; esac ;;
+  display-message)
+    if grep -Fxq -- "$4" "$ATTACH_ORDER"; then printf 'agents\n'; else printf 'p%s\n' "${4#%}"; fi ;;
+  join-pane)
+    awk -v pane="$4" 'NR == 1 {print; print pane; next} {print}' "$ATTACH_ORDER" >"$ATTACH_ORDER.tmp"
+    mv "$ATTACH_ORDER.tmp" "$ATTACH_ORDER" ;;
+  swap-pane)
+    awk -v source="$4" -v target="$6" '{if ($0 == source) print target; else if ($0 == target) print source; else print}' "$ATTACH_ORDER" >"$ATTACH_ORDER.tmp"
+    mv "$ATTACH_ORDER.tmp" "$ATTACH_ORDER" ;;
+esac
+TMUX
+  chmod +x "$bin_dir/tmux"
+  # shellcheck source=lib/session.sh
+  source "$ROOT/lib/session.sh"
+  # Exercise the TTY path without needing an interactive test runner.
+  function [ { case "$*" in '-t 0 ]') return 0 ;; '! -t 0 ]') return 1 ;; *) builtin [ "$@" ;; esac; }
+  export ATTACH_LOG="$log" SAVED_ORDER ATTACH_ORDER="$TEST_DIR/attach-order"
+  for saved_order in '%1 %2 %10' '%10 %1 %2' '%1 %99 %2 %10' '%99 %10 %1 %2' ''; do
+    SAVED_ORDER=$saved_order
+    live_order=${saved_order/'%99 '/}
+    if [ -n "$live_order" ]; then expected_order='%10 %2'; else expected_order='%2 %10'; fi
+    [ "$live_order" != '%1 %2 %10' ] || expected_order='%2 %10'
+    for attached in '' existing-client; do
+      : >"$log"
+      printf '%%1\n' >"$ATTACH_ORDER"
+      (PATH="$bin_dir:$PATH" TMUX="$attached" goto_session team)
+      [ "$(sed -n 's/^join-pane -d -s \([^ ]*\) -t team:agents$/\1/p' "$log" | tr '\n' ' ')" = "$expected_order " ] || fail 'attach joined panes in the wrong order'
+      [ "$(tr '\n' ' ' <"$ATTACH_ORDER")" = "${live_order:-%1 %2 %10} " ] || fail 'attach did not restore the true pane order'
+      assert_not_contains "$log" '%99'
+      action=attach
+      [ -z "$attached" ] || action=switch-client
+      tail -5 "$log" >"$TEST_DIR/attach-tail"
+      cat >"$TEST_DIR/attach-expected" <<EXPECTED
+set -w -t team:agents -u window-size
+set-option -w -t team:agents main-pane-width 60%
+select-layout -t team:agents main-vertical
+set-option -u -t team @peon_pane_order
+$action -t =team
+EXPECTED
+      cmp -s "$TEST_DIR/attach-tail" "$TEST_DIR/attach-expected" || fail 'attach did not restore layout before attaching'
+    done
+  done
+)
+test_goto_session_joins_windows
+echo "session join: PASS"

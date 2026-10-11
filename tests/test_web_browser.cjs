@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 (async () => {
   const url = process.argv[2]; assert(url, 'Pass a running peon-code-web launch URL');
   const token = new URL(url).hash.slice(1);
-  const browser = await chromium.launch({headless: true, chromiumSandbox: false});
+  const browser = await chromium.launch({headless: true, chromiumSandbox: false, ignoreDefaultArgs: ['--hide-scrollbars']});
   try {
     const page = await browser.newPage({viewport: {width: 1440, height: 950}});
     await page.route('**/app.js', async route => {
@@ -59,13 +59,17 @@ const assert = require('node:assert/strict');
     const output = "\x1b[38;2;200;30;40mIt's \x1b[38;5;46;48;2;10;20;30mquoted 日本語 <script>alert('x')</script>.\x1b[0m\n" +
       '\x1b[91mBright\x1b[48;5;17mBlue bg\x1b[38:2::1:2:3mColon RGB\x1b[1;3;4mStyle\x1b[0mAfter\n' + 'A line of agent output.\n'.repeat(70);
     let joinedHistory = false;
-    let paneGets = 0, paneDelay = 0, responseVersion = '2.3.4';
+    let paneGets = 0, paneDelay = 0, responseVersion = '2.3.4', sizedPane = null;
     const historyRequests = [];
     const joinedLines = Array.from({length: 60}, (_, i) => 'Logical ' + i + ' ' + 'x'.repeat(3000));
     await page.route('**/api/panes*', async route => {
       paneGets++;
       assert.equal(route.request().headers()['x-peon-token'], token);
       const query = new URL(route.request().url()).searchParams;
+      if (query.has('cols')) {
+        assert(query.has('pane'), 'Every sized poll names its pane');
+        if (sizedPane) assert.equal(query.get('pane'), sizedPane, 'Split sizing targets the viewed pane');
+      }
       const lines = Number(query.get('lines') || 1000);
       if (joinedHistory) historyRequests.push({pane: query.get('pane'), lines});
       const panes = empty ? [] : roles.filter(pane => pane.session !== dismissedSession).map(pane => ({...pane, cli: pane.cli ?? 'codex', projectDir: '/work/' + pane.session + ' project', command: pane.command ?? 'codex', output: joinedHistory && pane.id === '%3' ? joinedLines.slice(-lines / 50).join('\n') : output + revision[pane.id] + (menu[pane.id] || ''), history: joinedHistory && pane.id === '%3' ? 3000 : undefined, screen: screen[pane.id] || '', styledScreen: styledScreen[pane.id] ?? screen[pane.id] ?? '', cursorY: cursorY[pane.id] ?? -1, menu: !!menuShown[pane.id], defaultStyle: 'fg=#abcdef,bg=#123456'}));
@@ -1099,7 +1103,25 @@ const assert = require('node:assert/strict');
     await paneTab('%2').click(); await paneTab('%3').click();
     assert.equal(await card('%3').locator('.state').textContent(), 'Paused');
     await clearSelection('%3');
+    sizedPane = '%3';
     const screenOutputs = card('%3').locator('.output');
+    async function screenGrid() {
+      await page.waitForFunction(() => {
+        if (refreshing) return false;
+        clearTimeout(refreshTimer); clearTimeout(resizeTimer); return true;
+      });
+      const request = page.waitForRequest('**/api/panes*');
+      await page.evaluate(() => refresh());
+      return new URL((await request).url()).searchParams;
+    }
+    const gridSize = grid => [grid.get('cols'), grid.get('rows')];
+    const unsplitGrid = await screenGrid();
+    const singleScreenSize = await screenOutputs.first().evaluate(el => {
+      const style = getComputedStyle(el), cell = cellMeasure.getBoundingClientRect();
+      return [String(Math.floor((el.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight)) / (cell.width / cellMeasure.textContent.length))),
+              String(Math.floor((el.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom)) / cell.height))];
+    });
+    assert.deepEqual(gridSize(unsplitGrid), singleScreenSize, 'Terminal dimensions exclude the output scrollbar');
     await card('%3').locator('.add-screen').click();
     assert.equal(await screenOutputs.count(), 2);
     assert.equal(await card('%3').locator('.screen').first().locator('.close-screen').count(), 0, 'The first screen has no close button');
@@ -1109,49 +1131,122 @@ const assert = require('node:assert/strict');
     assert.equal(await screens.evaluate(el => el.classList.contains('horizontal')), false, 'Screens start in vertical order');
     const firstVertical = await screenOutputs.first().boundingBox(), secondVertical = await extraOutput.boundingBox();
     assert(secondVertical.y >= firstVertical.y + firstVertical.height - 1 && Math.abs(secondVertical.x - firstVertical.x) <= 1, 'Vertical screens stack top to bottom');
-    const verticalGrid = new URL((await page.waitForRequest('**/api/panes*')).url()).searchParams;
-    // Pause polling and pending resize refreshes so the next request comes from the order toggle.
-    await page.waitForFunction(() => {
-      if (refreshing) return false;
-      clearTimeout(refreshTimer); clearTimeout(resizeTimer); return true;
-    });
-    const horizontalRequest = page.waitForRequest('**/api/panes*');
+    const verticalGrid = await screenGrid();
+    assert(Number(verticalGrid.get('rows')) > 0 && Number(verticalGrid.get('rows')) < Number(unsplitGrid.get('rows')), 'Adding a vertical screen requests fewer terminal rows');
     await stackOrder.click();
     assert.equal(await stackOrder.getAttribute('aria-label'), 'Screens side by side, switch to vertical');
     assert(await screens.evaluate(el => el.classList.contains('horizontal')), 'The order button switches to horizontal screens');
     const firstHorizontal = await screenOutputs.first().boundingBox(), secondHorizontal = await extraOutput.boundingBox();
     assert(secondHorizontal.x >= firstHorizontal.x + firstHorizontal.width - 1 && Math.abs(secondHorizontal.y - firstHorizontal.y) <= 1, 'Horizontal screens sit side by side');
-    const horizontalGrid = new URL((await horizontalRequest).url()).searchParams;
+    const horizontalGrid = await screenGrid();
     assert(Number(horizontalGrid.get('cols')) > 0 && Number(horizontalGrid.get('cols')) < Number(verticalGrid.get('cols')), 'Horizontal order requests fewer terminal columns');
-    await page.waitForFunction(() => {
-      if (refreshing) return false;
-      clearTimeout(refreshTimer); clearTimeout(resizeTimer); return true;
-    });
-    const verticalRequest = page.waitForRequest('**/api/panes*');
+    assert.equal(horizontalGrid.get('session'), await page.evaluate(() => cards.get(currentPane()).latest.session), 'Order resize targets the visible pane session');
     await stackOrder.click();
     assert.equal(await stackOrder.getAttribute('aria-label'), 'Screens stacked vertically, switch to side by side');
     assert.equal(await screens.evaluate(el => el.classList.contains('horizontal')), false, 'The order button returns to vertical screens');
-    const restoredGrid = new URL((await verticalRequest).url()).searchParams;
-    assert.equal(restoredGrid.get('cols'), verticalGrid.get('cols'), 'Vertical order restores the terminal columns');
+    const restoredGrid = await screenGrid();
+    assert.deepEqual(gridSize(restoredGrid), gridSize(verticalGrid), 'Vertical order restores the split dimensions');
     await screenOutputs.first().evaluate(el => { el.scrollTop = el.scrollHeight; });
     await extraOutput.evaluate(el => { el.scrollTop = 0; });
     await page.waitForFunction(() => document.querySelector('.pane[data-pane="%3"] .screen:nth-child(2)').outputScrollTop === 0);
-    const screenDistance = await extraOutput.evaluate(el => el.scrollHeight - el.scrollTop - el.clientHeight);
-    assert(screenDistance > 0, 'The extra screen has output to scroll');
+    assert(await extraOutput.evaluate(el => el.scrollHeight > el.clientHeight), 'The extra screen has output to scroll');
     const previousRevision = revision['%3'], previousMenu = menu['%3'];
     const addedOutput = '\nExtra screen output.\n';
     revision['%3']++;
     menu['%3'] = (previousMenu || '') + addedOutput;
     await page.waitForFunction(text => [...document.querySelectorAll('.pane[data-pane="%3"] .output')].every(el => el.textContent.endsWith(text)), addedOutput);
     assert(await screenOutputs.first().evaluate(el => el.scrollHeight - el.scrollTop - el.clientHeight <= 1), 'The first screen follows new output at the bottom');
-    assert(await extraOutput.evaluate((el, distance) => Math.abs(el.scrollHeight - el.scrollTop - el.clientHeight - distance) <= 1, screenDistance), 'The extra screen holds its distance from the bottom');
+    assert.equal(await extraOutput.evaluate(el => el.scrollTop), 0, 'The extra screen keeps the first line in view');
     assert.equal(await screenOutputs.first().innerHTML(), await extraOutput.innerHTML(), 'Every screen has the same rendered output');
+    joinedHistory = true;
+    await page.waitForFunction(() => [...document.querySelectorAll('.pane[data-pane="%3"] .output')].every(el => el.textContent.startsWith('Logical 40 ')));
+    await screenOutputs.first().evaluate(el => { el.scrollTop = el.scrollHeight; });
+    const anchorText = joinedLines[47], savedJoinedLines = joinedLines.slice();
+    const linePosition = (text, scroll = false, blankLines = 0) => extraOutput.evaluate((el, {text, scroll, blankLines}) => {
+      const node = el.querySelector('span').firstChild, range = document.createRange();
+      const offset = node.textContent.indexOf(text);
+      if (offset < 0) throw new Error('The anchored line is missing');
+      range.setStart(node, offset); range.setEnd(node, offset + 1);
+      const style = getComputedStyle(el);
+      if (scroll) el.scrollTop += range.getBoundingClientRect().top - el.getBoundingClientRect().top - parseFloat(style.paddingTop) - blankLines * parseFloat(style.lineHeight);
+      return range.getBoundingClientRect().top - el.getBoundingClientRect().top;
+    }, {text, scroll, blankLines});
+    const anchorTop = await linePosition(anchorText, true);
+    for (let step = 0; step < 4; step++) {
+      const nextLine = 'Logical ' + (60 + step) + ' ' + 'x'.repeat(3000);
+      joinedLines.shift(); joinedLines.push(nextLine); revision['%3']++;
+      await page.waitForFunction(text => [...document.querySelectorAll('.pane[data-pane="%3"] .output')].every(el => el.textContent.endsWith(text)), nextLine);
+      assert(Math.abs(await linePosition(anchorText) - anchorTop) <= 1, 'The same logical line stays at the same screen position as old lines drop');
+      assert(await screenOutputs.first().evaluate(el => el.scrollHeight - el.scrollTop - el.clientHeight <= 1), 'The first screen follows each rolling capture');
+    }
+    joinedLines.splice(0, joinedLines.length, ...Array.from({length: 100}, (_, i) => 'line ' + i + '\n\n\n\n'));
+    await screenGrid();
+    await screenOutputs.first().evaluate(el => { el.scrollTop = el.scrollHeight; });
+    const blankTop = await linePosition('line 91', true, 4);
+    assert(await extraOutput.evaluate(el => {
+      const rect = el.getBoundingClientRect(), style = getComputedStyle(el);
+      const caret = document.caretPositionFromPoint(rect.left + parseFloat(style.paddingLeft) + 1, rect.top + parseFloat(style.paddingTop) + 1);
+      const prefix = document.createRange(); prefix.selectNodeContents(el); prefix.setEnd(caret.offsetNode, caret.offset);
+      const offset = prefix.toString().length;
+      return el.textContent.slice(el.textContent.slice(0, offset).lastIndexOf('\n') + 1).split('\n')[0] === '';
+    }), 'The repeated-line case starts with a blank line at the top');
+    for (let step = 0; step < 2; step++) {
+      joinedLines.splice(0, 4);
+      joinedLines.push(...Array.from({length: 4}, (_, i) => 'line ' + (100 + step * 4 + i) + '\n\n\n\n'));
+      await screenGrid();
+      assert(Math.abs(await linePosition('line 91') - blankTop) <= 1, 'Blank lines keep the same nearby text in view after a rolling capture');
+      assert(await screenOutputs.first().evaluate(el => el.scrollHeight - el.scrollTop - el.clientHeight <= 1), 'The first screen follows output with blank lines');
+    }
+    await page.evaluate(() => { cards.get(currentPane()).lines = 3000; });
+    await screenGrid();
+    assert(Math.abs(await linePosition('line 91') - blankTop) <= 1, 'Blank lines keep the same nearby text in view when 200 older lines load');
+    joinedLines.splice(0, joinedLines.length, ...Array(100).fill('Repeated\n\n\n\n'));
+    await page.evaluate(() => { cards.get(currentPane()).lines = 1000; });
+    await screenGrid();
+    await extraOutput.evaluate(el => { el.scrollTop = 300; });
+    const repeatedDistance = await extraOutput.evaluate(el => el.scrollHeight - el.scrollTop);
+    await page.evaluate(() => { cards.get(currentPane()).lines = 3000; });
+    await screenGrid();
+    assert(await extraOutput.evaluate((el, distance) => Math.abs(el.scrollHeight - el.scrollTop - distance) <= 1, repeatedDistance), 'Output with no unique visible anchor keeps its distance from the bottom');
+    joinedLines.splice(0, joinedLines.length, ...savedJoinedLines);
+    await page.evaluate(() => { cards.get(currentPane()).lines = 1000; });
+    await screenGrid();
+    await stackOrder.click();
+    await screenOutputs.first().evaluate(el => { el.scrollTop = el.scrollHeight; });
+    await linePosition(anchorText, true);
+    const screensKey = 'peon-screens:alpha/Boss';
+    await page.waitForFunction(key => {
+      const saved = JSON.parse(localStorage.getItem(key));
+      return saved?.stack === 'horizontal' && saved.screens.length === 2 && saved.screens[0].anchor === null && saved.screens[1].anchor?.text.startsWith('Logical 47 ');
+    }, screensKey);
+    await extraOutput.evaluate(el => { el.scrollTop += 4; });
+    await page.waitForFunction(() => {
+      const output = document.querySelector('.pane[data-pane="%3"] .screen:nth-child(2) .output');
+      return output.parentElement.outputScrollTop === output.scrollTop;
+    });
+    const reloadTop = await linePosition(anchorText);
+    await page.reload();
+    await page.waitForFunction(() => [...document.querySelectorAll('.pane[data-pane="%3"] .output')].length === 2 && [...document.querySelectorAll('.pane[data-pane="%3"] .output')].every(el => el.textContent.startsWith('Logical 40 ')));
+    assert.equal(await screenOutputs.count(), 2, 'A reload restores the extra screen');
+    assert(await screens.evaluate(el => el.classList.contains('horizontal')), 'A reload restores horizontal order');
+    assert(Math.abs(await linePosition(anchorText) - reloadTop) <= 1, 'A reload restores the same text position in the copy, including a pending scroll save');
+    await promptButton('%3', 'Code summary').waitFor();
+    assert(await screenOutputs.first().evaluate(el => el.scrollHeight - el.scrollTop - el.clientHeight <= 1), 'A reload keeps the first screen at the bottom');
+    await stackOrder.click();
+    joinedHistory = false;
     await card('%3').locator('.close-screen').click();
     assert.equal(await screenOutputs.count(), 1);
     assert(await screenOutputs.first().evaluate(el => document.activeElement === el), 'Closing a screen focuses the first output');
+    assert.deepEqual(gridSize(await screenGrid()), gridSize(unsplitGrid), 'Closing a screen restores the unsplit dimensions');
+    assert.equal(await page.evaluate(key => localStorage.getItem(key), screensKey), null, 'One vertical screen at the bottom removes the saved state');
+    await page.reload();
+    await page.waitForSelector('.pane:not([hidden]) .output');
+    assert.equal(await screenOutputs.count(), 1, 'Closing the copy survives reload');
+    assert.equal(await page.evaluate(key => localStorage.getItem(key), screensKey), null, 'Reload keeps the default screen state out of storage');
     revision['%3'] = previousRevision; menu['%3'] = previousMenu;
     await page.waitForFunction(revision => document.querySelector('.pane[data-pane="%3"] .output').textContent.endsWith(String(revision)), previousRevision);
-    console.log('extra screens: PASS (add, bottom start, vertical order, horizontal order, terminal columns, independent scrolling, new output, rendered DOM, close, focus)');
+    sizedPane = null;
+    console.log('extra screens: PASS (add, bottom start, vertical order, horizontal order, per-pane terminal dimensions, independent scrolling, rolling text anchor, blank-line rolling and paging, repeated-line fallback, reload layout and anchors, storage cleanup, new output, rendered DOM, close, focus)');
     joinedHistory = true;
     const historyOutput = card('%3').locator('.output').first();
     await page.waitForFunction(() => document.querySelector('.pane[data-pane="%3"] .output').textContent.startsWith('Logical 40 '));
@@ -1206,6 +1301,7 @@ const assert = require('node:assert/strict');
     await page.setViewportSize({width: 390, height: 812});
     const mobileGrid = new URL((await resizeRequest).url()).searchParams;
     assert(Number(mobileGrid.get('cols')) > 0 && Number(mobileGrid.get('rows')) > 0);
+    assert.equal(mobileGrid.get('session'), await page.evaluate(() => cards.get(currentPane()).latest.session), 'Viewport resize targets the visible pane session');
     assert(mobileGrid.get('cols') !== desktopGrid.get('cols') || mobileGrid.get('rows') !== desktopGrid.get('rows'), 'Viewport resize requests new terminal dimensions');
     assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
     roles.find(pane => pane.id === '%3').name = longName;

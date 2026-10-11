@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 
 # Syntax-check the scripts under test before running any case file.
-for script in "$ROOT/peon-code.sh" "$ROOT/peon-code-web.sh" "$ROOT/install.sh" "$ROOT/.githooks/pre-commit" "$ROOT"/lib/*.sh "$ROOT"/lib/cli/*.sh; do
+for script in "$ROOT/peon-code.sh" "$ROOT/peon-code-web.sh" "$ROOT/install.sh" "$ROOT/.githooks/pre-commit" "$ROOT"/lib/*.sh "$ROOT"/lib/cli/*.sh "$ROOT"/tests/cases/*.sh; do
   bash -n "$script"
 done
 

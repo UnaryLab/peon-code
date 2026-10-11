@@ -98,16 +98,38 @@ cmd_list() {
 }
 
 goto_session() {
-  local session=$1
+  local session=$1 pane_order pane_id session_panes current position=1 joined=0
   # No TTY means a headless caller: build the session, print how to reach it.
   if [ ! -t 0 ]; then
     echo "peon-code: session $session is ready. Attach with: tmux attach -t $session"
     exit 0
   fi
-  if [ "$(tmux show-options -wv -t "$session":agents window-size 2>/dev/null)" = manual ]; then
+  pane_order=$(tmux show-options -qv -t "$session" @peon_pane_order 2>/dev/null) || pane_order=""
+  session_panes=$(tmux list-panes -s -t "=$session" -F '#{pane_id}')
+  if [ -z "$pane_order" ]; then
+    pane_order=$(printf '%s\n' "$session_panes" | sort -k 1.2n)
+  fi
+  pane_order=$(for pane_id in $pane_order; do
+    if printf '%s\n' "$session_panes" | grep -Fxq -- "$pane_id"; then printf '%s\n' "$pane_id"; fi
+  done)
+  for pane_id in $pane_order; do
+    if [ "$(tmux display-message -p -t "$pane_id" '#{window_name}' 2>/dev/null)" != agents ]; then
+      if tmux join-pane -d -s "$pane_id" -t "$session":agents; then joined=1; fi
+    fi
+  done
+  if [ "$joined" -eq 1 ] || [ "$(tmux show-options -wv -t "$session":agents window-size 2>/dev/null)" = manual ]; then
+    for pane_id in $pane_order; do
+      current=$(tmux list-panes -t "$session":agents -F '#{pane_id}' | sed -n "${position}p")
+      if [ -n "$current" ] && [ "$pane_id" != "$current" ]; then
+        tmux swap-pane -d -s "$pane_id" -t "$current" || true
+      fi
+      position=$((position + 1))
+    done
     tmux set -w -t "$session":agents -u window-size || true
+    tmux set-option -w -t "$session":agents main-pane-width 60% || true
     tmux select-layout -t "$session":agents main-vertical >/dev/null 2>&1 || true
   fi
+  tmux set-option -u -t "$session" @peon_pane_order || true
   if [ -n "${TMUX:-}" ]; then
     exec tmux switch-client -t "=$session"
   fi
