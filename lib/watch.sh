@@ -159,6 +159,7 @@ cmd_watch() {
   local last_beat=0 beat_time
   local created stamp ref exit_trap cleanup restart current state count launch capture hash last_hash pending
   local unwatched="" disarmed="" files="" reads="" lookups=""
+  local compacts="" compact_size compact_count new_count
   local states="" restarts="" capped=""
   session=$(session_name "${1:-}")
   threshold=${2:-250000}
@@ -250,6 +251,7 @@ cmd_watch() {
           files=$(printf '%s\n' "$files" | sed "/^$id /d")
           reads=$(printf '%s\n' "$reads" | sed "/^$id /d")
           lookups=$(printf '%s\n' "$lookups" | sed "/^$id /d")
+          compacts=$(printf '%s\n' "$compacts" | sed "/^$id /d")
           disarmed=${disarmed// $id / }
           continue
         fi
@@ -283,10 +285,28 @@ cmd_watch() {
           files=$(printf '%s\n' "$files" | sed "/^$id /d")
           files="$files"$'\n'"$id $file"
           reads=$(printf '%s\n' "$reads" | sed "/^$id /d")
+          compacts=$(printf '%s\n' "$compacts" | sed "/^$id /d")
         fi
       fi
       [ -n "$file" ] || continue
       size=$(wc -c 2>/dev/null <"$file") || continue
+      if declare -F -- "${bin}_compact_count" >/dev/null; then
+        read -r compact_size compact_count <<<"$(printf '%s\n' "$compacts" | sed -n "s|^$id ||p")"
+        if [ -z "$compact_size" ] || [ "$size" -ne "$compact_size" ]; then
+          new_count=$(cli_call "$bin" compact_count "$file") || new_count=""
+          if [[ $new_count =~ ^[0-9]+$ ]]; then
+            if [ -n "$compact_count" ] && [ "$new_count" -gt "$compact_count" ]; then
+              if [ "$(tmux show-options -pqv -t "$id" @peon_compact_owned 2>/dev/null)" = 1 ]; then
+                tmux set -pu -t "$id" @peon_compact_owned || continue
+              else
+                tmux set -pt "$id" @peon_rebrief_pending 1 || continue
+              fi
+            fi
+            compacts=$(printf '%s\n' "$compacts" | sed "/^$id /d")
+            compacts="$compacts"$'\n'"$id $size $new_count"
+          fi
+        fi
+      fi
       read -r last_size <<<"$(printf '%s\n' "$reads" | sed -n "s|^$id ||p")"
       if [ -n "$last_size" ] && { [ "$size" -eq "$last_size" ] || [ "$((beat_time - last_beat))" -lt "$min" ]; }; then
         continue

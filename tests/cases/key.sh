@@ -36,6 +36,8 @@ run_key Enter FAKE_BOX="${menu/❯/  ❯}"
 
 run_key --submit Enter FAKE_BOX='❯ half-typed text' FAKE_CURSOR='2 0'
 [ "$(grep -c -Fx 'send-keys -t %2 Enter' "$KEY_LOG")" = 1 ] || fail 'nonempty input box did not take Enter once'
+run_key --submit Enter FAKE_BOX='! echo shell-mode' FAKE_CURSOR='2 0'
+[ "$(grep -c -Fx 'send-keys -t %2 Enter' "$KEY_LOG")" = 1 ] || fail 'Claude shell command did not take Enter once'
 run_key --submit Enter
 [ "$(grep -c -Fx 'send-keys -t %2 Enter' "$KEY_LOG")" = 1 ] || fail 'submit flag did not answer a menu once'
 
@@ -69,6 +71,7 @@ assert_key_refused() {
 }
 
 assert_key_refused Enter 'not on a menu' FAKE_BOX='❯ half-typed text' FAKE_CURSOR='2 0'
+assert_key_refused Enter 'not on a menu' FAKE_BOX='! 1. echo shell-mode' FAKE_CURSOR='2 0'
 assert_key_refused Enter 'not on a menu' FAKE_BOX='❯' FAKE_CURSOR='2 0'
 assert_key_refused Enter 'not on a menu' FAKE_BOX='› 1. Quoted choice
 ❯' FAKE_CURSOR='2 1'

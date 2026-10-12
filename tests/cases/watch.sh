@@ -181,6 +181,91 @@ test_watch_pending_rebrief() (
     fail "watch sent a busy or repeated brief: $(cat "$log")"
 )
 
+test_claude_compact_count() (
+  local transcript="$TEST_DIR/compact-count.jsonl"
+  : >"$transcript"
+  [ "$(claude_compact_count "$transcript")" = 0 ] || fail 'empty transcript has compact boundaries'
+  printf '%s\n' '{"subtype":"compact_boundary"}' '{"type":"assistant"}' \
+    '{"subtype": "compact_boundary"}' >"$transcript"
+  [ "$(claude_compact_count "$transcript")" = 2 ] || fail 'compact hook missed a boundary'
+)
+
+test_watch_auto_compact() (
+  local scenario=$1 ticks=0 retry_pending=0 session="peon-watch-auto-$1-$$"
+  local transcript="$TEST_DIR/auto-$1.jsonl" log="$TEST_DIR/auto-$1.log" scans="$TEST_DIR/auto-$1-scans"
+  local SCRIPT_DIR="$TEST_DIR/auto-$1-bin" AUTO_COMPACT_FILE="$transcript" AUTO_COMPACT_LOG="$log"
+  local AUTO_COMPACT_MARK="$TEST_DIR/auto-$1-owned"
+  local threshold=1000000 PEON_WATCH_MIN=600
+  case $scenario in own|own_then_auto) threshold=100; PEON_WATCH_MIN=0 ;; esac
+  export AUTO_COMPACT_FILE AUTO_COMPACT_LOG AUTO_COMPACT_MARK
+  mkdir -p "$SCRIPT_DIR"
+  printf '%s\n' '{"subtype":"compact_boundary"}' >"$transcript"
+  : >"$log"; : >"$scans"
+  printf '0\n' >"$AUTO_COMPACT_MARK"
+  cat >"$SCRIPT_DIR/peon-code.sh" <<'FAKE_AUTO_COMPACT'
+#!/usr/bin/env bash
+echo compact >>"$AUTO_COMPACT_LOG"
+printf '1\n' >"$AUTO_COMPACT_MARK"
+printf '%s\n' '{"subtype":"compact_boundary"}' >>"$AUTO_COMPACT_FILE"
+FAKE_AUTO_COMPACT
+  chmod +x "$SCRIPT_DIR/peon-code.sh"
+  tmux() {
+    case $1 in
+      has-session)
+        ticks=$((ticks + 1))
+        if { [ "$scenario" = auto ] || [ "$scenario" = manual ]; } && [ "$ticks" -eq 2 ]; then
+          if [ "$scenario" = manual ]; then printf '1\n' >"$AUTO_COMPACT_MARK"; fi
+          printf '%s\n' '{"subtype":"compact_boundary"}' >>"$transcript"
+        elif [ "$scenario" = own_then_auto ] && [ "$ticks" -eq 3 ]; then
+          printf '%s\n' '{"subtype":"compact_boundary"}' >>"$transcript"
+        fi
+        [ "$ticks" -le 5 ]; return ;;
+      display) echo 100 ;;
+      show-options) case $* in
+        *@peon_bin*) echo claude ;;
+        *@peon_rebrief_pending*) echo "$retry_pending" ;;
+        *@peon_compact_owned*) cat "$AUTO_COMPACT_MARK" ;;
+      esac ;;
+      set) case $* in
+        *'@peon_rebrief_pending 1'*) retry_pending=1; echo "pending $ticks" >>"$log" ;;
+        *'@peon_rebrief_pending'*) retry_pending=0; echo "cleared $ticks" >>"$log" ;;
+        *'@peon_compact_owned'*) printf '0\n' >"$AUTO_COMPACT_MARK"; echo "owned cleared $ticks" >>"$log" ;;
+      esac ;;
+    esac
+    return 0
+  }
+  session_name() { echo "$1"; }
+  list_agent_panes() { printf '%%0 lead\n'; }
+  last_thread_file() { echo "$transcript"; }
+  context_tokens() {
+    if [ "$scenario" = own_then_auto ] || { [ "$scenario" = own ] && [ "$ticks" -eq 1 ]; }; then echo 200; else echo 50; fi
+  }
+  # shellcheck disable=SC2317,SC2329 # Provider dispatch calls this optional hook.
+  claude_compact_count() {
+    echo "$ticks" >>"$scans"
+    grep -c '"subtype":"compact_boundary"' "$1" || [ "$?" -eq 1 ]
+  }
+  pane_is_busy() { [ "$ticks" -lt 4 ]; }
+  wait_pane_settled() { [ "$2" = 10 ]; }
+  rebrief_pane() { echo "brief $ticks" >>"$log"; }
+  watch_note() { :; }
+  sleep() { :; }
+  cmd_watch "$session" "$threshold"
+  local expected_scans expected_log
+  expected_scans=$(printf '1\n2\n')
+  if [ "$scenario" = own_then_auto ]; then expected_scans=$(printf '1\n2\n3\n'); fi
+  [ "$(cat "$scans")" = "$expected_scans" ] || fail 'compact count was not gated by file size'
+  if [ "$scenario" = auto ]; then
+    [ "$(cat "$log")" = "$(printf 'pending 2\nbrief 4\ncleared 4\n')" ] || fail "auto compaction did not rebrief once idle: $(cat "$log")"
+  elif [ "$scenario" = own ]; then expected_log=$(printf 'compact\nowned cleared 2\n')
+  elif [ "$scenario" = manual ]; then expected_log='owned cleared 2'
+  else expected_log=$(printf 'compact\nowned cleared 2\npending 3\nbrief 4\ncleared 4\n'); fi
+  if [ "$scenario" != auto ]; then
+    [ "$(cat "$log")" = "$expected_log" ] || fail "compaction ownership was not consumed correctly: $(cat "$log")"
+    [ "$(cat "$AUTO_COMPACT_MARK")" = 0 ] || fail 'compact ownership mark was not cleared'
+  fi
+)
+
 test_watch_busy_compact_retry() (
   local session="peon-watch-compact-retry-$$" ticks=0 transcript="$TEST_DIR/watch-compact-retry.jsonl"
   local log="$TEST_DIR/watch-compact-retry.log" reads_log="$TEST_DIR/watch-compact-retry-reads"
@@ -712,6 +797,11 @@ fake_bin=$(make_fake_commands)
 test_context_tokens
 test_watch_loop
 test_watch_pending_rebrief
+test_claude_compact_count
+test_watch_auto_compact auto
+test_watch_auto_compact own
+test_watch_auto_compact manual
+test_watch_auto_compact own_then_auto
 test_watch_busy_compact_retry
 test_watch_usage
 for bin in codex claude; do

@@ -32,7 +32,7 @@ test_cli_provider_functions() (
       claude|codex|copilot)
         [ -n "$marker" ] || { echo "FAIL: $provider has no prompt marker" >&2; exit 1; } ;;
     esac
-    for char in '.' '[' ']' '(' ')' '{' '}' '*' '+' '?' '^' '$' "\\" '|'; do
+    for char in '.' '[' ']' '(' ')' '{' '}' '*' '+' '?' '^' '$' "\\"; do
       case $marker in
         *"$char"*) echo "FAIL: $provider prompt marker contains $char" >&2; exit 1 ;;
       esac

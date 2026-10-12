@@ -54,6 +54,7 @@ cmd_msg() {
         1) echo "peon-code: no message sent to $name $id: it is in copy mode" >&2 ;;
         2) echo "peon-code: no message sent to $name $id: it draws no prompt marker peon-code knows, so peon-code cannot message it" >&2 ;;
         3) echo "peon-code: no message sent to $name $id: it is on a dialog or a menu" >&2 ;;
+        5) echo "peon-code: skipped $id: it is in shell mode" >&2 ;;
         *) echo "peon-code: no message sent to $name $id: its input box holds typed text" >&2 ;;
       esac
       unsent=$((unsent + 1)); continue
@@ -216,7 +217,7 @@ key_locked() {
     [ "$rc" -ne 2 ] || die "no $name sent: cannot read input box in pane $pane"
     if [ "$rc" -ne 0 ]; then
       [ "$submit" = 1 ] || die "no Enter sent: pane $pane is not on a menu"
-      box=$(pane_box_text "$pane") || die "no Enter sent: cannot read input box in pane $pane"
+      box=$(pane_box_text "$pane") || [ "$?" -eq 5 ] || die "no Enter sent: cannot read input box in pane $pane"
       [ -n "$box" ] || die "no Enter sent: nothing to submit"
     fi
   fi
@@ -255,6 +256,7 @@ send_locked() {
       2) die "pane $pane draws no prompt marker peon-code knows, so peon-code cannot message it" ;;
       3) reason="pane $pane is on a dialog or a menu" ;;
       4) if [ "$append" = 1 ]; then reason=""; else reason="target box busy"; fi ;;
+      5) die "skipped $pane: it is in shell mode" ;;
       *) reason="target box busy" ;;
     esac
     [ -n "$reason" ] || break
@@ -337,6 +339,7 @@ rebrief_locked() {
   fi
   box=$(pane_box_text "$id") || case $? in
     2) echo "peon-code: no brief sent to $name $id: it draws no prompt marker peon-code knows" >&2; return 1 ;;
+    5) echo "peon-code: skipped $id: it is in shell mode" >&2; return 1 ;;
     *) return 3 ;;
   esac
   [ -z "$box" ] || return 3
@@ -920,13 +923,18 @@ slash_locked() {
   fi
   box=$(pane_box_text "$id") || case $? in
     2) echo "peon-code: skipped $id: it draws no prompt marker peon-code knows" >&2; return 5 ;;
+    5) echo "peon-code: skipped $id: it is in shell mode" >&2; return 5 ;;
     *) echo "peon-code: skipped $id: it is on a dialog or a menu" >&2; return 5 ;;
   esac
   if [ -n "$box" ]; then
     echo "peon-code: skipped $id: its input box holds typed text" >&2
     return 5
   fi
+  if [ "$slash" = /compact ]; then
+    tmux set -pt "$id" @peon_compact_owned 1 || return 5
+  fi
   if ! printf '%s' "$slash" | paste_only "$id"; then
+    if [ "$slash" = /compact ]; then tmux set -pu -t "$id" @peon_compact_owned || true; fi
     echo "peon-code: skipped $id: tmux refused the paste" >&2
     return 5
   fi
@@ -936,9 +944,12 @@ slash_locked() {
     box=$(pane_box_text "$id") || box=""
     [ "$box" = "$slash" ] || continue
     pane_takes_keys "$id" || break
-    tmux send-keys -t "$id" Enter || return 1
+    tmux send-keys -t "$id" Enter || break
     submitted=1
     break
   done
+  if [ "$submitted" -eq 0 ] && [ "$slash" = /compact ]; then
+    tmux set -pu -t "$id" @peon_compact_owned || true
+  fi
   [ "$submitted" -eq 1 ]
 }

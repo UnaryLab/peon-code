@@ -8,10 +8,10 @@ CASE_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 # the box, the cursor sits on it, and the wanted text is what pane_box_text
 # returns for it.
 assert_box() {
-  local what=$1 want=$2 cap=$3 got
+  local what=$1 want=$2 cap=$3 expected=${4:-0} got rc=0
   got=$(FAKE_TMUX_CAPTURE="$cap" PATH="$BOX_BIN:$PATH" \
-    bash -c 'source "$1/lib/input.sh"; pane_box_text %9' _ "$ROOT") ||
-    fail "pane_box_text failed on $what"
+    bash -c 'source "$1/lib/input.sh"; pane_box_text %9' _ "$ROOT") || rc=$?
+  [ "$rc" -eq "$expected" ] || fail "pane_box_text returned $rc on $what, expected $expected"
   [ "$got" = "$want" ] || fail "box for $what is '$got', expected '$want'"
 }
 
@@ -107,6 +107,24 @@ ${e}[2m❯ Try \"fix the bug\"${e}[0m$tail"
 ❯ ${e}]8;;https://ex.com${e}\\see${e}]8;;${e}\\ docs$tail"
   assert_box "a hyperlink ended with BEL" "see docs" "output line
 ❯ ${e}]8;;https://ex.com$(printf '\007')see${e}]8;;$(printf '\007') docs$tail"
+
+  # Captured from Claude shell mode: purple marker, non-breaking padding.
+  assert_box "Claude shell mode" "echo shell-mode" "output line
+${e}[38;5;211m!${nbsp}${e}[39mecho shell-mode$tail
+${e}[39m  ${e}[38;5;211m! for shell mode${e}[39m" 5
+  assert_box "empty Claude shell mode" "" "output line
+${e}[38;5;211m!${nbsp}${e}[39m$tail" 5
+  assert_box "a shell command that starts with a number" "1. echo shell-mode" "output line
+! 1. echo shell-mode$tail" 5
+  assert_box "punctuation inside typed text" "hello! world" "output line
+❯ hello! world$tail"
+  assert_box "punctuation inside a dim hint" "" "output line
+❯ ${e}[2m! not typed${e}[0m$tail"
+  rc=0
+  FAKE_TMUX_CAPTURE="output line
+ordinary text with ! inside$tail" PATH="$BOX_BIN:$PATH" \
+    bash -c 'source "$1/lib/input.sh"; pane_box_text %9' _ "$ROOT" || rc=$?
+  [ "$rc" -eq 2 ] || fail "ordinary punctuation counted as a prompt: $rc"
 }
 
 # A box shows the sent message when it holds all of it, its paste placeholder,

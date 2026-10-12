@@ -69,7 +69,7 @@ wait_agent_ready() {
 answer_dialog() {
   local pane=$1 pattern=$2 i cur cy rc markers
   cli_select_pane "$pane"
-  markers=$CLI_PROMPT_MARKERS
+  markers=${CLI_PROMPT_MARKERS//!/$'(^|\n)!'}
   for ((i = 0; i < 50; i++)); do
     cur=$(tmux capture-pane -pt "$pane" 2>/dev/null && printf '.') || cur=""
     cur=${cur%.}
@@ -95,6 +95,7 @@ pane_is_busy() {
   local pane=$1 screen nearby
   screen=$(tmux capture-pane -pt "$pane" 2>/dev/null) || return 1
   nearby=$(awk -v markers="$CLI_ALL_PROMPT_MARKERS" '
+    BEGIN { gsub(/!/, "^!", markers) }
     { rows[NR] = $0; if ($0 ~ "^[[:space:]]*(" markers ")") prompt = NR }
     END {
       for (r = prompt - 1; r > 0 && count < 4; r--) {
@@ -117,7 +118,7 @@ pane_is_busy() {
 wait_pane_settled() {
   local pane=$1 tries=${2:-100} i prev="" cur cy rc markers stable=0
   cli_select_pane "$pane"
-  markers=$CLI_PROMPT_MARKERS
+  markers=${CLI_PROMPT_MARKERS//!/$'(^|\n)!'}
   for ((i = 0; i < tries; i++)); do
     cur=$(tmux capture-pane -pt "$pane" 2>/dev/null && printf '.') || cur=""
     cur=${cur%.}

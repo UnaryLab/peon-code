@@ -93,7 +93,7 @@ plain_text() {
 # footers count within three rows below the cursor. Invalid cursors return 2.
 pane_has_menu() {
   printf '%s' "$1" | LC_ALL=C awk -v cy="${2:-}" -v markers="$CLI_PROMPT_MARKERS" '
-    BEGIN { marker = "(" markers ")" }
+    BEGIN { marker = "(" markers ")"; gsub(/!/, "^!", marker) }
     { rows[NR] = $0 }
     NR <= cy + 1 && markers != "" && $0 ~ marker { anchor = $0; ar = NR }
     NR >= cy + 2 && NR <= cy + 4 && index($0, "Enter to confirm") { menu = 1 }
@@ -103,6 +103,7 @@ pane_has_menu() {
     }
     END {
       if (cy !~ /^[0-9]+$/ || cy >= NR) exit 2
+      if (anchor ~ /^!/) exit 1
       if (anchor ~ ("^ *" marker " .+ [(][yan][)][ \t]*$") && letter_choice(anchor)) {
         first = ar; last = ar
         while (first > 1 && letter_choice(rows[first - 1])) first--
@@ -121,12 +122,13 @@ pane_free_text_number() {
       rows[NR] = $0; p = 0
       for (i = 1; i <= count; i++) {
         q = index($0, marks[i])
+        if (marks[i] == "!" && q != 1) q = 0
         if (q && (!p || q < p)) { p = q; ml = length(marks[i]) }
       }
       if (p) { mr = NR; mp = p; marker_length = ml }
     }
     END {
-      if (!mr) exit 1
+      if (!mr || substr(rows[mr], mp, ml) == "!") exit 1
       s = substr(rows[mr], mp + marker_length)
       if (s !~ /^[ \t]*[0-9]+\.[ \t]+/) exit 1
       n = s; sub(/^[ \t]*/, "", n); sub(/\..*/, "", n)
@@ -148,13 +150,14 @@ pane_takes_keys() {
 
 # Whether a pane can take a paste now: 0 when it takes keys and its input box
 # is empty, 1 in copy mode, 2 when it draws no prompt marker peon-code knows,
-# 3 on a dialog or a menu, 4 when its box holds typed text.
+# 3 on a dialog or a menu, 4 when its box holds typed text, 5 in shell mode.
 pane_box_ready() {
   local box rc=0
   cli_select_pane "$1"
   pane_takes_keys "$1" || return 1
   box=$(pane_box_text "$1") || rc=$?
   [ "$rc" -ne 2 ] || return 2
+  [ "$rc" -ne 5 ] || return 5
   [ "$rc" -eq 0 ] || return 3
   [ -z "$box" ] || return 4
   return 0
@@ -196,17 +199,18 @@ strip_styles() {
       return r s
     }
     function span(s, styled) { return (hint && styled) ? blank(s) : s }
-    function markpos(s,   p, q, i) {
+    function markpos(s, offset,   p, q, i) {
       p = 0
       for (i = 1; i <= count; i++) {
         q = index(s, marks[i])
+        if (marks[i] == "!" && (q != 1 || offset)) q = 0
         if (q && (!p || q < p)) { p = q; ml = length(marks[i]) }
       }
       return p
     }
     function blank(s,   r, p) {
       r = ""
-      while ((p = markpos(s)) > 0) {
+      while ((p = markpos(s, length(out) + length(r))) > 0) {
         r = r spaces(p - 1) substr(s, p, ml)
         s = substr(s, p + ml)
       }
@@ -251,7 +255,8 @@ strip_styles() {
 # What a pane's input box holds: everything from the prompt marker to the end
 # of the cursor's row, with hint text left out. Text after the cursor counts
 # too, so a box whose cursor was moved back to the start still measures busy.
-# Empty output means an empty box. A pane sitting on a menu returns 1; a pane
+# Empty output means an empty box. Shell mode prints its text with status 5,
+# so only an explicit key submission accepts it. A menu returns 1; a pane
 # drawing no prompt marker at or above the cursor returns 2, which no wait can
 # change. The menu check reads the capture with its hint text in place: a
 # dialog draws its "Enter to confirm" footer dim.
@@ -260,7 +265,7 @@ strip_styles() {
 # peon-code pastes over it; model that style in strip_styles if a TUI draws
 # hints another way.
 pane_box_text() {
-  local pane=$1 cy cap box plain free rc=0
+  local pane=$1 cy cap box plain free rc=0 shell_mode=0
   cy=$(tmux display -pt "$pane" '#{cursor_y}' 2>/dev/null) || return 1
   cap=$(tmux capture-pane -ept "$pane" 2>/dev/null && printf '.') || return 1
   cap=${cap%.}
@@ -278,6 +283,7 @@ pane_box_text() {
       p = 0
       for (i = 1; i <= count; i++) {
         q = index(s, marks[i])
+        if (marks[i] == "!" && q != 1) q = 0
         if (q && (!p || q < p)) { p = q; ml = length(marks[i]) }
       }
       return p
@@ -298,8 +304,10 @@ pane_box_text() {
         out = out " " s
       }
       print out
-    }') || return 2
-  printf '%s' "$box" | plain_text
+      if (substr(rows[mr], 1, 1) == "!") exit 5
+    }') || case $? in 5) shell_mode=1 ;; *) return 2 ;; esac
+  printf '%s' "$box" | plain_text || return 1
+  [ "$shell_mode" -eq 0 ] || return 5
 }
 
 # A CLI can draw a multi-line paste as one placeholder row instead of its

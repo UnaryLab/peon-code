@@ -227,6 +227,10 @@ PEON
   assert_contains "$TEST_DIR/send-codex.out" "sent to %2"
   assert_contains "$SEND_LOG" "send-keys -t %2 Enter"
 
+  assert_send_refused 'an empty shell-mode box' 'in shell mode' FAKE_BOX='!' FAKE_CURSOR='2 0'
+  assert_send_refused 'a shell-mode draft' 'in shell mode' --append \
+    FAKE_BOX='! echo shell-mode' FAKE_CURSOR='17 0'
+
   # A wrapped row can split a path token inside the pasted message.
   local msg wrapped_tail
   msg='run the check cd /home/user/project && bash tests/test_peon_code.sh and report the real output of the run back to me with each step checked'

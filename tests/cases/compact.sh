@@ -9,7 +9,7 @@ CASE_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 test_compact() {
   local fake_bin=$1 log="$TEST_DIR/tmux-compact.log" bin_dir="$TEST_DIR/compact-bin"
   local empty_box busy_box menu_box brief="$TEST_DIR/compact-brief.md"
-  local enter_line brief_line settle_reads working_row quoted_row
+  local enter_line brief_line settle_reads working_row quoted_row command
   write_slash_fake_tmux "$bin_dir" "$fake_bin"
   empty_box='output line
 ❯
@@ -31,6 +31,8 @@ test_compact() {
   grep -Fqx -- 'buffer-content:/compact' "$log" ||
     fail "compact pasted something other than /compact alone"
   assert_contains "$log" "send-keys -t %1 Enter"
+  assert_contains "$log" "set -pt %1 @peon_compact_owned 1"
+  assert_not_contains "$log" "set -pu -t %1 @peon_compact_owned"
   assert_contains "$TEST_DIR/compact.out" "sent /compact to 1 pane(s) in session owned"
   # The brief goes back in once the pane has settled, so the agent gets its
   # standing instructions after the compaction dropped them.
@@ -73,6 +75,7 @@ test_compact() {
     assert_not_contains "$TEST_DIR/compact-turn.err" "no Enter sent"
     assert_not_contains "$log" "paste-buffer"
     assert_not_contains "$log" "send-keys"
+    assert_not_contains "$log" "@peon_compact_owned"
   done
 
   for quoted_row in 'Output quotes "✽ Fermenting… (48s · ↓ 1.9k tokens · thought for 8s)" and "• Working (12s • esc to interrupt)".' \
@@ -84,7 +87,20 @@ test_compact() {
       >"$TEST_DIR/compact-quoted.out" 2>"$TEST_DIR/compact-quoted.err"
     assert_contains "$log" "buffer-content:/compact"
     assert_contains "$log" "buffer-content:You are impl, follow the rules."
-    assert_not_contains "$TEST_DIR/compact-quoted.err" "busy with a turn"
+  assert_not_contains "$TEST_DIR/compact-quoted.err" "busy with a turn"
+  done
+
+  for command in compact rebrief; do
+    : >"$log"
+    if PATH="$bin_dir:$PATH" FAKE_TMUX_LOG="$log" FAKE_BOX='output line
+!
+────' FAKE_TMUX_BRIEF="$brief" "$ROOT/peon-code.sh" "$command" all owned \
+      >"$TEST_DIR/$command-shell.out" 2>"$TEST_DIR/$command-shell.err"; then
+      fail "$command pasted into shell mode"
+    fi
+    assert_contains "$TEST_DIR/$command-shell.err" 'skipped %1: it is in shell mode'
+    assert_not_contains "$log" 'paste-buffer'
+    assert_not_contains "$log" 'send-keys'
   done
 
   : >"$log"
@@ -127,6 +143,8 @@ test_compact() {
     "$ROOT/peon-code.sh" compact all owned \
     >"$TEST_DIR/compact-refused.out" 2>"$TEST_DIR/compact-refused.err"
   assert_contains "$TEST_DIR/compact-refused.err" "skipped %2: tmux refused the paste"
+  assert_contains "$log" "set -pt %2 @peon_compact_owned 1"
+  assert_contains "$log" "set -pu -t %2 @peon_compact_owned"
   assert_not_contains "$TEST_DIR/compact-refused.err" "no Enter sent"
   assert_contains "$TEST_DIR/compact-refused.out" "sent /compact to 1 pane(s) in session owned"
   assert_contains "$log" "send-keys -t %1 Enter"
@@ -210,6 +228,7 @@ test_busy_near_prompt() (
   }
   for busy_test_bin in claude codex; do
     marker=$(cli_call "$busy_test_bin" prompt_marker)
+    marker=${marker%%|*}
     busy_test_screen="  ✽ Fermenting… (48s\") matches a loose regex, and this quote continues.
 output row 1
 output row 2
@@ -226,6 +245,14 @@ $marker"
 $marker"
     pane_is_busy %1 || fail "$busy_test_bin missed its working row above the input box"
   done
+  busy_test_screen='output row
+✽ Fermenting… (48s · ↓ 1.9k tokens)
+
+────
+! echo shell-mode
+────
+  ! for shell mode'
+  pane_is_busy %1 || fail 'shell-mode footer hid the working row'
 )
 
 fake_bin=$(make_fake_commands)

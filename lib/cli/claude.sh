@@ -157,12 +157,16 @@ claude_usage_tokens() {
   ' "$1" 2>/dev/null || true
 }
 
+claude_compact_count() {
+  grep -c '"subtype"[[:space:]]*:[[:space:]]*"compact_boundary"' "$1" || [ "$?" -eq 1 ]
+}
+
 claude_paste_placeholder() {
   printf '%s\n' '^\[Pasted text #[0-9]+( \+[0-9]+ lines)?\]$'
 }
 
 claude_prompt_marker() {
-  printf '\342\235\257'
+  printf '\342\235\257|!'
 }
 
 claude_brief_after_start() {
