@@ -255,6 +255,11 @@ cmd_watch() {
         fi
         [ "$state" -eq 0 ] || continue
       fi
+      if [ "$(tmux show-options -pqv -t "$id" @peon_rebrief_pending 2>/dev/null)" = 1 ] &&
+        ! pane_is_busy "$id" && wait_pane_settled "$id" 10 && ! pane_is_busy "$id" &&
+        rebrief_pane "$id" "$name" && tmux set -pu -t "$id" @peon_rebrief_pending; then
+        watch_note "$session" "$name brief re-sent after compaction"
+      fi
       [ "$threshold" -gt 0 ] || continue
       if ! declare -F -- "${bin}_context_tokens" >/dev/null ||
         ! cli_call "$bin" context_tokens; then
@@ -303,13 +308,14 @@ cmd_watch() {
         continue
       fi
       case " $disarmed " in *" $id "*) continue ;; esac
-      disarmed="$disarmed $id "
-      watch_note "$session" "$name at $tokens tokens; compacting"
-      # Compact skips a busy pane with a note and leaves the brief unsent
-      # when compaction outlasts its wait; this pane is retried on the next
-      # crossing. The pane variable is cleared so compact does not take
-      # the watcher's own pane for a target.
-      TMUX_PANE='' "$SCRIPT_DIR/peon-code.sh" compact "$name" "$session" || true
+      # Retry skips silently without a transcript change. Clear TMUX_PANE
+      # so compact does not take the watcher's own pane for a target.
+      if TMUX_PANE='' "$SCRIPT_DIR/peon-code.sh" compact "$name" "$session" >/dev/null 2>&1; then
+        watch_note "$session" "$name at $tokens tokens; compacting"
+        disarmed="$disarmed $id "
+      else
+        reads=$(printf '%s\n' "$reads" | sed "/^$id /d")
+      fi
     done <<<"$panes"
     if [ "$((beat_time - last_beat))" -ge "$min" ]; then last_beat=$beat_time; fi
     sleep "${PEON_WATCH_TICK:-5}"

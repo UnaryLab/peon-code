@@ -87,7 +87,7 @@ cmd_compact() { slash_then_rebrief /compact "$@"; }
 cmd_clear() { slash_then_rebrief /clear "$@"; }
 
 slash_then_rebrief() {
-  local slash=$1 target=${2:-all} session panes id name pair box i submitted sent=0
+  local slash=$1 target=${2:-all} session panes id name pair box i submitted deadline ready sent=0
   local pairs=() done_panes=()
   session=$(session_name "${3:-}")
   tmux has-session -t "=$session" 2>/dev/null || die "no session $session"
@@ -123,11 +123,11 @@ slash_then_rebrief() {
     id=${pair%% *}
     name=${pair#* }
     submitted=0
-    if with_pane_delivery "$id" slash_locked "$id" "$slash"; then submitted=1; fi
-    if [ "$submitted" -eq 1 ]; then
+    with_pane_delivery "$id" slash_locked "$id" "$slash" || submitted=$?
+    if [ "$submitted" -eq 0 ]; then
       sent=$((sent + 1))
       done_panes+=("$pair")
-    else
+    elif [ "$submitted" -eq 1 ]; then
       echo "peon-code: no Enter sent to $id: it holds something other than $slash, which is in its box for the user to submit" >&2
     fi
   done
@@ -140,7 +140,13 @@ slash_then_rebrief() {
   for pair in ${done_panes[@]+"${done_panes[@]}"}; do
     id=${pair%% *}
     name=${pair#* }
-    if ! wait_pane_settled "$id" 400; then
+    deadline=$((SECONDS + 120))
+    ready=0
+    for ((i = 0; i < 400 && SECONDS < deadline; i++)); do
+      if wait_pane_settled "$id" 3 && ! pane_is_busy "$id"; then ready=1; break; fi
+    done
+    if [ "$ready" -eq 0 ]; then
+      tmux set -pt "$id" @peon_rebrief_pending 1
       echo "peon-code: no brief sent to $name $id: it is still busy after $slash" >&2
       continue
     fi
@@ -901,23 +907,28 @@ swap_quit_locked() {
   slash_locked "$1" "$3"
 }
 
+# Return 5 before a paste, or 1 after a paste without Enter.
 slash_locked() {
   local id=$1 slash=$2 box i submitted
   if ! pane_takes_keys "$id"; then
     echo "peon-code: skipped $id: it is in copy mode" >&2
-    return 1
+    return 5
+  fi
+  if pane_is_busy "$id"; then
+    echo "peon-code: skipped $id: it is busy with a turn" >&2
+    return 5
   fi
   box=$(pane_box_text "$id") || case $? in
-    2) echo "peon-code: skipped $id: it draws no prompt marker peon-code knows" >&2; return 1 ;;
-    *) echo "peon-code: skipped $id: it is on a dialog or a menu" >&2; return 1 ;;
+    2) echo "peon-code: skipped $id: it draws no prompt marker peon-code knows" >&2; return 5 ;;
+    *) echo "peon-code: skipped $id: it is on a dialog or a menu" >&2; return 5 ;;
   esac
   if [ -n "$box" ]; then
     echo "peon-code: skipped $id: its input box holds typed text" >&2
-    return 1
+    return 5
   fi
   if ! printf '%s' "$slash" | paste_only "$id"; then
     echo "peon-code: skipped $id: tmux refused the paste" >&2
-    return 1
+    return 5
   fi
   submitted=0
   for ((i = 0; i < 10; i++)); do

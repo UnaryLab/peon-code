@@ -9,7 +9,7 @@ CASE_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 test_compact() {
   local fake_bin=$1 log="$TEST_DIR/tmux-compact.log" bin_dir="$TEST_DIR/compact-bin"
   local empty_box busy_box menu_box brief="$TEST_DIR/compact-brief.md"
-  local enter_line brief_line settle_reads
+  local enter_line brief_line settle_reads working_row quoted_row
   write_slash_fake_tmux "$bin_dir" "$fake_bin"
   empty_box='output line
 ❯
@@ -54,8 +54,38 @@ test_compact() {
     fail "compact pasted into a box holding typed text"
   fi
   assert_contains "$TEST_DIR/compact-busy.err" "its input box holds typed text"
+  assert_not_contains "$TEST_DIR/compact-busy.err" "no Enter sent"
   assert_not_contains "$log" "paste-buffer"
   assert_not_contains "$log" "send-keys"
+
+  for working_row in '✽ Fermenting… (48s · ↓ 1.9k tokens · thought for 8s)' \
+    '• Working (12s • esc to interrupt)' \
+    '  • Waiting for background terminal (5m 12s • esc to interrupt)'; do
+    : >"$log"
+    if PATH="$bin_dir:$PATH" FAKE_TMUX_LOG="$log" FAKE_BOX="$working_row
+
+────
+❯
+────" "$ROOT/peon-code.sh" compact all owned >"$TEST_DIR/compact-turn.out" 2>"$TEST_DIR/compact-turn.err"; then
+      fail "compact queued a command during a working turn"
+    fi
+    assert_contains "$TEST_DIR/compact-turn.err" "skipped %1: it is busy with a turn"
+    assert_not_contains "$TEST_DIR/compact-turn.err" "no Enter sent"
+    assert_not_contains "$log" "paste-buffer"
+    assert_not_contains "$log" "send-keys"
+  done
+
+  for quoted_row in 'Output quotes "✽ Fermenting… (48s · ↓ 1.9k tokens · thought for 8s)" and "• Working (12s • esc to interrupt)".' \
+    '● I checked the new busy check and Claude draws its working row as ✽ Fermenting… (48s · ↓ 1.9k tokens)'; do
+    : >"$log"
+    PATH="$bin_dir:$PATH" FAKE_TMUX_LOG="$log" FAKE_BOX="$quoted_row
+❯
+────" FAKE_TMUX_BRIEF="$brief" "$ROOT/peon-code.sh" compact all owned \
+      >"$TEST_DIR/compact-quoted.out" 2>"$TEST_DIR/compact-quoted.err"
+    assert_contains "$log" "buffer-content:/compact"
+    assert_contains "$log" "buffer-content:You are impl, follow the rules."
+    assert_not_contains "$TEST_DIR/compact-quoted.err" "busy with a turn"
+  done
 
   : >"$log"
   if PATH="$bin_dir:$PATH" FAKE_TMUX_LOG="$log" FAKE_BOX="$empty_box" \
@@ -97,6 +127,7 @@ test_compact() {
     "$ROOT/peon-code.sh" compact all owned \
     >"$TEST_DIR/compact-refused.out" 2>"$TEST_DIR/compact-refused.err"
   assert_contains "$TEST_DIR/compact-refused.err" "skipped %2: tmux refused the paste"
+  assert_not_contains "$TEST_DIR/compact-refused.err" "no Enter sent"
   assert_contains "$TEST_DIR/compact-refused.out" "sent /compact to 1 pane(s) in session owned"
   assert_contains "$log" "send-keys -t %1 Enter"
   assert_not_contains "$log" "send-keys -t %2"
@@ -113,6 +144,7 @@ test_compact() {
     >"$TEST_DIR/compact-busy-after.out" 2>"$TEST_DIR/compact-busy-after.err"
   assert_contains "$TEST_DIR/compact-busy-after.out" "sent /compact to 1 pane(s) in session owned"
   assert_contains "$TEST_DIR/compact-busy-after.err" "no brief sent to impl %1: it is still busy after /compact"
+  assert_contains "$log" "set -pt %1 @peon_rebrief_pending 1"
   assert_not_contains "$log" "buffer-content:You are impl"
 
   # A brief is held back from a box holding typed text, so text typed while a
@@ -143,8 +175,60 @@ test_compact() {
   assert_not_contains "$log" "load-buffer"
   assert_not_contains "$log" "paste-buffer"
   assert_not_contains "$log" "send-keys"
+
+  mv "$bin_dir/tmux" "$bin_dir/tmux-base"
+  cat >"$bin_dir/tmux" <<'FAKE_BUSY_TMUX'
+#!/usr/bin/env bash
+status=0
+if [ "$1" = capture-pane ] && grep -Fqx 'send-keys -t %1 Enter' "$FAKE_TMUX_LOG"; then
+  printf '• Working (24s • esc to interrupt)\n'
+fi
+"${0%/*}/tmux-base" "$@" || status=$?
+exit "$status"
+FAKE_BUSY_TMUX
+  chmod +x "$bin_dir/tmux"
+  : >"$log"
+  PATH="$bin_dir:$PATH" FAKE_TMUX_LOG="$log" FAKE_BOX="$empty_box" FAKE_TMUX_BRIEF="$brief" \
+    "$ROOT/peon-code.sh" compact all owned >"$TEST_DIR/compact-turn-after.out" 2>"$TEST_DIR/compact-turn-after.err"
+  assert_contains "$log" "send-keys -t %1 Enter"
+  assert_contains "$log" "set -pt %1 @peon_rebrief_pending 1"
+  assert_contains "$TEST_DIR/compact-turn-after.err" "no brief sent to impl %1: it is still busy after /compact"
+  assert_not_contains "$log" "buffer-content:You are impl"
 }
 
+test_busy_near_prompt() (
+  # shellcheck source=lib/cli.sh
+  . "$ROOT/lib/cli.sh"
+  # shellcheck source=lib/tmux.sh
+  . "$ROOT/lib/tmux.sh"
+  local busy_test_screen busy_test_bin marker
+  tmux() {
+    case $1 in
+      show-options) echo "$busy_test_bin" ;;
+      capture-pane) printf '%s\n' "$busy_test_screen" ;;
+    esac
+  }
+  for busy_test_bin in claude codex; do
+    marker=$(cli_call "$busy_test_bin" prompt_marker)
+    busy_test_screen="  ✽ Fermenting… (48s\") matches a loose regex, and this quote continues.
+output row 1
+output row 2
+output row 3
+output row 4
+
+────
+$marker"
+    if pane_is_busy %1; then fail "$busy_test_bin treated a wrapped output quote as busy"; fi
+    busy_test_screen="output row
+✽ Fermenting… (48s · ↓ 1.9k tokens · thought for 8s)
+
+────
+$marker"
+    pane_is_busy %1 || fail "$busy_test_bin missed its working row above the input box"
+  done
+)
+
 fake_bin=$(make_fake_commands)
+test_busy_near_prompt
 test_compact "$fake_bin"
 echo "compact: PASS"

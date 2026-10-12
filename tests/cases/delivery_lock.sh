@@ -159,6 +159,7 @@ test_failed_slash_enter() (
   source "$ROOT/lib/commands.sh"
   state="$TEST_DIR/slash-readback"
   pane_takes_keys() { return 0; }
+  pane_is_busy() { return 1; }
   pane_box_text() {
     if [ -f "$state" ]; then printf /clear; else touch "$state"; fi
   }
@@ -176,6 +177,7 @@ test_slash_waits_for_redraw() (
   local state="$TEST_DIR/slash-redraw" log="$TEST_DIR/slash-enter"
   printf '0\n' >"$state"
   pane_takes_keys() { return 0; }
+  pane_is_busy() { return 1; }
   pane_box_text() {
     local reads
     reads=$(cat "$state")

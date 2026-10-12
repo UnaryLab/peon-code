@@ -151,6 +151,77 @@ test_watch_loop() (
   [ ! -e "/tmp/peon-code-watch-$UID/$session.pid" ] || fail "watch loop left its PID file"
 )
 
+test_watch_pending_rebrief() (
+  local session="peon-watch-rebrief-$$" ticks=0 retry_pending=1 log="$TEST_DIR/watch-rebrief.log"
+  : >"$log"
+  tmux() {
+    case $1 in
+      has-session) ticks=$((ticks + 1)); [ "$ticks" -le 3 ]; return ;;
+      display) case $* in *pane_current_command*) echo node ;; *) echo 100 ;; esac ;;
+      list-panes) printf '%%0 lead\n' ;;
+      show-options)
+        case $* in
+          *@peon_restart*) echo 1 ;;
+          *@peon_bin*) echo claude ;;
+          *@peon_rebrief_pending*) echo "$retry_pending" ;;
+        esac ;;
+      set) case $* in *'@peon_rebrief_pending'*) retry_pending=0; echo 'cleared' >>"$log" ;; esac ;;
+    esac
+    return 0
+  }
+  session_name() { echo "$1"; }
+  pane_is_busy() { [ "$ticks" -eq 1 ]; }
+  wait_pane_settled() { [ "$2" = 10 ] || fail 'pending brief wait is not short'; echo "settled $ticks" >>"$log"; }
+  rebrief_pane() { echo "brief $ticks $1 $2" >>"$log"; }
+  watch_note() { echo "$2" >>"$log"; }
+  sleep() { :; }
+  cmd_watch "$session" 0
+  [ "$retry_pending" = 0 ] || fail 'watch kept the pending brief option after success'
+  [ "$(cat "$log")" = "$(printf 'settled 2\nbrief 2 %%0 lead\ncleared\nlead brief re-sent after compaction\n')" ] ||
+    fail "watch sent a busy or repeated brief: $(cat "$log")"
+)
+
+test_watch_busy_compact_retry() (
+  local session="peon-watch-compact-retry-$$" ticks=0 transcript="$TEST_DIR/watch-compact-retry.jsonl"
+  local log="$TEST_DIR/watch-compact-retry.log" reads_log="$TEST_DIR/watch-compact-retry-reads"
+  local notes_log="$TEST_DIR/watch-compact-retry-notes" output="$TEST_DIR/watch-compact-retry-output"
+  local SCRIPT_DIR="$TEST_DIR/watch-compact-retry-bin" COMPACT_RETRY_LOG="$log"
+  export COMPACT_RETRY_LOG
+  mkdir -p "$SCRIPT_DIR"
+  : >"$transcript"; : >"$log"; : >"$reads_log"; : >"$notes_log"
+  cat >"$SCRIPT_DIR/peon-code.sh" <<'FAKE_COMPACT'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$COMPACT_RETRY_LOG"
+if [ "$(wc -l <"$COMPACT_RETRY_LOG")" -le 3 ]; then
+  echo 'peon-code: skipped %0: it is busy with a turn' >&2
+  echo 'peon-code: no pane took /compact' >&2
+  exit 1
+fi
+FAKE_COMPACT
+  chmod +x "$SCRIPT_DIR/peon-code.sh"
+  tmux() {
+    case $1 in
+      has-session) ticks=$((ticks + 1)); [ "$ticks" -le 5 ]; return ;;
+      display) echo 100 ;;
+      show-options) case $* in *@peon_bin*) echo claude ;; esac ;;
+    esac
+    return 0
+  }
+  session_name() { echo "$1"; }
+  list_agent_panes() { printf '%%0 lead\n'; }
+  last_thread_file() { echo "$transcript"; }
+  context_tokens() { echo "$ticks" >>"$reads_log"; echo 200; }
+  # shellcheck disable=SC2317,SC2329 # cli_call invokes the provider by name.
+  claude_usage_tokens() { echo '1 0 0 0'; }
+  watch_note() { printf '%s %s\n' "$ticks" "$2" >>"$notes_log"; }
+  sleep() { :; }
+  cmd_watch "$session" 100 >"$output" 2>&1
+  [ "$(wc -l <"$log")" -eq 4 ] || fail 'watch did not retry skipped compacts on the next tick'
+  [ "$(cat "$reads_log")" = "$(printf '1\n2\n3\n4\n')" ] || fail 'watch waited for a transcript change after a busy compact'
+  [ "$(cat "$notes_log")" = '4 lead at 200 tokens; compacting' ] || fail 'watch announced a failed compact'
+  [ ! -s "$output" ] || fail 'watch logged busy skips'
+)
+
 # Invalid or unavailable usage leaves the pane's last valid option intact.
 test_watch_usage() (
   local transcript="$TEST_DIR/watch-usage.jsonl" log="$TEST_DIR/watch-usage-options"
@@ -640,6 +711,8 @@ test_watch_owner() (
 fake_bin=$(make_fake_commands)
 test_context_tokens
 test_watch_loop
+test_watch_pending_rebrief
+test_watch_busy_compact_retry
 test_watch_usage
 for bin in codex claude; do
   for variant in child late_marker; do test_watch_parent_transcript "$bin" "$variant"; done

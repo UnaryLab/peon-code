@@ -90,6 +90,21 @@ answer_dialog() {
   return 0
 }
 
+# One elapsed-time shape near known prompts; other layouts need a provider concern.
+pane_is_busy() {
+  local pane=$1 screen nearby
+  screen=$(tmux capture-pane -pt "$pane" 2>/dev/null) || return 1
+  nearby=$(awk -v markers="$CLI_ALL_PROMPT_MARKERS" '
+    { rows[NR] = $0; if ($0 ~ "^[[:space:]]*(" markers ")") prompt = NR }
+    END {
+      for (r = prompt - 1; r > 0 && count < 4; r--) {
+        if (rows[r] ~ /[^[:space:]]/) { print rows[r]; count++ }
+      }
+    }' <<<"$screen")
+  grep -qE '^[[:space:]]*[^[:space:][:alnum:]][^()]{1,40}\(([0-9]+m )?[0-9]+s[^)]*\)' \
+    <<<"$nearby"
+}
+
 # Wait until a known prompt line is drawn and the pane has stopped
 # changing: a capture holds a line starting with the prompt marker and
 # matches the capture 0.3s before. A menu such as the folder-trust dialog
