@@ -18,6 +18,7 @@ import unittest
 from types import SimpleNamespace
 from http.client import HTTPConnection
 from pathlib import Path
+from urllib.parse import quote, urlencode
 from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -115,16 +116,195 @@ class WebTests(unittest.TestCase):
         self.thread.join()
         self.panes.stop()
 
-    def request(self, method, path, data=None, headers=None):
+    def request(self, method, path, data=None, headers=None, response_headers=False):
         connection = HTTPConnection("127.0.0.1", self.server.server_port, timeout=5)
         values = {"X-Peon-Token": "test-token", "Content-Type": "application/json"}
         values.update(headers or {})
-        body = json.dumps(data) if data is not None else None
+        body = data if isinstance(data, bytes) else json.dumps(data) if data is not None else None
         connection.request(method, path, body=body, headers=values)
         response = connection.getresponse()
         status, body = response.status, response.read()
+        received_headers = dict(response.getheaders())
         connection.close()
+        if response_headers:
+            return status, body, received_headers
         return status, body
+
+    def test_files_lists_root_and_nested_directory(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(web, "panes", return_value=[dict(session="team", projectDir=directory)]):
+            root = Path(directory)
+            (root / "Beta").mkdir()
+            (root / "alpha").mkdir()
+            (root / "z.bin").write_bytes(b"\x00\xff")
+            (root / "A.txt").write_bytes(b"abc")
+            (root / "alpha/nested.txt").write_bytes(b"nested")
+            status, body = self.request("GET", "/api/files?session=team")
+            self.assertEqual(status, 200)
+            result = json.loads(body)
+            self.assertEqual(result["dir"], "")
+            self.assertEqual([(item["name"], item["type"], item["size"]) for item in result["entries"]], [("alpha", "dir", None), ("Beta", "dir", None), ("A.txt", "file", 3), ("z.bin", "file", 2)])
+            for item in result["entries"]:
+                self.assertEqual(item["modified"], int((root / item["name"]).stat().st_mtime))
+            status, body = self.request("GET", "/api/files?session=team&dir=alpha%2F")
+            self.assertEqual(status, 200)
+            self.assertEqual(json.loads(body)["dir"], "alpha")
+            self.assertEqual([(item["name"], item["size"]) for item in json.loads(body)["entries"]], [("nested.txt", 6)])
+
+    def test_files_limits_listings_to_2000_entries(self):
+        metadata = SimpleNamespace(st_mode=web.stat.S_IFREG, st_size=1, st_mtime=123)
+        entries = [SimpleNamespace(name=str(index), stat=Mock(return_value=metadata)) for index in range(2005)]
+        with tempfile.TemporaryDirectory() as directory, patch.object(web, "panes", return_value=[dict(session="team", projectDir=directory)]), patch.object(web.os, "scandir") as scandir:
+            scandir.return_value.__enter__.return_value = iter(entries)
+            status, body = self.request("GET", "/api/files?session=team")
+        self.assertEqual(status, 200)
+        self.assertEqual(len(json.loads(body)["entries"]), 2000)
+        entries[2000].stat.assert_not_called()
+
+    def test_files_and_download_validate_paths_sessions_and_access(self):
+        invalid = ("../x", "/abs", "a/../b", ".", "a/./b", "a//b", "a\0b", "a\nb", "a\x7fb", "x" * 1025, "é" * 513)
+        with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as outside, patch.object(web, "panes", return_value=[dict(session="team", projectDir=directory)]):
+            (Path(directory) / "escape").symlink_to(outside, target_is_directory=True)
+            for endpoint, field in (("/api/files", "dir"), ("/api/file", "path")):
+                for relative in (*invalid, "escape", "escape/file"):
+                    with self.subTest(endpoint=endpoint, relative=relative):
+                        url = endpoint + "?" + urlencode(dict(session="team", **{field: relative}))
+                        self.assertEqual(self.request("GET", url)[0], 400)
+                for headers in ({"X-Peon-Token": ""}, {"Host": "evil.test"}, {"Origin": "https://evil.test"}):
+                    with self.subTest(endpoint=endpoint, headers=headers):
+                        self.assertEqual(self.request("GET", endpoint + "?session=team", headers=headers)[0], 403)
+                self.assertEqual(self.request("GET", endpoint + "?session=unknown")[0], 400)
+            self.assertEqual(self.request("GET", "/api/file?session=team&path=")[0], 400)
+
+    def test_files_and_download_report_missing_and_non_regular_targets(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(web, "panes", return_value=[dict(session="team", projectDir=directory)]):
+            (Path(directory) / "folder").mkdir()
+            (Path(directory) / "file").write_bytes(b"data")
+            os.mkfifo(Path(directory) / "pipe")
+            for url in ("/api/files?session=team&dir=missing", "/api/files?session=team&dir=file", "/api/file?session=team&path=folder", "/api/file?session=team&path=missing", "/api/file?session=team&path=pipe"):
+                with self.subTest(url=url):
+                    self.assertEqual(self.request("GET", url)[0], 404)
+            status, body = self.request("GET", "/api/files?session=team")
+            self.assertEqual(status, 200)
+            pipe = next(item for item in json.loads(body)["entries"] if item["name"] == "pipe")
+            self.assertEqual((pipe["type"], pipe["size"]), ("other", None))
+
+    def test_download_preserves_bytes_mime_filename_and_security_headers(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(web, "panes", return_value=[dict(session="team", projectDir=directory)]):
+            for name, mime in (("figure 日本語.png", "image/png"), ("paper's figure.pdf", "application/pdf"), ("data.json", "application/json"), ("raw.unknownextension", "application/octet-stream")):
+                with self.subTest(name=name):
+                    content = b"\x00\xff\r\nbinary"
+                    (Path(directory) / name).write_bytes(content)
+                    url = "/api/file?" + urlencode(dict(session="team", path=name))
+                    status, body, headers = self.request("GET", url, response_headers=True)
+                    self.assertEqual((status, body), (200, content))
+                    self.assertEqual(headers["Content-Type"], mime)
+                    self.assertEqual(headers["Content-Length"], str(len(content)))
+                    self.assertEqual(headers["Content-Disposition"], "attachment; filename*=UTF-8''" + quote(name, safe=""))
+                    self.assertEqual(headers["Cache-Control"], "no-store")
+                    self.assertEqual(headers["X-Content-Type-Options"], "nosniff")
+                    self.assertEqual(headers["Referrer-Policy"], "no-referrer")
+                    self.assertIn("img-src 'self' blob:", headers["Content-Security-Policy"])
+                    self.assertIn("frame-src blob:", headers["Content-Security-Policy"])
+            self.assertIn("frame-src blob:", self.request("GET", "/", response_headers=True)[2]["Content-Security-Policy"])
+
+    def test_download_rejects_files_above_size_cap(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(web, "panes", return_value=[dict(session="team", projectDir=directory)]), patch.object(web, "MAX_FILE_BYTES", 3):
+            target = Path(directory) / "data.bin"
+            target.write_bytes(b"four")
+            self.assertEqual(self.request("GET", "/api/file?session=team&path=data.bin")[0], 413)
+            target.write_bytes(b"yes")
+            self.assertEqual(self.request("GET", "/api/file?session=team&path=data.bin"), (200, b"yes"))
+
+    def test_files_and_download_report_operating_system_errors(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(web, "panes", return_value=[dict(session="team", projectDir=directory)]):
+            with patch.object(web.os, "scandir", side_effect=PermissionError("Folder is not readable")):
+                self.assertEqual(self.request("GET", "/api/files?session=team")[0], 503)
+            (Path(directory) / "data.bin").write_bytes(b"data")
+            with patch.object(Path, "open", side_effect=PermissionError("File is not readable")):
+                self.assertEqual(self.request("GET", "/api/file?session=team&path=data.bin")[0], 503)
+
+    def test_upload_writes_raw_bytes_to_selected_session_project(self):
+        with tempfile.TemporaryDirectory() as directory:
+            group = [dict(session="other", projectDir="/unused"), dict(session="team", projectDir=directory)]
+            with patch.object(web, "panes", return_value=group) as panes:
+                for name, content in (("sample.bin", b"\x00\xff\r\n"), ("empty.txt", b""), ("日本語.txt", b"text"), ("x" * 255, b"limit")):
+                    with self.subTest(name=name):
+                        path = "/api/upload?" + urlencode(dict(session="team", name=name))
+                        status, body = self.request("POST", path, content, {"Content-Type": "application/octet-stream"})
+                        self.assertEqual(status, 200)
+                        self.assertEqual(json.loads(body), {"message": "Saved upload/" + name})
+                        self.assertEqual((Path(directory) / "upload" / name).read_bytes(), content)
+                self.assertEqual(panes.call_args.args, ("team",))
+
+    def test_upload_does_not_overwrite_existing_files(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(web, "panes", return_value=[dict(session="team", projectDir=directory)]):
+            path = "/api/upload?session=team&name=data.bin"
+            headers = {"Content-Type": "application/octet-stream"}
+            self.assertEqual(self.request("POST", path, b"first", headers)[0], 200)
+            status, body = self.request("POST", path, b"second", headers)
+            self.assertEqual(status, 409)
+            self.assertIn("error", json.loads(body))
+            self.assertEqual((Path(directory) / "upload/data.bin").read_bytes(), b"first")
+
+    def test_upload_creates_nested_target_folder(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(web, "panes", return_value=[dict(session="team", projectDir=directory)]):
+            path = "/api/upload?" + urlencode(dict(session="team", name="data.bin", dir="new/nested/"))
+            status, body = self.request("POST", path, b"data", {"Content-Type": "application/octet-stream"})
+            self.assertEqual(status, 200)
+            self.assertEqual(json.loads(body), {"message": "Saved new/nested/data.bin"})
+            self.assertEqual((Path(directory) / "new/nested/data.bin").read_bytes(), b"data")
+
+    def test_upload_rejects_invalid_target_folders(self):
+        invalid = ("../x", "/abs", "a/../b", "", ".", "a/./b", "a//b", "a\0b", "a\nb", "a\x7fb", "x" * 1025, "é" * 513, "a" + "/" * 1024)
+        with tempfile.TemporaryDirectory() as directory, patch.object(web, "panes", return_value=[dict(session="team", projectDir=directory)]):
+            for folder in invalid:
+                with self.subTest(folder=folder):
+                    path = "/api/upload?" + urlencode(dict(session="team", name="data.bin", dir=folder))
+                    status, body = self.request("POST", path, b"data", {"Content-Type": "application/octet-stream"})
+                    self.assertEqual(status, 400)
+                    self.assertIn("error", json.loads(body))
+            self.assertFalse(list(Path(directory).iterdir()))
+
+    def test_upload_rejects_folder_symlink_escape_and_existing_file(self):
+        with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as outside, patch.object(web, "panes", return_value=[dict(session="team", projectDir=directory)]):
+            (Path(directory) / "link").symlink_to(outside, target_is_directory=True)
+            (Path(directory) / "file").write_bytes(b"keep")
+            for folder in ("link", "link/new", "file", "file/new"):
+                with self.subTest(folder=folder):
+                    path = "/api/upload?" + urlencode(dict(session="team", name="data.bin", dir=folder))
+                    self.assertEqual(self.request("POST", path, b"data", {"Content-Type": "application/octet-stream"})[0], 400)
+            self.assertFalse(list(Path(outside).iterdir()))
+            self.assertEqual((Path(directory) / "file").read_bytes(), b"keep")
+
+    def test_upload_rejects_invalid_names_and_unknown_sessions(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(web, "panes", return_value=[dict(session="team", projectDir=directory)]):
+            invalid = ("../x", "a/b", "a\\b", "", ".", "..", "a\x00b", "a\nb", "a\x7fb", "x" * 256, "é" * 128)
+            for name in invalid:
+                with self.subTest(name=name):
+                    path = "/api/upload?" + urlencode(dict(session="team", name=name))
+                    self.assertEqual(self.request("POST", path, b"data", {"Content-Type": "application/octet-stream"})[0], 400)
+            self.assertEqual(self.request("POST", "/api/upload?session=unknown&name=x", b"data", {"Content-Type": "application/octet-stream"})[0], 400)
+            self.assertFalse((Path(directory) / "upload").exists())
+
+    def test_upload_validates_size_type_and_access_before_writing(self):
+        path = "/api/upload?session=team&name=x"
+        cases = (({"Content-Length": str(64 * 1024 * 1024 + 1)}, 400),
+                 ({"Content-Length": "-1"}, 400), ({"Content-Length": "bad"}, 400),
+                 ({"Content-Type": "application/json"}, 400),
+                 ({"X-Peon-Token": ""}, 403), ({"Origin": "https://evil.test"}, 403))
+        with patch.object(web, "panes") as panes:
+            for headers, expected in cases:
+                with self.subTest(headers=headers):
+                    status, body = self.request("POST", path, b"", dict({"Content-Type": "application/octet-stream"}, **headers))
+                    self.assertEqual(status, expected)
+                    self.assertIn("error", json.loads(body))
+            panes.assert_not_called()
+
+    def test_upload_reports_filesystem_errors(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(web, "panes", return_value=[dict(session="team", projectDir=directory)]), patch.object(Path, "mkdir", side_effect=OSError("Cannot create upload directory")):
+            status, body = self.request("POST", "/api/upload?session=team&name=x", b"data", {"Content-Type": "application/octet-stream"})
+        self.assertEqual(status, 503)
+        self.assertEqual(json.loads(body), {"error": "Cannot create upload directory"})
 
     def test_access_and_output(self):
         self.assertEqual(self.request("GET", "/")[0], 200)
@@ -571,7 +751,7 @@ refresh().then(parameters => {document.querySelector('#result').textContent = JS
         for cli, model, effort in (("-", "gpt-6.1-sol", "-"), ("claude", "-", "high"), ("-", "-", "-"), ("codex", "path/model=v2", "xhigh")):
             data = dict(pane=target["id"], identity=target["identity"], cli=cli, model=model, effort=effort)
             with self.subTest(data=data), patch.object(web, "panes", return_value=[target]) as panes, patch.object(web, "run_delivery", side_effect=deliver) as run:
-                status, body = self.request("POST", "/api/swap", data)
+                status, body = self.request("POST", "/api/swap?unused=1", data)
                 self.assertEqual((status, json.loads(body)), (200, {"message": "agent changed"}))
                 panes.assert_called_once_with("team")
                 run.assert_called_once_with([str(ROOT / "peon-code.sh"), "swap", target["name"], cli, model, effort, target["session"]], "", data["identity"])

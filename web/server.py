@@ -1,6 +1,7 @@
 """Loopback-only browser bridge to existing peon-code tmux panes."""
 import json
 import errno
+import mimetypes
 import os
 import re
 import secrets
@@ -9,6 +10,7 @@ import subprocess
 import sys
 import shutil
 import socket
+import stat
 import time
 import tempfile
 from bridge import panes, snapshot, tmux
@@ -17,7 +19,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, quote, urlsplit
 
 ROOT = Path(__file__).resolve().parent.parent
 try:
@@ -25,6 +27,7 @@ try:
 except OSError:
     VERSION = ""
 BUTTONS_DIR = ROOT / "buttons"
+MAX_FILE_BYTES = 256 * 1024 * 1024
 ASSETS = {"/": ("index.html", "text/html"), "/app.js": ("app.js", "text/javascript"),
           "/style.css": ("style.css", "text/css"),
           "/ansi.js": ("ansi.js", "text/javascript"),
@@ -109,15 +112,17 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass  # Tokens and agent content must not enter access logs.
 
-    def respond(self, status, data, content_type="application/json"):
-        body = json.dumps(data).encode() if content_type == "application/json" else data
+    def respond(self, status, data, content_type="application/json", filename=None):
+        body = json.dumps(data).encode() if content_type == "application/json" and filename is None else data
         self.send_response(status)
-        self.send_header("Content-Type", content_type + "; charset=utf-8")
+        self.send_header("Content-Type", content_type + ("; charset=utf-8" if filename is None else ""))
+        if filename is not None:
+            self.send_header("Content-Disposition", "attachment; filename*=UTF-8''" + quote(filename, safe=""))
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "no-referrer")
-        self.send_header("Content-Security-Policy", "default-src 'self'; frame-ancestors 'none'; base-uri 'none'")
+        self.send_header("Content-Security-Policy", "default-src 'self'; img-src 'self' blob:; frame-src blob:; frame-ancestors 'none'; base-uri 'none'")
         self.end_headers()
         self.wfile.write(body)
 
@@ -134,9 +139,22 @@ class Handler(BaseHTTPRequestHandler):
             return False
         return True
 
+    def project_path(self, session, relative, allow_root=False):
+        if (not relative and not allow_root) or relative.startswith("/") or (relative and any(part in ("", ".", "..") for part in relative.rstrip("/").split("/"))) or any(ord(char) < 32 or ord(char) == 127 for char in relative) or len(relative.encode("utf-8")) > 1024:
+            raise ValueError("Path must be relative, at most 1024 UTF-8 bytes, without empty, dot, or parent components or control characters")
+        relative = relative.rstrip("/")
+        pane = next((pane for pane in panes(self.server.session) if pane["session"] == session), None)
+        if pane is None or not pane.get("projectDir"):
+            raise ValueError("Session changed or closed; refresh before browsing files")
+        project = Path(pane["projectDir"]).resolve()
+        target = (project / relative).resolve()
+        if not target.is_relative_to(project):
+            raise ValueError("Path must stay inside the session project directory")
+        return relative, target
+
     def do_GET(self):
         parsed = urlsplit(self.path)
-        if not self.allowed(parsed.path in ("/api/panes", "/api/buttons", "/api/clis")):
+        if not self.allowed(parsed.path in ("/api/panes", "/api/buttons", "/api/clis", "/api/files", "/api/file")):
             return
         if self.path in ASSETS:
             filename, mime = ASSETS[self.path]
@@ -146,6 +164,43 @@ class Handler(BaseHTTPRequestHandler):
         elif parsed.path == "/api/buttons":
             try:
                 self.respond(200, read_buttons())
+            except OSError as error:
+                self.respond(503, {"error": str(error)})
+        elif parsed.path in ("/api/files", "/api/file"):
+            query = parse_qs(parsed.query, keep_blank_values=True)
+            listing = parsed.path == "/api/files"
+            try:
+                relative, target = self.project_path(query.get("session", [""])[0], query.get("dir" if listing else "path", [""])[0], allow_root=listing)
+                if listing:
+                    entries = []
+                    with os.scandir(target) as folder:
+                        # List at most 2000 entries; add pagination for larger folders.
+                        for entry in folder:
+                            if len(entries) >= 2000:
+                                break
+                            metadata = entry.stat(follow_symlinks=False)
+                            kind = "dir" if stat.S_ISDIR(metadata.st_mode) else "file" if stat.S_ISREG(metadata.st_mode) else "other"
+                            entries.append(dict(name=entry.name, type=kind, size=metadata.st_size if kind == "file" else None, modified=int(metadata.st_mtime)))
+                    entries.sort(key=lambda entry: (entry["type"] != "dir", entry["name"].casefold()))
+                    self.respond(200, {"dir": relative, "entries": entries})
+                else:
+                    metadata = target.stat()
+                    if not stat.S_ISREG(metadata.st_mode):
+                        self.respond(404, {"error": "Not a regular file"})
+                        return
+                    if metadata.st_size > MAX_FILE_BYTES:
+                        self.respond(413, {"error": "File exceeds 256 MiB"})
+                        return
+                    with target.open("rb") as file:
+                        content = file.read(MAX_FILE_BYTES + 1)
+                    if len(content) > MAX_FILE_BYTES:
+                        self.respond(413, {"error": "File exceeds 256 MiB"})
+                        return
+                    self.respond(200, content, mimetypes.guess_type(relative)[0] or "application/octet-stream", filename=Path(relative).name)
+            except (ValueError, RuntimeError) as error:
+                self.respond(400, {"error": str(error)})
+            except (FileNotFoundError, NotADirectoryError) as error:
+                self.respond(404, {"error": str(error)})
             except OSError as error:
                 self.respond(503, {"error": str(error)})
         elif parsed.path == "/api/panes":
@@ -235,16 +290,50 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self.allowed(True):
             return
-        if self.path not in ("/api/explain", "/api/send", "/api/swap", "/api/dismiss", "/api/keys", "/api/buttons", "/api/open"):
+        parsed = urlsplit(self.path)
+        if parsed.path not in ("/api/explain", "/api/send", "/api/swap", "/api/dismiss", "/api/keys", "/api/buttons", "/api/open", "/api/upload"):
             self.respond(404, {"error": "Not found"})
             return
         try:
             size = int(self.headers.get("Content-Length", "0"))
-            limit = 2 * 1024 * 1024 if self.path == "/api/open" else 262144
+            if parsed.path == "/api/upload":
+                if not 0 <= size <= 64 * 1024 * 1024 or self.headers.get_content_type() != "application/octet-stream":
+                    raise ValueError("Expected file bytes, at most 64 MiB")
+                query = parse_qs(parsed.query, keep_blank_values=True)
+                session, name = query.get("session", [""])[0], query.get("name", [""])[0]
+                folder = query.get("dir", ["upload"])[0]
+                if not name or name in (".", "..") or "/" in name or "\\" in name or any(ord(char) < 32 or ord(char) == 127 for char in name) or len(name.encode("utf-8")) > 255:
+                    raise ValueError("Filename must be a basename of at most 255 UTF-8 bytes without control characters")
+                if not folder or folder.startswith("/") or any(part in ("", ".", "..") for part in folder.rstrip("/").split("/")) or any(ord(char) < 32 or ord(char) == 127 for char in folder) or len(folder.encode("utf-8")) > 1024:
+                    raise ValueError("Folder must be a relative path of at most 1024 UTF-8 bytes without empty, dot, or parent components or control characters")
+                folder = folder.rstrip("/")
+                target = next((pane for pane in panes(self.server.session) if pane["session"] == session), None)
+                if target is None or not target.get("projectDir"):
+                    raise ValueError("Session changed or closed; refresh before uploading")
+                project = Path(target["projectDir"]).resolve()
+                directory = project / folder
+                if not directory.resolve().is_relative_to(project):
+                    raise ValueError("Folder must stay inside the session project directory")
+                content = self.rfile.read(size)
+                if len(content) != size:
+                    raise ValueError("Incomplete upload")
+                try:
+                    directory.mkdir(parents=True, exist_ok=True)
+                except (FileExistsError, NotADirectoryError) as error:
+                    raise ValueError("Folder is not a directory") from error
+                try:
+                    with (directory / name).open("xb") as file:
+                        file.write(content)
+                except FileExistsError:
+                    self.respond(409, {"error": "A file with this name already exists"})
+                    return
+                self.respond(200, {"message": "Saved " + folder + "/" + name})
+                return
+            limit = 2 * 1024 * 1024 if parsed.path == "/api/open" else 262144
             if not 0 < size <= limit or self.headers.get_content_type() != "application/json":
-                raise ValueError("Expected JSON, at most " + ("2 MiB" if self.path == "/api/open" else "256 KiB"))
+                raise ValueError("Expected JSON, at most " + ("2 MiB" if parsed.path == "/api/open" else "256 KiB"))
             data = json.loads(self.rfile.read(size))
-            if self.path == "/api/open":
+            if parsed.path == "/api/open":
                 directory, session = data.get("directory"), data.get("session", "")
                 if not isinstance(directory, str) or not directory.strip() or len(directory) > 4096 or "\0" in directory:
                     raise ValueError("Project directory must contain 1 to 4096 characters without NUL")
@@ -284,7 +373,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.server.session = None
                 self.respond(200, {"session": opened})
                 return
-            if self.path == "/api/buttons":
+            if parsed.path == "/api/buttons":
                 button = validate_button(data)
                 directory = config_dir() / "buttons"
                 directory.mkdir(parents=True, exist_ok=True)
@@ -301,7 +390,7 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 self.respond(200, read_buttons())
                 return
-            if self.path == "/api/dismiss":
+            if parsed.path == "/api/dismiss":
                 session = data.get("session")
                 if not isinstance(session, str) or not session or not any(p["session"] == session for p in panes(self.server.session)):
                     raise ValueError("Session changed or closed; refresh before closing")
@@ -315,9 +404,9 @@ class Handler(BaseHTTPRequestHandler):
                 return
             pane, text, identity = data.get("pane"), data.get("text"), data.get("identity")
             append = data.get("append", False)
-            if self.path == "/api/send" and not isinstance(append, bool):
+            if parsed.path == "/api/send" and not isinstance(append, bool):
                 raise ValueError("append must be a boolean")
-            if self.path == "/api/swap":
+            if parsed.path == "/api/swap":
                 cli, model, effort = (data.get(field) for field in ("cli", "model", "effort"))
                 for field, value in (("CLI", cli), ("Model", model), ("Effort", effort)):
                     if not isinstance(value, str) or not re.fullmatch(r"(-|[A-Za-z0-9._=/][A-Za-z0-9._=/-]*)", value):
@@ -325,7 +414,7 @@ class Handler(BaseHTTPRequestHandler):
                 if cli != "-" and cli not in available_clis():
                     raise ValueError("Unknown CLI")
                 text = ""
-            elif self.path == "/api/keys":
+            elif parsed.path == "/api/keys":
                 key = data.get("key")
                 if key not in ("Tab", "Up", "Down", "Enter", "Escape", "Backspace", "C-c"):
                     raise ValueError("Allowed keys: Tab, Up, Down, Enter, Escape, Backspace, C-c")
@@ -337,7 +426,7 @@ class Handler(BaseHTTPRequestHandler):
                 target = next((p for p in panes(self.server.session) if p["id"] == pane and p.get("identity") == identity), None)
                 if not isinstance(identity, str) or target is None:
                     raise ValueError("Agent changed or closed; refresh before sending")
-                action = "swap" if self.path == "/api/swap" else "key" if self.path == "/api/keys" else "explain" if self.path == "/api/explain" else "send"
+                action = "swap" if parsed.path == "/api/swap" else "key" if parsed.path == "/api/keys" else "explain" if parsed.path == "/api/explain" else "send"
                 args = [str(ROOT / "peon-code.sh"), action]
                 if action == "send" and append:
                     args.append("--append")
@@ -358,7 +447,7 @@ class Handler(BaseHTTPRequestHandler):
         except (ValueError, TypeError, AttributeError, RecursionError) as error:
             self.respond(400, {"error": str(error)})
         except (OSError, subprocess.TimeoutExpired) as error:
-            message = error.stderr if self.path == "/api/open" and isinstance(error, subprocess.TimeoutExpired) and isinstance(error.stderr, str) and error.stderr else str(error)
+            message = error.stderr if parsed.path == "/api/open" and isinstance(error, subprocess.TimeoutExpired) and isinstance(error.stderr, str) and error.stderr else str(error)
             self.respond(503, {"error": message})
 
 

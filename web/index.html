@@ -41,6 +41,16 @@
     <div class="workspace">
       <div class="sidebar">
         <nav id="agents" aria-label="Agents in this session"></nav>
+        <button id="files" type="button" class="swap" hidden>Download/view files</button>
+        <button id="upload" type="button" class="swap" aria-expanded="false" aria-controls="upload-form" hidden>Upload files</button>
+        <form id="upload-form" class="swap-form" hidden>
+          <label>Folder<input id="upload-dir" name="dir" type="text" value="upload" placeholder="upload" list="upload-folders"></label>
+          <datalist id="upload-folders"></datalist>
+          <button type="submit">Choose files</button>
+          <button type="button" class="cancel">Cancel</button>
+          <input id="upload-files" type="file" multiple hidden>
+          <span id="upload-status" class="swap-state" role="status"></span>
+        </form>
         <button id="swap" type="button" class="swap" aria-expanded="false" aria-controls="swap-form" data-tip="Change this agent's CLI or model" disabled hidden>Swap agent</button>
         <form id="swap-form" class="swap-form" hidden>
           <label>CLI<select name="cli" required></select></label>
@@ -89,6 +99,16 @@
       <p class="feedback" role="status"></p>
     </article>
   </template>
+  <dialog id="files-dialog" aria-label="Project files">
+    <header class="file-heading"><nav id="file-breadcrumb" aria-label="Folder path"></nav><button type="button" class="close">Close</button></header>
+    <p id="files-status" class="feedback" role="status"></p>
+    <div id="file-list"></div>
+    <footer><button id="upload-here" type="button" disabled>Upload here</button></footer>
+  </dialog>
+  <dialog id="viewer" aria-labelledby="file-viewer-name">
+    <header class="file-heading"><span id="file-viewer-name"></span><button type="button" class="close">Close</button></header>
+    <div id="file-preview"></div>
+  </dialog>
   <div id="tip" role="tooltip" hidden></div>
 </body>
 </html>

@@ -88,7 +88,7 @@ async function api(path, data) {
     'X-Peon-Token': token, ...(data ? {'Content-Type': 'application/json'} : {})
   }, ...(data ? {body: JSON.stringify(data)} : {})});
   const result = await response.json();
-  if (!response.ok) throw new Error(result.error || 'Request failed');
+  if (!response.ok) throw Object.assign(new Error(result.error || 'Request failed'), {status: response.status});
   return result;
 }
 const newSession = document.querySelector('#new-session');
@@ -158,6 +158,213 @@ document.querySelector('#dismiss').onclick = async () => {
   catch (error) { alert(error.message); }
   finally { dismissing = false; updateNavigation(); }
 };
+const upload = document.querySelector('#upload');
+const uploadForm = document.querySelector('#upload-form');
+const uploadDir = document.querySelector('#upload-dir');
+const uploadFiles = document.querySelector('#upload-files');
+const uploadStatus = document.querySelector('#upload-status');
+const uploadFolders = document.querySelector('#upload-folders');
+const chooseFiles = uploadForm.querySelector('[type="submit"]');
+let uploadSession;
+let folderRevision = 0;
+async function loadUploadFolders() {
+  const session = uploadSession, revision = ++folderRevision;
+  uploadFolders.replaceChildren();
+  if (!session) return;
+  try {
+    const result = await api('/api/files?' + new URLSearchParams({session}));
+    if (revision !== folderRevision || session !== uploadSession || uploadForm.hidden) return;
+    uploadFolders.replaceChildren(...result.entries.filter(entry => entry.type === 'dir').map(entry => {
+      const option = document.createElement('option'); option.value = entry.name; return option;
+    }));
+  } catch { /* Folder suggestions are optional; typed folders still work. */ }
+}
+function openUpload() {
+  if (!swapForm.hidden) closeSwap();
+  uploadForm.hidden = false;
+  upload.setAttribute('aria-expanded', 'true');
+  uploadDir.focus();
+  loadUploadFolders();
+}
+function closeUpload() {
+  const focused = document.activeElement;
+  uploadForm.hidden = true;
+  upload.setAttribute('aria-expanded', 'false');
+  if (uploadForm.contains(focused) || !focused.matches('input, textarea') || !focused.value) {
+    (upload.hidden || upload.disabled ? cards.get(currentPane())?.el.querySelector('.output') : upload)?.focus();
+  }
+}
+upload.onclick = () => {
+  if (upload.disabled) return;
+  if (!uploadForm.hidden) { closeUpload(); return; }
+  openUpload();
+};
+uploadForm.querySelector('.cancel').onclick = closeUpload;
+uploadForm.onkeydown = event => {
+  if (event.key === 'Escape') { event.preventDefault(); closeUpload(); }
+};
+uploadForm.onsubmit = event => {
+  event.preventDefault();
+  if (!chooseFiles.disabled) uploadFiles.click();
+};
+uploadFiles.onchange = async () => {
+  const card = cards.get(currentPane());
+  const files = Array.from(uploadFiles.files);
+  uploadFiles.value = '';
+  if (!card || card.closed || !files.length) return;
+  const session = card.latest.session;
+  const dir = uploadDir.value.trim() || 'upload';
+  const results = [];
+  upload.disabled = true;
+  chooseFiles.disabled = true;
+  uploadStatus.classList.remove('error');
+  try {
+    for (const file of files) {
+      uploadStatus.textContent = [...results, 'Uploading ' + file.name + '...'].join('\n');
+      try {
+        const query = new URLSearchParams({session, name: file.name, dir});
+        const response = await fetch('/api/upload?' + query, {method: 'POST', headers: {
+          'X-Peon-Token': token, 'Content-Type': 'application/octet-stream'
+        }, body: file});
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || 'Request failed');
+        results.push(file.name + ': ' + result.message);
+      } catch (error) {
+        results.push(file.name + ': ' + error.message);
+        uploadStatus.classList.add('error');
+      }
+      uploadStatus.textContent = results.join('\n');
+    }
+  } finally {
+    try { localStorage.setItem('peon-upload-dir:' + session, dir); } catch {}
+    upload.disabled = false; chooseFiles.disabled = false;
+  }
+};
+const filesButton = document.querySelector('#files');
+const filesDialog = document.querySelector('#files-dialog');
+const fileBreadcrumb = document.querySelector('#file-breadcrumb');
+const fileList = document.querySelector('#file-list');
+const filesStatus = document.querySelector('#files-status');
+const uploadHere = document.querySelector('#upload-here');
+const fileViewer = document.querySelector('#viewer');
+const fileViewerName = document.querySelector('#file-viewer-name');
+const filePreview = document.querySelector('#file-preview');
+let filesSession, fileDir = '', filesRevision = 0, viewRevision = 0, viewerUrl;
+function fileButton(label, action) {
+  const button = document.createElement('button');
+  button.type = 'button'; button.textContent = label; button.onclick = action;
+  return button;
+}
+function renderFileBreadcrumb() {
+  fileBreadcrumb.replaceChildren(fileButton('Project', () => loadFiles('')));
+  let path = '';
+  for (const part of fileDir.split('/').filter(Boolean)) {
+    path += (path ? '/' : '') + part;
+    const dir = path;
+    fileBreadcrumb.append(' / ', fileButton(part, () => loadFiles(dir)));
+  }
+}
+async function fileBlob(session, path) {
+  const response = await fetch('/api/file?' + new URLSearchParams({session, path}), {headers: {'X-Peon-Token': token}});
+  if (!response.ok) {
+    const result = await response.json();
+    throw new Error(result.error || 'Request failed');
+  }
+  return response.blob();
+}
+async function openFile(entry, view) {
+  const session = filesSession, revision = filesRevision;
+  const path = (fileDir ? fileDir + '/' : '') + entry.name;
+  const viewerRevision = view ? ++viewRevision : viewRevision;
+  if (view) {
+    fileViewerName.textContent = entry.name;
+    filePreview.textContent = 'Loading...';
+    fileViewer.showModal();
+  }
+  try {
+    const blob = await fileBlob(session, path);
+    if (view && (revision !== filesRevision || !filesDialog.open || !fileViewer.open || viewerRevision !== viewRevision)) return;
+    const url = URL.createObjectURL(blob);
+    if (view) {
+      viewerUrl = url;
+      const media = document.createElement(/\.pdf$/i.test(entry.name) ? 'iframe' : 'img');
+      if (media.tagName === 'IMG') media.alt = entry.name;
+      else media.title = entry.name;
+      media.src = url;
+      filePreview.replaceChildren(media);
+    } else {
+      const link = document.createElement('a');
+      link.href = url; link.download = entry.name;
+      document.body.append(link); link.click(); link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }
+  } catch (error) {
+    if (!filesDialog.open || (view && revision !== filesRevision)) return;
+    if (view) {
+      if (viewerRevision === viewRevision && fileViewer.open) filePreview.textContent = error.message;
+    } else { filesStatus.textContent = error.message; filesStatus.classList.add('error'); }
+  }
+}
+async function loadFiles(dir, fallback = false) {
+  const session = filesSession, revision = ++filesRevision;
+  fileDir = dir;
+  renderFileBreadcrumb();
+  fileList.replaceChildren();
+  uploadHere.disabled = true;
+  filesStatus.textContent = 'Loading...';
+  filesStatus.classList.remove('error');
+  try {
+    const result = await api('/api/files?' + new URLSearchParams({session, dir}));
+    if (revision !== filesRevision || !filesDialog.open) return;
+    fileDir = result.dir;
+    renderFileBreadcrumb();
+    uploadHere.disabled = !fileDir;
+    filesStatus.textContent = result.entries.length ? '' : 'This folder is empty.';
+    fileList.replaceChildren(...result.entries.map(entry => {
+      const row = document.createElement('div'); row.className = 'file-row';
+      const path = (fileDir ? fileDir + '/' : '') + entry.name;
+      const name = entry.type === 'dir' ? fileButton(entry.name + '/', () => loadFiles(path)) : document.createElement('span');
+      name.className = 'file-name';
+      if (entry.type !== 'dir') name.textContent = entry.name;
+      row.append(name);
+      if (entry.type === 'file') {
+        const size = document.createElement('span'); size.className = 'meta'; size.textContent = entry.size + ' B';
+        row.append(size, fileButton('Download', () => openFile(entry, false)));
+        if (/\.(png|jpe?g|gif|webp|svg|pdf)$/i.test(entry.name)) row.append(fileButton('View', () => openFile(entry, true)));
+      }
+      return row;
+    }));
+  } catch (error) {
+    if (revision !== filesRevision || !filesDialog.open) return;
+    if (fallback && dir && error.status === 404) return loadFiles('');
+    filesStatus.textContent = error.message;
+    filesStatus.classList.add('error');
+  }
+}
+filesButton.onclick = () => {
+  const card = cards.get(currentPane());
+  if (!card || card.closed) return;
+  if (!uploadForm.hidden) closeUpload();
+  if (!swapForm.hidden) closeSwap();
+  if (filesSession !== card.latest.session) fileDir = '';
+  filesSession = card.latest.session;
+  filesDialog.showModal();
+  loadFiles(fileDir, true);
+};
+filesDialog.querySelector('.close').onclick = () => filesDialog.close();
+filesDialog.onclose = () => { filesRevision++; if (fileViewer.open) fileViewer.close(); };
+fileViewer.querySelector('.close').onclick = () => fileViewer.close();
+fileViewer.onclose = () => {
+  viewRevision++;
+  filePreview.replaceChildren();
+  if (viewerUrl) { URL.revokeObjectURL(viewerUrl); viewerUrl = null; }
+};
+uploadHere.onclick = () => {
+  if (uploadHere.disabled) return;
+  uploadDir.value = fileDir;
+  filesDialog.close();
+  openUpload();
+};
 const swap = document.querySelector('#swap');
 const swapForm = document.querySelector('#swap-form');
 let swapSelection;
@@ -212,6 +419,21 @@ function updateSwap() {
   }
   swap.disabled = disabled;
   swap.hidden = !card || card.closed;
+  upload.hidden = swap.hidden;
+  filesButton.hidden = swap.hidden;
+  const session = card?.latest?.session;
+  if (session !== uploadSession) {
+    uploadSession = session;
+    folderRevision++;
+    uploadDir.value = 'upload';
+    try { uploadDir.value = localStorage.getItem('peon-upload-dir:' + session) || 'upload'; } catch {}
+    uploadFolders.replaceChildren();
+    uploadStatus.textContent = '';
+    if (filesDialog.open) filesDialog.close();
+    if (!uploadForm.hidden) loadUploadFolders();
+  }
+  if (swap.hidden && filesDialog.open) filesDialog.close();
+  if (!uploadForm.hidden && targetGone) closeUpload();
   for (const control of swapForm.querySelectorAll('input, select, button')) control.disabled = disabled;
   if (disabled && focused) card?.el.querySelector('.output').focus();
 }
@@ -228,6 +450,7 @@ function closeSwap() {
 swap.onclick = () => {
   if (swap.disabled) return;
   if (!swapForm.hidden) { closeSwap(); return; }
+  if (!uploadForm.hidden) closeUpload();
   const card = cards.get(currentPane());
   prefillSwap(card);
   swapForm.hidden = false;
