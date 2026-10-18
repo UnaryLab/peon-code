@@ -92,8 +92,8 @@ dialog footer { padding-top: 12px; }
 .keys-toggle[aria-expanded="true"] { background: #eef0ec; }
 .selection-note { color: var(--muted); font-size: 12px; margin-left: auto; }
 .swap-state { margin-left: auto; min-width: 0; max-width: 100%; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; text-align: right; }
-button { font: inherit; font-size: 14px; border: 1px solid var(--accent-border); border-radius: 4px; padding: 5px 10px; background: var(--accent); color: #1a1a1a; cursor: pointer; }
-button:disabled { opacity: .45; cursor: default; }
+button { font: inherit; font-size: 14px; border: 1px solid var(--accent-border); border-radius: 4px; padding: 5px 10px; background: var(--accent); color: #1a1a1a; cursor: pointer; transition: opacity 0s; }
+button:disabled { opacity: .45; cursor: default; transition: opacity 0s .3s; }
 button:focus-visible, input:focus-visible, textarea:focus-visible, .output:focus-visible, a:focus-visible { outline: 2px solid #555; outline-offset: 3px; }
 form { display: flex; flex-shrink: 0; gap: 8px; padding: 0 12px; }
 textarea { resize: vertical; min-height: 44px; max-height: 40vh; width: 100%; font-family: inherit; font-size: 14px; line-height: 1.3; background: #fff; border: 1px solid var(--line); border-radius: 4px; padding: 4px; color: var(--text); }
