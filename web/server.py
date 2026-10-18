@@ -1,6 +1,7 @@
 """Loopback-only browser bridge to existing peon-code tmux panes."""
 import json
 import errno
+import io
 import mimetypes
 import os
 import re
@@ -13,6 +14,7 @@ import socket
 import stat
 import time
 import tempfile
+import zipfile
 from bridge import panes, snapshot, tmux
 from launch import arguments, open_browser, remote_ui, open_project, DEFAULT_PORT, REMOTE_CONFIG_DIR
 import threading
@@ -170,7 +172,7 @@ class Handler(BaseHTTPRequestHandler):
             query = parse_qs(parsed.query, keep_blank_values=True)
             listing = parsed.path == "/api/files"
             try:
-                relative, target = self.project_path(query.get("session", [""])[0], query.get("dir" if listing else "path", [""])[0], allow_root=listing)
+                relative, target = self.project_path(query.get("session", [""])[0], query.get("dir" if listing else "path", [""])[0], allow_root=True)
                 if listing:
                     entries = []
                     with os.scandir(target) as folder:
@@ -185,6 +187,28 @@ class Handler(BaseHTTPRequestHandler):
                     self.respond(200, {"dir": relative, "entries": entries})
                 else:
                     metadata = target.stat()
+                    if stat.S_ISDIR(metadata.st_mode):
+                        files, total = [], 0
+                        def walk_error(error):
+                            raise error
+                        for directory, _, names in os.walk(target, followlinks=False, onerror=walk_error):
+                            for name in names:
+                                file = Path(directory) / name
+                                metadata = file.lstat()
+                                if not stat.S_ISREG(metadata.st_mode):
+                                    continue
+                                total += metadata.st_size
+                                if total > MAX_FILE_BYTES:
+                                    self.respond(413, {"error": "Folder contents exceed 256 MiB"})
+                                    return
+                                files.append(file)
+                        # Build the archive in memory; stream to a temp file if larger archives matter.
+                        content = io.BytesIO()
+                        with zipfile.ZipFile(content, "w", compression=zipfile.ZIP_DEFLATED, strict_timestamps=False) as archive:
+                            for file in files:
+                                archive.write(file, file.relative_to(target).as_posix())
+                        self.respond(200, content.getvalue(), "application/zip", filename=(Path(relative).name if relative else target.name) + ".zip")
+                        return
                     if not stat.S_ISREG(metadata.st_mode):
                         self.respond(404, {"error": "Not a regular file"})
                         return

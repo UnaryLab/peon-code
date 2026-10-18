@@ -15,6 +15,7 @@ import threading
 import tempfile
 import time
 import unittest
+import zipfile
 from types import SimpleNamespace
 from http.client import HTTPConnection
 from pathlib import Path
@@ -173,14 +174,14 @@ class WebTests(unittest.TestCase):
                     with self.subTest(endpoint=endpoint, headers=headers):
                         self.assertEqual(self.request("GET", endpoint + "?session=team", headers=headers)[0], 403)
                 self.assertEqual(self.request("GET", endpoint + "?session=unknown")[0], 400)
-            self.assertEqual(self.request("GET", "/api/file?session=team&path=")[0], 400)
+            self.assertEqual(self.request("GET", "/api/file?session=team&path=")[0], 200)
 
     def test_files_and_download_report_missing_and_non_regular_targets(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(web, "panes", return_value=[dict(session="team", projectDir=directory)]):
             (Path(directory) / "folder").mkdir()
             (Path(directory) / "file").write_bytes(b"data")
             os.mkfifo(Path(directory) / "pipe")
-            for url in ("/api/files?session=team&dir=missing", "/api/files?session=team&dir=file", "/api/file?session=team&path=folder", "/api/file?session=team&path=missing", "/api/file?session=team&path=pipe"):
+            for url in ("/api/files?session=team&dir=missing", "/api/files?session=team&dir=file", "/api/file?session=team&path=missing", "/api/file?session=team&path=pipe"):
                 with self.subTest(url=url):
                     self.assertEqual(self.request("GET", url)[0], 404)
             status, body = self.request("GET", "/api/files?session=team")
@@ -214,6 +215,62 @@ class WebTests(unittest.TestCase):
             self.assertEqual(self.request("GET", "/api/file?session=team&path=data.bin")[0], 413)
             target.write_bytes(b"yes")
             self.assertEqual(self.request("GET", "/api/file?session=team&path=data.bin"), (200, b"yes"))
+
+    def test_directory_download_zips_relative_regular_files_without_symlinks(self):
+        with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as outside, patch.object(web, "panes", return_value=[dict(session="team", projectDir=directory)]):
+            root = Path(directory) / "figures"
+            (root / "sub/empty").mkdir(parents=True)
+            (root / "plot.png").write_bytes(b"\x00\xff\r\n")
+            (root / "sub/日本語.bin").write_bytes(b"nested")
+            (Path(outside) / "secret").write_bytes(b"outside")
+            (root / "file-link").symlink_to(Path(outside) / "secret")
+            (root / "internal-link").symlink_to(root / "plot.png")
+            (root / "dir-link").symlink_to(outside, target_is_directory=True)
+            os.mkfifo(root / "pipe")
+            status, body, headers = self.request("GET", "/api/file?session=team&path=figures", response_headers=True)
+            self.assertEqual(status, 200)
+            self.assertEqual(headers["Content-Type"], "application/zip")
+            self.assertEqual(headers["Content-Length"], str(len(body)))
+            self.assertEqual(headers["Content-Disposition"], "attachment; filename*=UTF-8''figures.zip")
+            with zipfile.ZipFile(io.BytesIO(body)) as archive:
+                self.assertEqual(set(archive.namelist()), {"plot.png", "sub/日本語.bin"})
+                self.assertEqual(archive.read("plot.png"), b"\x00\xff\r\n")
+                self.assertEqual(archive.read("sub/日本語.bin"), b"nested")
+                self.assertTrue(all(item.compress_type == zipfile.ZIP_DEFLATED for item in archive.infolist()))
+
+    def test_directory_download_root_uses_project_basename(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(web, "panes", return_value=[dict(session="team", projectDir=directory)]):
+            (Path(directory) / "root.txt").write_bytes(b"root")
+            for suffix in ("", "&path="):
+                with self.subTest(suffix=suffix):
+                    status, body, headers = self.request("GET", "/api/file?session=team" + suffix, response_headers=True)
+                    self.assertEqual(status, 200)
+                    self.assertEqual(headers["Content-Disposition"], "attachment; filename*=UTF-8''" + quote(Path(directory).name + ".zip", safe=""))
+                    with zipfile.ZipFile(io.BytesIO(body)) as archive:
+                        self.assertEqual(archive.namelist(), ["root.txt"])
+                        self.assertEqual(archive.read("root.txt"), b"root")
+
+    def test_directory_download_checks_total_size_before_compression(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(web, "panes", return_value=[dict(session="team", projectDir=directory)]), patch.object(web, "MAX_FILE_BYTES", 5):
+            root = Path(directory) / "data"
+            root.mkdir()
+            (root / "a").write_bytes(b"abc")
+            (root / "b").write_bytes(b"def")
+            with patch.object(web.zipfile, "ZipFile") as archive:
+                self.assertEqual(self.request("GET", "/api/file?session=team&path=data")[0], 413)
+                archive.assert_not_called()
+            (root / "b").write_bytes(b"de")
+            status, body = self.request("GET", "/api/file?session=team&path=data")
+            self.assertEqual(status, 200)
+            with zipfile.ZipFile(io.BytesIO(body)) as archive:
+                self.assertEqual({name: archive.read(name) for name in archive.namelist()}, {"a": b"abc", "b": b"de"})
+
+    def test_directory_download_reports_walk_errors(self):
+        def unreadable(directory, followlinks, onerror):
+            self.assertFalse(followlinks)
+            onerror(PermissionError("Cannot read folder"))
+        with tempfile.TemporaryDirectory() as directory, patch.object(web, "panes", return_value=[dict(session="team", projectDir=directory)]), patch.object(web.os, "walk", side_effect=unreadable):
+            self.assertEqual(self.request("GET", "/api/file?session=team")[0], 503)
 
     def test_files_and_download_report_operating_system_errors(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(web, "panes", return_value=[dict(session="team", projectDir=directory)]):

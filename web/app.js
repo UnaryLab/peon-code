@@ -264,17 +264,16 @@ function renderFileBreadcrumb() {
     fileBreadcrumb.append(' / ', fileButton(part, () => loadFiles(dir)));
   }
 }
-async function fileBlob(session, path) {
+async function fetchFile(session, path) {
   const response = await fetch('/api/file?' + new URLSearchParams({session, path}), {headers: {'X-Peon-Token': token}});
   if (!response.ok) {
     const result = await response.json();
     throw new Error(result.error || 'Request failed');
   }
-  return response.blob();
+  return response;
 }
-async function openFile(entry, view) {
+async function openFile(entry, view, path = (fileDir ? fileDir + '/' : '') + entry.name) {
   const session = filesSession, revision = filesRevision;
-  const path = (fileDir ? fileDir + '/' : '') + entry.name;
   const viewerRevision = view ? ++viewRevision : viewRevision;
   if (view) {
     fileViewerName.textContent = entry.name;
@@ -282,7 +281,8 @@ async function openFile(entry, view) {
     fileViewer.showModal();
   }
   try {
-    const blob = await fileBlob(session, path);
+    const response = await fetchFile(session, path);
+    const blob = await response.blob();
     if (view && (revision !== filesRevision || !filesDialog.open || !fileViewer.open || viewerRevision !== viewRevision)) return;
     const url = URL.createObjectURL(blob);
     if (view) {
@@ -295,6 +295,13 @@ async function openFile(entry, view) {
     } else {
       const link = document.createElement('a');
       link.href = url; link.download = entry.name;
+      if (entry.type === 'dir') {
+        link.download += '.zip';
+        const filename = /filename\*=UTF-8''([^;]+)/i.exec(response.headers.get('Content-Disposition') || '');
+        if (filename) {
+          try { link.download = decodeURIComponent(filename[1]); } catch {}
+        }
+      }
       document.body.append(link); link.click(); link.remove();
       setTimeout(() => URL.revokeObjectURL(url), 1000);
     }
@@ -304,6 +311,12 @@ async function openFile(entry, view) {
       if (viewerRevision === viewRevision && fileViewer.open) filePreview.textContent = error.message;
     } else { filesStatus.textContent = error.message; filesStatus.classList.add('error'); }
   }
+}
+function formatFileSize(size) {
+  const units = ['B', 'KB', 'MB', 'GB'];
+  let unit = 0;
+  while (unit < units.length - 1 && Number(size.toFixed(1)) >= 1024) { size /= 1024; unit++; }
+  return (unit ? size.toFixed(1) : size) + ' ' + units[unit];
 }
 async function loadFiles(dir, fallback = false) {
   const session = filesSession, revision = ++filesRevision;
@@ -327,8 +340,9 @@ async function loadFiles(dir, fallback = false) {
       name.className = 'file-name';
       if (entry.type !== 'dir') name.textContent = entry.name;
       row.append(name);
+      if (entry.type === 'dir') row.append(fileButton('Download', () => openFile(entry, false)));
       if (entry.type === 'file') {
-        const size = document.createElement('span'); size.className = 'meta'; size.textContent = entry.size + ' B';
+        const size = document.createElement('span'); size.className = 'meta'; size.textContent = formatFileSize(entry.size);
         row.append(size, fileButton('Download', () => openFile(entry, false)));
         if (/\.(png|jpe?g|gif|webp|svg|pdf)$/i.test(entry.name)) row.append(fileButton('View', () => openFile(entry, true)));
       }
@@ -350,6 +364,11 @@ filesButton.onclick = () => {
   filesSession = card.latest.session;
   filesDialog.showModal();
   loadFiles(fileDir, true);
+};
+document.querySelector('#download-folder').onclick = () => {
+  const project = cards.get(currentPane())?.latest.projectDir || '';
+  const name = fileDir.split('/').pop() || project.split('/').filter(Boolean).pop() || 'project';
+  openFile({name, type: 'dir'}, false, fileDir);
 };
 filesDialog.querySelector('.close').onclick = () => filesDialog.close();
 filesDialog.onclose = () => { filesRevision++; if (fileViewer.open) fileViewer.close(); };
