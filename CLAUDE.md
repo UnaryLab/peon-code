@@ -41,6 +41,7 @@ Bash launcher that builds a tmux session of side-by-side AI coding agent CLIs (c
 - Keep the terminal launcher in bash. The optional browser UI uses Python 3.10+ stdlib and buildless HTML/CSS/JS; no third-party dependencies.
 - `shellcheck` clean.
 - Comments and docs are tool-independent: never reference an assistant skill, mode, or persona (no `ponytail:` or similar prefixes). Mark a deliberate simplification with a plain comment stating the limit and the upgrade path.
+- Browser UI: during a send, every button on the page dims the same way (body.busy in web/style.css); functional disabling stays per button.
 
 ## Creating a role
 

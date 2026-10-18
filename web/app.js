@@ -166,6 +166,7 @@ const uploadStatus = document.querySelector('#upload-status');
 const uploadFolders = document.querySelector('#upload-folders');
 const chooseFiles = uploadForm.querySelector('[type="submit"]');
 let uploadSession;
+let uploading = false;
 let folderRevision = 0;
 async function loadUploadFolders() {
   const session = uploadSession, revision = ++folderRevision;
@@ -215,8 +216,7 @@ uploadFiles.onchange = async () => {
   const session = card.latest.session;
   const dir = uploadDir.value.trim() || 'upload';
   const results = [];
-  upload.disabled = true;
-  chooseFiles.disabled = true;
+  uploading = true; updateSwap();
   uploadStatus.classList.remove('error');
   try {
     for (const file of files) {
@@ -237,7 +237,7 @@ uploadFiles.onchange = async () => {
     }
   } finally {
     try { localStorage.setItem('peon-upload-dir:' + session, dir); } catch {}
-    upload.disabled = false; chooseFiles.disabled = false;
+    uploading = false; updateSwap();
   }
 };
 const filesButton = document.querySelector('#files');
@@ -423,6 +423,7 @@ function updateSwap() {
   const card = cards.get(currentPane());
   const selected = card?.key;
   const focused = document.activeElement === swap || swapForm.contains(document.activeElement);
+  const uploadFocused = uploadForm.contains(document.activeElement);
   let targetGone = !card || card.closed;
   if (selected !== swapSelection) {
     const previous = cards.get(swapSelection);
@@ -437,6 +438,9 @@ function updateSwap() {
     swap.setAttribute('aria-expanded', 'false');
   }
   swap.disabled = disabled;
+  filesButton.disabled = disabled;
+  upload.disabled = disabled || uploading;
+  for (const control of uploadForm.querySelectorAll('input, button')) control.disabled = disabled || uploading;
   swap.hidden = !card || card.closed;
   upload.hidden = swap.hidden;
   filesButton.hidden = swap.hidden;
@@ -454,7 +458,7 @@ function updateSwap() {
   if (swap.hidden && filesDialog.open) filesDialog.close();
   if (!uploadForm.hidden && targetGone) closeUpload();
   for (const control of swapForm.querySelectorAll('input, select, button')) control.disabled = disabled;
-  if (disabled && focused) card?.el.querySelector('.output').focus();
+  if ((disabled && focused) || ((disabled || uploading) && uploadFocused)) card?.el.querySelector('.output').focus();
 }
 const renderNavigation = updateNavigation;
 updateNavigation = () => { renderNavigation(); updateSwap(); };
@@ -534,9 +538,13 @@ function feedback(card, message, error = false) {
   card.el.querySelector('.feedback').textContent = message;
   card.el.querySelector('.feedback').classList.toggle('error', error);
 }
+function updateBusy() {
+  document.body.classList.toggle('busy', [...cards.values()].some(card => card.busy));
+}
 function setSelection(card, text) {
+  updateBusy();
   card.selected = text;
-  for (const button of card.el.querySelectorAll('.prompt-buttons button, .add-button, .button-form button[type="submit"]')) button.disabled = card.busy || card.closed;
+  for (const button of card.el.querySelectorAll('.prompt-buttons button, .add-button, .button-form button, .stack-order, .add-screen, .close-screen')) button.disabled = card.busy || card.closed;
   updateSwap();
   card.el.querySelector('.explain').disabled = !text.trim() || card.busy || card.closed;
   card.el.querySelector('.discard').hidden = !card.closed;
