@@ -69,9 +69,8 @@ class SizingTmux:
         elif command == "break-pane":
             pane = args[args.index("-s") + 1]
             assert list(self.windows.values()).count(self.windows[pane]) > 1
-            session = next(item["session"] for item in self.group if item["id"] == pane)
             self.layout[self.windows[pane]].remove(pane)
-            self.windows[pane] = session + ":" + args[-1]
+            self.windows[pane] = target + args[-1]
             self.layout[self.windows[pane]] = [pane]
         elif command == "join-pane":
             pane = args[args.index("-s") + 1]
@@ -398,8 +397,8 @@ class WebTests(unittest.TestCase):
                 self.assertEqual([call.args for call in snapshot.call_args_list[-3:]], [(group[0],), (group[1], 1000, 35), (group[2],)])
         self.assertEqual(fake.order["team"], "%1 %2 %3")
         self.assertEqual([call.args for call in tmux.call_args_list if call.args[0] == "break-pane"], [
-            ("break-pane", "-d", "-s", "%1", "-n", "p1"),
-            ("break-pane", "-d", "-s", "%2", "-n", "p2")])
+            ("break-pane", "-d", "-s", "%1", "-t", "=team:", "-n", "p1"),
+            ("break-pane", "-d", "-s", "%2", "-t", "=team:", "-n", "p2")])
         self.assertEqual([call.args for call in tmux.call_args_list if call.args[0] == "resize-window"], [
             ("resize-window", "-t", "team:p2", "-x", "120", "-y", "35")])
         self.assertEqual(fake.sizes, {"team:p2": "120x35"})

@@ -285,7 +285,7 @@ class Handler(BaseHTTPRequestHandler):
                                 tmux("set-option", "-t", session, "@peon_pane_order", " ".join(order))
                             for pane in tmux("list-panes", "-s", "-t", "=" + session, "-F", "#{pane_id}").split():
                                 if int(tmux("display-message", "-p", "-t", pane, "#{window_panes}").strip()) > 1:
-                                    tmux("break-pane", "-d", "-s", pane, "-n", "p" + pane[1:])
+                                    tmux("break-pane", "-d", "-s", pane, "-t", "=" + session + ":", "-n", "p" + pane[1:])
                             window = tmux("display-message", "-p", "-t", target, "#{window_id}").strip()
                             width, height, pane_height = map(int, tmux("display-message", "-p", "-t", window, "#{window_width}\t#{window_height}\t#{pane_height}").split())
                             # A single broken pane has no border; agents retains its top border row.
