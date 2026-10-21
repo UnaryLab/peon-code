@@ -86,7 +86,7 @@ Codex: the step resolves `${CODEX_HOME:-$HOME/.codex}/config.toml` through up to
 
 ## Briefs
 
-`create_agent_session` passes `-e "PEON_CODE_SESSION=$session"` to tmux `new-session` and `split-window`, so each pane inherits the session name with support for tmux 3.2 and newer.
+`create_agent_session` passes `-e "PEON_CODE_SESSION=$session"` and `-e DISABLE_AUTO_UPDATE=true` to tmux `new-session` and `split-window`, so each pane inherits the session name with support for tmux 3.2 and newer, and an oh-my-zsh shell skips its update check, whose `read -k 1` at shell start would consume the first key of the pasted launch command.
 
 After the trust step, `launch_agents` makes two passes over the panes. The first pass writes each brief file and sends each pane its launch command: a paste, a fixed one-second pause, then `Enter`, with no readiness wait except the shell check after the scope line described below. The second pass goes through the panes in order: it waits for the pane to leave the shell, and for a claude pane it answers a resume picker, waits for the pane to settle, and pastes the brief. Because every CLI is already starting when the second pass begins, the waits on earlier panes overlap the startup of later ones; only the per-pane checks are serial. A pane whose launch command failed is not skipped: it times out in the readiness wait and joins the failed list.
 

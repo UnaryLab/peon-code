@@ -140,7 +140,7 @@ create_agent_session() {
   local session=$1 count=$2 main=$3 i pane_id
   # First agent is the new-session window; the rest are split off it.
   # Retile after each split so large teams do not hit "pane too small".
-  tmux new-session -d -s "$session" -n agents -c "$PWD" -e "PEON_CODE_SESSION=$session"
+  tmux new-session -d -s "$session" -n agents -c "$PWD" -e "PEON_CODE_SESSION=$session" -e DISABLE_AUTO_UPDATE=true
   tmux set-option -t "$session" @peon_code 1
   tmux set-option -t "$session" @peon_project_dir "$PWD"
   # Session-scoped, so the terminal tab caption is set only here.
@@ -150,7 +150,7 @@ create_agent_session() {
   tmux set -w -t "$session":agents pane-border-status top
   tmux set -w -t "$session":agents pane-border-format ' #{pane_index}: #{?#{@peon_name},#{@peon_name},#{pane_title}} '
   for ((i = 1; i < count; i++)); do
-    if ! tmux split-window -t "$session":agents -c "$PWD" -e "PEON_CODE_SESSION=$session"; then
+    if ! tmux split-window -t "$session":agents -c "$PWD" -e "PEON_CODE_SESSION=$session" -e DISABLE_AUTO_UPDATE=true; then
       tmux kill-session -t "=$session"
       die "could not make pane $((i + 1)) of $count; killed session $session"
     fi

@@ -143,7 +143,7 @@ done
 # in FAILED_AGENTS.
 launch_agents() {
   local command bin physical_dir scope_command=""
-  local project_dirs=()
+  local project_dirs=() launch_commands=()
   physical_dir=$(pwd -P)
   project_dirs=("$physical_dir")
   [ "$physical_dir" = "$PWD" ] || project_dirs+=("$PWD")
@@ -181,6 +181,7 @@ launch_agents() {
     # Quoted for the pane's shell: a qwen id can be a saved-chat tag, not a uuid.
     RID=${RID:+$(printf %q "$RID")}
     LAUNCH=$(cli_call "$BIN" launch_command "$BIN" "$ARGS" "$RID" "$Q" "$i")
+    launch_commands[i]=$LAUNCH
     tmux set -pt "${PANE_IDS[$i]}" @peon_launch \
       "$(cli_call "$BIN" launch_command "$BIN" "$ARGS" "" "$Q" "$i" 2>/dev/null)"
     if [ -n "$scope_command" ] &&
@@ -204,6 +205,15 @@ launch_agents() {
     RID=${RESUME_IDS[$i]}
     BRIEF=$(cat "$BRIEF_DIR/$i.md")
     if ! wait_agent_ready "${PANE_IDS[$i]}"; then
+      case $(tmux display -pt "${PANE_IDS[$i]}" '#{pane_current_command}' 2>/dev/null) in
+        sh|bash|zsh|fish|dash|ksh)
+          # Retry once if shell startup lost the first launch paste.
+          if with_pane_delivery "${PANE_IDS[$i]}" launch_command_locked "${PANE_IDS[$i]}" "${launch_commands[$i]}" &&
+            wait_agent_ready "${PANE_IDS[$i]}"; then
+            cli_call "${CMDS[$i]%% *}" brief_after_start
+            continue
+          fi ;;
+      esac
       FAILED_AGENTS+=("${NAMES[$i]}")
       continue
     fi

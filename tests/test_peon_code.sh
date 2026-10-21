@@ -104,6 +104,7 @@ test_launch_scope() (
   source "$ROOT/lib/delivery.sh"
   mkdir -p "$bin_dir" "$bare_dir" "$BRIEF_DIR"
   ln -s "$(command -v cat)" "$bin_dir/cat"
+  ln -s "$(command -v grep)" "$bin_dir/grep"
   ln -s "$(command -v cat)" "$bare_dir/cat"
   ln -s "$(type -P true)" "$bin_dir/true"
   cat >"$bin_dir/systemd-run" <<'SCOPE'
@@ -115,20 +116,36 @@ shift
 exec "$@"
 SCOPE
   chmod +x "$bin_dir/systemd-run"
-  tmux() { :; }
+  tmux() {
+    [ "$1" = display ] || return 0
+    case $mode in
+      sh|bash|zsh|fish|dash|ksh)
+        # The first paste is lost; the second starts the fake agent.
+        if [ "$(grep -c "^$3:" "$pasted")" -eq 2 ]; then
+          printf 'scope_agent\n'
+        else
+          printf '%s\n' "$mode"
+        fi ;;
+      stuck) printf 'bash\n' ;;
+      nonshell) printf 'systemd-run\n' ;;
+      closed) return 1 ;;
+      *) printf 'scope_agent\n' ;;
+    esac
+  }
   sleep() { :; }
   build_brief() { printf 'launch brief'; }
   with_pane_delivery() { shift; "$@"; }
   paste_only() { { printf '%s:' "$1"; cat; printf '\n'; } >>"$pasted"; }
   wait_shell_ready() { printf '%s\n' "$1" >>"$TEST_DIR/scope-waits.log"; }
-  wait_agent_ready() { :; }
+  eval "$(sed -n '/^wait_agent_ready() {/,/^}/p' "$ROOT/lib/tmux.sh")"
   eval "$(sed -n '/^launch_agents() {/,/^}/p' "$ROOT/lib/launch.sh")"
-  for mode in supported missing failed; do
+  for mode in supported missing failed sh bash zsh fish dash ksh stuck nonshell closed; do
     : >"$SCOPE_LOG"
     : >"$pasted"
     : >"$TEST_DIR/scope-waits.log"
-    SCOPE_PROBE_RC=0
-    [ "$mode" != failed ] || SCOPE_PROBE_RC=1
+    FAILED_AGENTS=()
+    SCOPE_PROBE_RC=1
+    [ "$mode" != supported ] || SCOPE_PROBE_RC=0
     if [ "$mode" = missing ]; then
       PATH="$bare_dir" launch_agents
       [ ! -s "$SCOPE_LOG" ] || fail 'launch ran a missing systemd-run'
@@ -148,8 +165,21 @@ SCOPE
       [ "$(wc -l <"$pasted")" -eq 4 ] || fail 'scoped launch sent the wrong number of commands'
     else
       [ ! -s "$TEST_DIR/scope-waits.log" ] || fail 'launch waited for an unsupported scope shell'
-      [ "$(wc -l <"$pasted")" -eq 2 ] || fail 'unscoped launch sent extra commands'
+      case $mode in
+        sh|bash|zsh|fish|dash|ksh|stuck)
+          [ "$(wc -l <"$pasted")" -eq 4 ] || fail "$mode launch did not retry exactly once per pane"
+          for pane in %1 %2; do
+            sed -n "s/^$pane://p" "$pasted" >"$TEST_DIR/scope-$pane.retry"
+            [ "$(head -1 "$TEST_DIR/scope-$pane.retry")" = "$(tail -1 "$TEST_DIR/scope-$pane.retry")" ] ||
+              fail "$mode launch retried the wrong pane command"
+          done ;;
+        *) [ "$(wc -l <"$pasted")" -eq 2 ] || fail 'unscoped launch sent extra commands' ;;
+      esac
     fi
+    case $mode in
+      stuck|nonshell|closed) [ "${FAILED_AGENTS[*]}" = 'first second' ] || fail "$mode launch did not report failed agents" ;;
+      *) [ "${#FAILED_AGENTS[@]}" -eq 0 ] || fail "$mode launch reported a ready agent as failed" ;;
+    esac
     for pane in %1 %2; do
       [ "$pane" != %1 ] || grep -Fq -- '%1:scope_agent --flag value ' "$pasted" || fail 'alias launch command changed'
       [ "$pane" != %2 ] || grep -Fq -- '%2:scope_function --flag value ' "$pasted" || fail 'function launch command changed'
@@ -843,12 +873,12 @@ test_usage_report() (
   create_agent_session "$session" 4 0
   for pane in "${PANE_IDS[@]}"; do
     # shellcheck disable=SC2016 # The variable must expand in the pane shell.
-    tmux send-keys -t "$pane" 'printf "%s\n" "$PEON_CODE_SESSION"' Enter
+    tmux send-keys -t "$pane" 'printf "%s:%s\n" "$PEON_CODE_SESSION" "$DISABLE_AUTO_UPDATE"' Enter
     for ((i = 0; i < 100; i++)); do
-      if tmux capture-pane -pt "$pane" | grep -Fxq -- "$session"; then break; fi
+      if tmux capture-pane -pt "$pane" | grep -Fxq -- "$session:true"; then break; fi
       sleep 0.05
     done
-    [ "$i" -lt 100 ] || fail "pane $pane did not inherit PEON_CODE_SESSION=$session"
+    [ "$i" -lt 100 ] || fail "pane $pane did not inherit PEON_CODE_SESSION=$session and DISABLE_AUTO_UPDATE=true"
     case $pane in
       "${PANE_IDS[0]}") name=boss; bin=claude ;;
       "${PANE_IDS[1]}") name=impl; bin=codex ;;
