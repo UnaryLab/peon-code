@@ -475,6 +475,40 @@ class WebTests(unittest.TestCase):
             self.assertEqual(len(error.getvalue().splitlines()), int(index == 0))
         self.assertEqual(self.server.resize_errors, {"other"})
 
+    def test_refresh_removes_selected_card_for_dismissed_session(self):
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("Node is required to test browser refresh")
+        source = (ROOT / "web/app.js").read_text()
+        refresh = source[source.index("async function refresh() {"):source.index("api('/api/clis')")]
+        script = '''const assert = require('node:assert/strict');
+const card = {selected: 'selected output', latest: {session: 'team'}, el: {
+  querySelector: () => ({value: 'draft'}), remove: () => {card.removed = true;}
+}};
+const cards = new Map([['selected', card]]);
+let refreshing = false, refreshRequested = false, refreshTimer, dismissed = 'team', openedSession = null;
+const navigation = {session: 'team'}, connection = {}, document = {querySelector: () => ({})};
+function currentPane() {}
+function setTimeout() {}
+function clearTimeout() {}
+function paneKey(pane) {return pane.id;}
+async function api() {return {panes: []};}
+function saveScreens(saved, remove) {assert.equal(saved, card); assert.equal(remove, true); card.saved = true;}
+function feedback() {}
+function setSelection() {}
+function reconcileNavigation(panes) {navigation.panes = panes;}
+''' + refresh + '''
+refresh().then(() => {
+  assert.equal(cards.size, 0);
+  assert.equal(card.removed, true);
+  assert.equal(card.saved, true);
+  assert.deepEqual(navigation.panes, []);
+  assert.equal(navigation.session, undefined);
+  assert.equal(dismissed, null);
+});'''
+        result = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_real_browser_measurement_uses_output_line_height(self):
         chrome = shutil.which("google-chrome") or shutil.which("chromium")
         if not chrome:
@@ -910,6 +944,49 @@ refresh().then(parameters => {document.querySelector('#result').textContent = JS
             self.assertEqual(self.request("POST", "/api/dismiss", dict(session=session, padding="x" * 262144))[0], 400)
             self.assertEqual(run.call_count, 1)
 
+    def test_new_session_confirms_and_retries_folder_creation_once(self):
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("Node is required to test browser confirmation")
+        source = (ROOT / "web/app.js").read_text()
+        api = source[source.index("async function api("):source.index("const newSession =")]
+        submit = source[source.index("newSessionForm.onsubmit ="):source.index("document.querySelector('#dismiss')")]
+        script = '''const assert = require('node:assert/strict');
+async function check(approved, retryFails = false) {
+  const token = '', calls = [], button = {disabled: false};
+  const message = 'Project folder does not exist: /resolved/new.team';
+  let prompts = 0, openedSession, closed = false;
+  const newSessionStatus = {classList: {remove() {}, add() {}}};
+  const newSessionForm = {elements: {directory: {value: '~/new.team'}, session: {value: ''}, config: {files: []}},
+    querySelector: () => button, reset() {}};
+  async function fetch(path, options) {
+    assert.equal(path, '/api/open');
+    calls.push(JSON.parse(options.body));
+    const ok = calls.length === 2 && !retryFails;
+    return {ok, status: ok ? 200 : 409, json: async () => ok ? {session: 'new_team'} :
+      {error: message, create: true, directory: '/resolved/new.team'}};
+  }
+  function confirm(text) {
+    assert.equal(text, 'Folder /resolved/new.team does not exist. Create it?');
+    prompts++; return approved;
+  }
+  function closeNewSession() {closed = true;}
+  async function refresh() {}
+''' + api + submit + '''
+  await newSessionForm.onsubmit({preventDefault() {}});
+  assert.equal(prompts, 1);
+  assert.equal(calls.length, approved ? 2 : 1);
+  assert.deepEqual(calls[0], {directory: '~/new.team'});
+  if (approved) assert.deepEqual(calls[1], {directory: '/resolved/new.team', create: true});
+  assert.equal(button.disabled, false);
+  assert.equal(closed, approved && !retryFails);
+  assert.equal(newSessionStatus.textContent, approved && !retryFails ? '' : message);
+}
+(async () => {await check(false); await check(true); await check(true, true);})()
+  .catch(error => {console.error(error); process.exitCode = 1;});'''
+        result = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_open_session_arguments_and_unfilters_polling(self):
         directory = "/project with spaces; $(literal)"
         for session in (None, "", "custom.team"):
@@ -920,7 +997,7 @@ refresh().then(parameters => {document.querySelector('#result').textContent = JS
             with self.subTest(session=session), patch.object(web, "open_project", return_value="custom_team") as start:
                 status, body = self.request("POST", "/api/open", data)
                 self.assertEqual((status, json.loads(body)), (200, {"session": "custom_team"}))
-                start.assert_called_once_with(SimpleNamespace(directory=directory, session=session or "", config=None), ROOT, timeout=300)
+                start.assert_called_once_with(SimpleNamespace(directory=directory, session=session or "", config=None), ROOT, timeout=300, create=False)
                 self.assertIsNone(self.server.session)
                 with patch.object(web, "snapshot", side_effect=lambda pane: pane), patch.object(web, "panes", return_value=[dict(id="%3", session="custom_team")]) as panes:
                     status, body = self.request("GET", "/api/panes")
@@ -935,7 +1012,7 @@ refresh().then(parameters => {document.querySelector('#result').textContent = JS
             existing.write_text("Keep this file")
             paths = []
             text = "codex codex -\r\n# 日本語\n"
-            def launch_uploaded(args, root, timeout):
+            def launch_uploaded(args, root, timeout, create=False):
                 self.assertEqual((args.directory, args.session, root, timeout), ("~/project", "", ROOT, 300))
                 self.assertEqual(args.config.parent, uploads)
                 self.assertEqual(args.config.read_bytes(), text.encode("utf-8"))
@@ -956,6 +1033,7 @@ refresh().then(parameters => {document.querySelector('#result').textContent = JS
         invalid = [dict(directory=value) for value in ("", " ", "\t\n", "x" * 4097, "bad\0path", "relative", "./relative", "-rf", 1, None, [])]
         invalid += [dict(directory=value, config_name="team.conf", config_text="team") for value in ("relative", "./relative", "-rf")]
         invalid += [dict(valid, session=value) for value in (None, 1, [], {}, "-option", "bad\nname", "bad\x7fname")]
+        invalid += [dict(valid, create=value) for value in (None, 1, "true", [])]
         invalid += [dict(valid, session=value, config_name="team.conf", config_text="team") for value in ("-option", "bad\nname", "bad\x7fname")]
         invalid += [dict(valid, config_name="team.conf"), dict(valid, config_text="team")]
         invalid += [dict(valid, config_name=value, config_text="team") for value in ("", " ", ".", "..", "../team", "a/b", "a\\b", "a\0b", "a\nb", "a\x7fb", "\ud800", 1, None)]
@@ -975,7 +1053,7 @@ refresh().then(parameters => {document.querySelector('#result').textContent = JS
 
     def test_open_config_limit_counts_utf8_bytes(self):
         paths = []
-        def launch_uploaded(args, root, timeout):
+        def launch_uploaded(args, root, timeout, create=False):
             self.assertEqual(args.config.read_bytes(), text.encode("utf-8"))
             paths.append(args.config)
             return "team"
@@ -995,7 +1073,7 @@ refresh().then(parameters => {document.querySelector('#result').textContent = JS
         byte_timeout = subprocess.TimeoutExpired("tmux", 5, stderr=b"partial output")
         for error, expected in ((RuntimeError("bad project"), 400), (OSError("launch failed"), 503), (timeout, 503), (byte_timeout, 503)):
             paths = []
-            def fail_launch(args, root, timeout):
+            def fail_launch(args, root, timeout, create=False):
                 self.assertEqual(args.config.read_bytes(), b"team")
                 paths.append(args.config)
                 raise error
@@ -1033,13 +1111,37 @@ refresh().then(parameters => {document.querySelector('#result').textContent = JS
             self.assertEqual(list((Path(directory) / launch.REMOTE_CONFIG_DIR).iterdir()), [])
             popen.assert_not_called()
 
+    def test_open_confirms_before_creating_project_folder(self):
+        with tempfile.TemporaryDirectory() as directory:
+            project = (Path(directory) / "missing" / "new.team").resolve()
+            self.server.session = "team"
+            with patch.object(web.subprocess, "run") as run, patch.object(web.subprocess, "Popen") as popen:
+                status, body = self.request("POST", "/api/open", dict(directory=str(project)))
+                self.assertEqual((status, json.loads(body)), (409, {
+                    "error": "Project folder does not exist: " + str(project),
+                    "create": True, "directory": str(project)}))
+                self.assertFalse(project.parent.exists())
+                self.assertEqual(self.server.session, "team")
+                run.assert_not_called()
+                popen.assert_not_called()
+            outcomes = [subprocess.CompletedProcess([], 1), subprocess.CompletedProcess([], 0, "1", ""), subprocess.CompletedProcess([], 0, str(project) + "\n", "")]
+            process = Mock(returncode=0)
+            process.communicate.return_value = ("ready", "")
+            with patch.object(web.subprocess, "run", side_effect=outcomes), patch.object(web.subprocess, "Popen", return_value=process), contextlib.redirect_stderr(io.StringIO()):
+                status, body = self.request("POST", "/api/open", dict(directory=str(project), create=True))
+            self.assertEqual((status, json.loads(body)), (200, {"session": "new_team"}))
+            self.assertTrue(project.is_dir())
+            self.assertIsNone(self.server.session)
+
     def test_open_uses_shared_project_and_session_checks(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(web.subprocess, "run") as run:
             for session in ("-option", "bad\nname", "bad\x7fname"):
                 with self.subTest(session=session):
                     self.assertEqual(self.request("POST", "/api/open", dict(directory=directory, session=session))[0], 400)
             self.assertEqual(self.request("POST", "/api/open", dict(directory="/"))[0], 400)
-            self.assertEqual(self.request("POST", "/api/open", dict(directory=str(Path(directory) / "missing")))[0], 400)
+            project = Path(directory) / "file"
+            project.write_text("existing file")
+            self.assertEqual(self.request("POST", "/api/open", dict(directory=str(project)))[0], 400)
             run.assert_not_called()
 
     def test_dismiss_failure_and_timeout(self):
@@ -1242,6 +1344,35 @@ elif command == "pull":
                 self.assertEqual(json.loads(body), {
                     "panes": [pane for pane in all_panes if expected_filter is None or pane["session"] == expected_filter],
                     "initial": expected_initial, "version": web.VERSION})
+
+    def test_cli_confirms_missing_project_folder_via_tty_or_stdio(self):
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory) / "project"
+            for stdio, interactive, reply, approved in ((False, False, "y", False), (False, True, "", False), (False, True, "n", False), (False, True, "YES", True), (False, True, EOFError(), False), (True, False, "y\n", True), (True, False, "n\n", False), (True, False, "", False)):
+                args = SimpleNamespace(ssh=None, directory=str(project), session=None, port=0, stdio=stdio, no_open=True)
+                server = Mock(server_port=9123)
+                missing = launch.MissingProjectFolder(project)
+                with self.subTest(stdio=stdio, interactive=interactive, reply=reply), \
+                        patch.object(web, "arguments", return_value=args), \
+                        patch.object(web, "bind_server", return_value=server), \
+                        patch.object(web, "pid_file", return_value=Path(directory) / "server.pid"), \
+                        patch.object(web.shutil, "which", return_value="tmux"), \
+                        patch.object(web, "open_project", side_effect=[missing, "new_team"]) as start, \
+                        patch.object(web, "panes", return_value=[{}]), \
+                        patch.object(web.threading, "Thread"), \
+                        patch.object(web.sys, "stdin", io.StringIO(reply) if stdio else SimpleNamespace(isatty=lambda: interactive)), \
+                        patch("builtins.input", side_effect=[reply]) as prompt, contextlib.redirect_stdout(io.StringIO()) as output:
+                    if approved:
+                        web.main()
+                        self.assertEqual(start.call_args.kwargs, {"create": True})
+                    else:
+                        with self.assertRaisesRegex(SystemExit, "Project folder does not exist"):
+                            web.main()
+                    self.assertEqual(start.call_count, 2 if approved else 1)
+                    self.assertEqual(prompt.call_count, int(interactive and not stdio))
+                    if stdio:
+                        self.assertEqual(json.loads(output.getvalue().splitlines()[0]), {"folder": str(project)})
+                    server.server_close.assert_called_once()
 
     def test_failed_creation_closes_reserved_server(self):
         args = SimpleNamespace(ssh=None, directory='/project', port=0)

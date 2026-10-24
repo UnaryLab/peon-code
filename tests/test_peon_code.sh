@@ -292,6 +292,92 @@ test_copilot_captured_input() (
 )
 test_copilot_captured_input
 
+test_claude_login_input() (
+  local provider=claude box rc=0 cursor_row=3
+  local capture=$'  Paste code here if prompted >\n\n  \033[3m\033[38;5;246mEsc\033[0m \033[3m\033[38;5;246mto\033[0m \033[3m\033[38;5;246mcancel\033[0m\n\n'
+  # shellcheck source=lib/input.sh
+  source "$ROOT/lib/input.sh"
+  tmux() {
+    case $1 in
+      show-options) printf '%s\n' "$provider" ;;
+      display) case $4 in '#{pane_in_mode}') printf '0\n' ;; *) printf '%s\n' "$cursor_row" ;; esac ;;
+      capture-pane) printf '%s' "$capture" ;;
+    esac
+  }
+  cli_select_pane %9
+  box=$(pane_box_text %9) || fail 'Claude login input was not recognized'
+  [ -z "$box" ] || fail 'empty Claude login input holds hint text'
+  pane_box_ready %9 || fail 'empty Claude login input is not ready'
+  capture=${capture/' >'/' > ******ABC123'}
+  [ "$(pane_box_text %9)" = '******ABC123' ] || fail 'Claude login mask was not read'
+  # Live normal-screen layout: the hidden cursor is three rows below the label.
+  cursor_row=5
+  capture=$'  Login\n\n  Paste code here if prompted >\n\n  \033[3m\033[38;5;246mEsc\033[0m \033[3m\033[38;5;246mto\033[0m \033[3m\033[38;5;246mcancel\033[0m\n\n'
+  box=$(pane_box_text %9) || fail 'live Claude login layout was not recognized'
+  [ -z "$box" ] || fail 'live Claude login layout holds hint text'
+  if printf '%s' "$capture" | strip_styles 0 | login_box_text 6 >/dev/null; then
+    fail 'a login label four rows above the cursor was accepted'
+  fi
+  for provider in codex ''; do
+    cli_select_pane %9
+    rc=0
+    pane_box_text %9 >/dev/null || rc=$?
+    [ "$rc" -eq 2 ] || fail 'another provider accepted the Claude login label'
+  done
+  provider=claude
+  cursor_row=3
+  capture=$'  ⎿  Browser did not open?\n     Paste code here if prompted >\n     Esc to cancel\n❯ hello\n'
+  cli_select_pane %9
+  [ "$(pane_box_text %9)" = hello ] || fail 'login text in scrollback hid the draft'
+  rc=0
+  pane_box_ready %9 || rc=$?
+  [ "$rc" -eq 4 ] || fail 'login text in scrollback made a draft ready'
+)
+test_claude_login_input
+
+# shellcheck disable=SC2034,SC2317 # The evaluated send uses these fixture variables and mocks.
+test_claude_login_send() (
+  local code=T4CODEABC123 masked capture log="$TEST_DIR/login-send.log" pasted="$TEST_DIR/login-paste"
+  local fixture=$'  Paste code here if prompted >\n\n  \033[3m\033[38;5;246mEsc\033[0m \033[3m\033[38;5;246mto\033[0m \033[3m\033[38;5;246mcancel\033[0m\n\n'
+  # shellcheck source=lib/input.sh
+  source "$ROOT/lib/input.sh"
+  # shellcheck source=lib/delivery.sh
+  source "$ROOT/lib/delivery.sh"
+  eval "$(sed -n '/^send_locked() {/,/^}/p' "$ROOT/lib/commands.sh")"
+  die() { printf '%s\n' "$*" >&2; exit 1; }
+  sleep() { :; }
+  paste_only() { cat >"$pasted"; }
+  tmux() {
+    case $1 in
+      show-options) printf 'claude\n' ;;
+      display)
+        case $4 in
+          '#{pane_current_command}') printf 'claude\n' ;;
+          '#{pane_in_mode}') printf '0\n' ;;
+          *) printf '3\n' ;;
+        esac ;;
+      capture-pane)
+        capture=$fixture
+        [ ! -s "$pasted" ] || capture=${fixture/' >'/" > $masked"}
+        if [ "$2" = -ept ]; then printf '%s' "$capture"; else printf '%s' "$capture" | strip_styles 0; fi ;;
+      send-keys) printf '%s\n' "$*" >>"$log" ;;
+    esac
+  }
+  for masked in '************' '******ABC123' '***********' '******WRONG!'; do
+    : >"$pasted"
+    : >"$log"
+    if (send_locked %9 "$code" 1) >"$TEST_DIR/login-send.out" 2>"$TEST_DIR/login-send.err"; then
+      case $masked in '************'|'******ABC123') ;; *) fail 'login submitted the wrong masked code' ;; esac
+      [ "$(cat "$pasted")" = "$code" ] || fail 'login paste added a separator'
+      [ "$(cat "$log")" = 'send-keys -t %9 Enter' ] || fail 'login paste moved the cursor or submitted twice'
+    else
+      case $masked in '************'|'******ABC123') fail "login paste failed: $(cat "$TEST_DIR/login-send.err")" ;; esac
+      [ ! -s "$log" ] || fail 'login submitted a mask that did not match'
+    fi
+  done
+)
+test_claude_login_send
+
 test_cli_pane_selection() (
   local pane_bin=codex capture='❯ ' rc=0
   # shellcheck source=lib/input.sh

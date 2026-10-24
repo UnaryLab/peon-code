@@ -16,7 +16,7 @@ import time
 import tempfile
 import zipfile
 from bridge import panes, snapshot, tmux
-from launch import arguments, open_browser, remote_ui, open_project, DEFAULT_PORT, REMOTE_CONFIG_DIR
+from launch import arguments, open_browser, remote_ui, open_project, MissingProjectFolder, DEFAULT_PORT, REMOTE_CONFIG_DIR
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -359,6 +359,9 @@ class Handler(BaseHTTPRequestHandler):
             data = json.loads(self.rfile.read(size))
             if parsed.path == "/api/open":
                 directory, session = data.get("directory"), data.get("session", "")
+                create = data.get("create", False)
+                if not isinstance(create, bool):
+                    raise ValueError("Create must be true or false")
                 if not isinstance(directory, str) or not directory.strip() or len(directory) > 4096 or "\0" in directory:
                     raise ValueError("Project directory must contain 1 to 4096 characters without NUL")
                 if not Path(directory).is_absolute() and not directory.startswith("~"):
@@ -388,7 +391,10 @@ class Handler(BaseHTTPRequestHandler):
                         with tempfile.NamedTemporaryFile(dir=uploads, prefix="team-", suffix=".conf", delete=False) as file:
                             config = Path(file.name)
                             file.write(content)
-                    opened = open_project(SimpleNamespace(directory=directory, session=session, config=config), ROOT, timeout=300)
+                    opened = open_project(SimpleNamespace(directory=directory, session=session, config=config), ROOT, timeout=300, create=create)
+                except MissingProjectFolder as error:
+                    self.respond(409, {"error": str(error), "create": True, "directory": error.directory})
+                    return
                 except RuntimeError as error:
                     raise ValueError(str(error)) from error
                 finally:
@@ -554,7 +560,22 @@ def main():
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(pid + "\n")
         if args.directory:
-            args.session = open_project(args, ROOT)
+            try:
+                args.session = open_project(args, ROOT)
+            except MissingProjectFolder as error:
+                reply = "n"
+                if args.stdio:
+                    print(json.dumps({"folder": error.directory}), flush=True)
+                    reply = sys.stdin.readline()
+                elif sys.stdin.isatty():
+                    try:
+                        reply = input(f"Folder {error.directory} does not exist. Create it? [y/N] ")
+                    except EOFError:
+                        pass
+                if reply.strip().lower() not in ("y", "yes"):
+                    raise
+                args.directory = error.directory
+                args.session = open_project(args, ROOT, create=True)
         if args.session and not panes(args.session):
             raise SystemExit("no peon-code agent panes in session " + args.session)
         server.address = "127.0.0.1:" + str(server.server_port)

@@ -66,6 +66,13 @@ paste_checked() {
 box_holds_message() {
   local box=$1 want=$2
   [ -n "$box" ] || return 1
+  if [ "${3:-0}" = 1 ]; then
+    [ "${#box}" -eq "${#want}" ] || return 1
+    # Claude masks the code except for its final six characters.
+    while [ "${box#\*}" != "$box" ]; do box=${box#?}; want=${want#?}; done
+    [ "$box" = "$want" ]
+    return
+  fi
   ! box_is_paste_placeholder "$box" || return 0
   local b=${box// /} w=${want// /}
   [ "$b" != "$w" ] || return 0
@@ -252,6 +259,23 @@ strip_styles() {
     }'
 }
 
+login_box_text() {
+  [ -n "${CLI_LOGIN_PROMPT:-}" ] || return 1
+  # Claude hides its cursor up to three rows below the login label; a later prompt means scrollback.
+  LC_ALL=C awk -v prompt="$CLI_LOGIN_PROMPT" -v cy="${1:-}" -v markers="$CLI_PROMPT_MARKERS" '
+    BEGIN { marker = "^[ \t]*(" markers ")"; gsub(/!/, "^!", marker) }
+    {
+      s = $0; sub(/^[ \t]*/, "", s)
+      if (!found && cy ~ /^[0-9]+$/ && NR >= cy - 2 && NR <= cy + 1 && index(s, prompt) == 1) {
+        text = substr(s, length(prompt) + 1); found = 1; next
+      }
+      if (found && NR <= cy + 1 && markers != "" && $0 ~ marker) invalid = 1
+      if (found && s == "Esc to cancel") { matched = 1; next }
+      if (found && !matched) text = text s
+    }
+    END { if (!matched || invalid) exit 1; print text }'
+}
+
 # What a pane's input box holds: everything from the prompt marker to the end
 # of the cursor's row, with hint text left out. Text after the cursor counts
 # too, so a box whose cursor was moved back to the start still measures busy.
@@ -271,6 +295,10 @@ pane_box_text() {
   cap=${cap%.}
   plain=$(printf '%s' "$cap" | strip_styles 0 && printf '.') || return 1
   plain=${plain%.}
+  if box=$(printf '%s\n' "$plain" | login_box_text "$cy"); then
+    printf '%s' "$box" | plain_text
+    return
+  fi
   pane_has_menu "$plain" "$cy" || rc=$?
   [ "$rc" -ne 2 ] || return 2
   free=$(pane_free_text_number "$plain") || free=""

@@ -27,7 +27,7 @@ cli_call() {
       id=${id%.jsonl}
       [ -z "$id" ] || printf '%s\n' "$id" ;;
     context_tokens) [ $# -gt 0 ] ;;
-    # Optional concerns: own_thread, child_threads, resume_args, quit_command, probe_command, swap_args, usage_tokens, weekly_limit.
+    # Optional concerns: own_thread, child_threads, resume_args, quit_command, probe_command, swap_args, usage_tokens, weekly_limit, login_prompt.
     own_thread) return 0 ;;
     child_threads|resume_args|quit_command|probe_command|swap_args|usage_tokens|weekly_limit) return 1 ;;
     *) : ;;
@@ -144,6 +144,7 @@ done
 unset cli_bin cli_marker cli_pattern
 
 CLI_PROMPT_MARKERS=$CLI_ALL_PROMPT_MARKERS
+CLI_LOGIN_PROMPT=""
 CLI_PASTE_PLACEHOLDERS=(${CLI_ALL_PASTE_PLACEHOLDERS[@]+"${CLI_ALL_PASTE_PLACEHOLDERS[@]}"})
 
 # Per-call globals let the input awk helpers use the selected pane's provider.
@@ -151,6 +152,7 @@ CLI_PASTE_PLACEHOLDERS=(${CLI_ALL_PASTE_PLACEHOLDERS[@]+"${CLI_ALL_PASTE_PLACEHO
 cli_select_pane() {
   local bin marker="" pattern=""
   bin=$(tmux show-options -pqv -t "$1" @peon_bin 2>/dev/null) || bin=""
+  CLI_LOGIN_PROMPT=$(cli_call "$bin" login_prompt)
   CLI_PANE_HAS_PROMPT_MARKER=1
   if [ -n "$bin" ]; then
     marker=$(cli_call "$bin" prompt_marker) || marker=""

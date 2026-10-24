@@ -16,6 +16,12 @@ DEFAULT_PORT = 8765
 REMOTE_CONFIG_DIR = Path(".config/peon-code/uploads")
 
 
+class MissingProjectFolder(FileNotFoundError):
+    def __init__(self, directory):
+        self.directory = str(directory)
+        super().__init__("Project folder does not exist: " + self.directory)
+
+
 def arguments():
     parser = argparse.ArgumentParser(prog="peon-code-web", description="Open your peon-code teams in a browser.", allow_abbrev=False)
     parser.add_argument("session", nargs="?", help="session name (defaults to the folder name with --dir)")
@@ -102,11 +108,16 @@ def remote_ui(args):
         for line in process.stdout:
             try:
                 event = json.loads(line)
+                prompt = None
                 if isinstance(event, dict) and type(event.get("update")) is int and 0 < event["update"] <= 1000000 and isinstance(event.get("host"), str) and re.fullmatch(r"[A-Za-z0-9._-]{1,255}", event["host"]):
+                    prompt = f"Remote peon-code on {event['host']}: update available upstream; pull now? [y/N] "
+                elif isinstance(event, dict) and isinstance(event.get("folder"), str) and event["folder"].startswith("/") and len(event["folder"]) <= 4096 and "\0" not in event["folder"]:
+                    prompt = f"Remote folder {event['folder']!r} does not exist. Create it? [y/N] "
+                if prompt is not None:
                     reply = "n"
                     if sys.stdin.isatty():
                         try:
-                            reply = input(f"Remote peon-code on {event['host']}: update available upstream; pull now? [y/N] ")
+                            reply = input(prompt)
                         except EOFError:
                             pass
                     process.stdin.write(("y" if reply.lower() in ("y", "yes") else "n") + "\n")
@@ -152,10 +163,19 @@ def verify_project(session, project):
         raise RuntimeError("Session " + session + " belongs to a different project: " + (directory or "unknown folder") + "; choose another SESSION name")
 
 
-def open_project(args, root, timeout=None):
+def open_project(args, root, timeout=None, create=False):
     project = Path(args.directory).expanduser().resolve()
     if not project.is_dir():
-        raise RuntimeError("Project folder does not exist: " + str(project))
+        if project.exists():
+            raise RuntimeError("Project path is not a directory: " + str(project))
+        if not create:
+            raise MissingProjectFolder(project)
+        try:
+            project.mkdir(parents=True, exist_ok=True)
+        except FileExistsError as error:
+            raise RuntimeError("Project path is not a directory: " + str(project)) from error
+        except OSError as error:
+            raise RuntimeError("Cannot create project folder " + str(project) + ": " + str(error)) from error
     name = args.session or project.name
     if not name or name.startswith("-") or any(ord(char) < 32 or ord(char) == 127 for char in name):
         raise RuntimeError("Choose a valid SESSION name; the project folder must have a basename")

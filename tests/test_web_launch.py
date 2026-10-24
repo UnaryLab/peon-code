@@ -235,6 +235,34 @@ class LaunchTests(unittest.TestCase):
                 with patch.object(launch.subprocess, "run", side_effect=outcomes), self.assertRaisesRegex(RuntimeError, error):
                     launch.open_project(args, ROOT)
 
+    def test_missing_project_folder_requires_confirmation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            project = (Path(directory) / "missing" / "new.team").resolve()
+            args = SimpleNamespace(session=None, directory=str(project))
+            with patch.object(launch.subprocess, "run") as run, self.assertRaises(launch.MissingProjectFolder) as raised:
+                launch.open_project(args, ROOT)
+            self.assertEqual(raised.exception.directory, str(project))
+            self.assertFalse(project.parent.exists())
+            run.assert_not_called()
+
+    def test_creates_missing_nested_project_folder(self):
+        with tempfile.TemporaryDirectory() as directory:
+            project = (Path(directory) / "missing" / "new.team").resolve()
+            args = SimpleNamespace(session=None, directory=str(project))
+            outcomes = [subprocess.CompletedProcess([], 1), subprocess.CompletedProcess([], 0, "ready", ""), subprocess.CompletedProcess([], 0, "1", ""), subprocess.CompletedProcess([], 0, str(project) + "\n", "")]
+            with patch.object(launch.subprocess, "run", side_effect=outcomes) as run, contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(launch.open_project(args, ROOT, create=True), "new_team")
+            self.assertTrue(project.is_dir())
+            self.assertEqual(run.call_args_list[1].args[0], [str(ROOT / "peon-code.sh"), "new_team"])
+            self.assertEqual(run.call_args_list[1].kwargs["cwd"], str(project))
+
+    def test_project_folder_creation_reports_permission_error(self):
+        with tempfile.TemporaryDirectory() as directory:
+            args = SimpleNamespace(session=None, directory=str(Path(directory) / "project"))
+            with patch.object(Path, "mkdir", side_effect=PermissionError(errno.EACCES, "Permission denied")), patch.object(launch.subprocess, "run") as run, self.assertRaisesRegex(RuntimeError, "Cannot create project folder.*Permission denied"):
+                launch.open_project(args, ROOT, create=True)
+            run.assert_not_called()
+
     def test_directory_derives_remote_expanded_basename(self):
         with tempfile.TemporaryDirectory() as home:
             project = Path(home) / "my project.name"
@@ -319,8 +347,12 @@ class LaunchTests(unittest.TestCase):
             self.assertIn("non-empty project path", error.getvalue())
         with patch.object(sys, "argv", ["peon-code-web", "--start-session", "--dir", "/tmp"]), contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             launch.arguments()
-        with self.assertRaisesRegex(RuntimeError, "does not exist"):
-            launch.open_project(SimpleNamespace(session=None, directory="/does/not/exist/peon-test"), ROOT)
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory) / "file"
+            project.write_text("existing file")
+            with patch.object(launch.subprocess, "run") as run, self.assertRaisesRegex(RuntimeError, "not a directory"):
+                launch.open_project(SimpleNamespace(session=None, directory=str(project)), ROOT)
+            run.assert_not_called()
 
     def test_reserved_names_only_link_verified_existing_sessions(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -333,6 +365,31 @@ class LaunchTests(unittest.TestCase):
             for name in ("uninstall", "key"):
                 with self.subTest(name=name), patch.object(launch.subprocess, "run", side_effect=outcomes):
                     self.assertEqual(launch.open_project(SimpleNamespace(session=name, directory=directory), ROOT), name)
+
+    def test_ssh_folder_creation_handshake(self):
+        folder = "/remote/project with spaces"
+        for interactive, answer, reply in ((True, "yes", "y"), (True, "n", "n"), (False, "yes", "n"), (True, EOFError(), "n")):
+            with self.subTest(interactive=interactive, answer=answer), tempfile.TemporaryDirectory() as directory:
+                result = Path(directory) / "reply"
+                fake = Path(directory) / "ssh"
+                event = shlex.quote(json.dumps({"folder": folder}))
+                url = shlex.quote(json.dumps({"url": "http://127.0.0.1:9123/#" + "a" * 43}))
+                fake.write_text("#!/bin/sh\nprintf '%s\\n' '{\"folder\":12}' " + event + "\nIFS= read -r reply\nprintf '%s' \"$reply\" > " + shlex.quote(str(result)) + "\n[ \"$reply\" = y ] || exit 1\nprintf '%s\\n' " + url + "\n")
+                fake.chmod(0o755)
+                args = SimpleNamespace(port=9123, session=None, ssh="host", no_open=False, directory=folder)
+                with patch.dict(os.environ, {"PATH": directory}), patch.object(sys, "stdin", SimpleNamespace(isatty=lambda: interactive)), patch("builtins.input", side_effect=[answer]) as prompt, patch.object(launch, "open_browser") as opened, contextlib.redirect_stdout(io.StringIO()):
+                    if reply == "y":
+                        self.assertEqual(launch.remote_ui(args), 0)
+                        opened.assert_called_once()
+                    else:
+                        with self.assertRaisesRegex(RuntimeError, "Remote UI did not start"):
+                            launch.remote_ui(args)
+                        opened.assert_not_called()
+                    if interactive:
+                        prompt.assert_called_once_with(f"Remote folder {folder!r} does not exist. Create it? [y/N] ")
+                    else:
+                        prompt.assert_not_called()
+                self.assertEqual(result.read_text(), reply)
 
     def test_ssh_update_handshake_prompts_locally_or_defaults_no(self):
         for interactive, reply in ((True, 'y'), (False, 'n')):

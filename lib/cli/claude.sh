@@ -169,6 +169,11 @@ claude_prompt_marker() {
   printf '\342\235\257|!'
 }
 
+claude_login_prompt() {
+  # Tracks Claude's login wording; update this if its label changes.
+  printf '%s' 'Paste code here if prompted >'
+}
+
 claude_brief_after_start() {
   # A resumed pane may open on the summary picker; take its default,
   # "Resume from summary", then allow for the compaction that starts:

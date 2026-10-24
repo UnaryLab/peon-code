@@ -88,7 +88,7 @@ async function api(path, data) {
     'X-Peon-Token': token, ...(data ? {'Content-Type': 'application/json'} : {})
   }, ...(data ? {body: JSON.stringify(data)} : {})});
   const result = await response.json();
-  if (!response.ok) throw Object.assign(new Error(result.error || 'Request failed'), {status: response.status});
+  if (!response.ok) throw Object.assign(new Error(result.error || 'Request failed'), {status: response.status, result});
   return result;
 }
 const newSession = document.querySelector('#new-session');
@@ -134,7 +134,13 @@ newSessionForm.onsubmit = async event => {
       data.config_name = file.name;
       data.config_text = text;
     }
-    const result = await api('/api/open', data);
+    let result;
+    try { result = await api('/api/open', data); }
+    catch (error) {
+      if (error.status !== 409 || error.result?.create !== true ||
+          !confirm('Folder ' + error.result.directory + ' does not exist. Create it?')) throw error;
+      result = await api('/api/open', {...data, directory: error.result.directory, create: true});
+    }
     openedSession = result.session;
     newSessionStatus.hidden = true;
     newSessionStatus.textContent = '';
@@ -976,7 +982,7 @@ async function refresh() {
     }
     for (const [key, card] of cards) {
       if (!keys.has(key)) {
-        if (card.selected || card.el.querySelector('.message-form textarea').value || card.busy) {
+        if (dismissed !== card.latest.session && (card.selected || card.el.querySelector('.message-form textarea').value || card.busy)) {
           if (!card.closed) feedback(card, 'This agent closed. Copy your text or discard it.', true);
           card.closed = true;
           card.boxText = ''; card.boxSince = 0; card.waitingText = false;

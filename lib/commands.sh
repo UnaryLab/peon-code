@@ -227,7 +227,7 @@ key_locked() {
 }
 
 send_locked() {
-  local pane=${1:-} text=${2:-} append=${3:-0} want box i rc reason cursor end_cursor last key
+  local pane=${1:-} text=${2:-} append=${3:-0} want box i rc reason cursor end_cursor last key login=0
   # shellcheck disable=SC2015 # Both required arguments must be present.
   [ -n "$pane" ] && [ -n "$text" ] || die "usage: peon-code.sh send [--append] <pane-id> 'text'|-"
   pane_identity_matches "$pane" || die "no message sent: agent changed"
@@ -267,6 +267,11 @@ send_locked() {
     die "$reason after 10 tries, giving up"
   fi
   want=$(printf '%s' "$text" | plain_text)
+  if [ -n "${CLI_LOGIN_PROMPT:-}" ] &&
+    tmux capture-pane -pt "$pane" | login_box_text "$(tmux display -pt "$pane" '#{cursor_y}')" >/dev/null; then
+    login=1
+    append=0
+  fi
   if [ "$append" = 1 ]; then
     box=$(pane_box_text "$pane") || die "no message sent: target box changed"
     if [ -n "$box" ]; then
@@ -307,7 +312,7 @@ send_locked() {
   for ((i = 0; i < 10; i++)); do
     sleep 0.2
     box=$(pane_box_text "$pane") || box=""
-    if box_holds_message "$box" "$want"; then
+    if box_holds_message "$box" "$want" "$login"; then
       pane_takes_keys "$pane" ||
         die "no Enter sent: pane $pane went into copy mode, and the message is in its box for the user to submit"
       pane_identity_matches "$pane" || die "no Enter sent: agent changed"
