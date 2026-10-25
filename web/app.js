@@ -625,7 +625,7 @@ function updateKeys(card) {
   card.shortcutsRendered = signature;
   for (const button of card.el.querySelectorAll('.key-buttons button')) {
     const key = button.dataset.key;
-    button.hidden = key === 'C-c' ? false : key === 'Tab' ? !!hint : pane.menu;
+    button.hidden = key === 'Tab' ? !!hint : ['Up', 'Down', 'Enter', 'Escape', 'Backspace'].includes(key) && pane.menu;
   }
   const buttons = labels.map(([key, label]) => {
     const button = document.createElement('button');
@@ -682,7 +682,7 @@ function wireScreen(card, screen) {
       event.preventDefault(); setSelection(card, ''); getSelection().removeAllRanges(); return;
     }
     if (card.busy) return;
-    const key = {ArrowUp: 'Up', ArrowDown: 'Down', Enter: 'Enter', Escape: 'Escape', Backspace: 'Backspace'}[event.key];
+    const key = {ArrowUp: 'Up', ArrowDown: 'Down', ArrowLeft: 'Left', ArrowRight: 'Right', Enter: 'Enter', Escape: 'Escape', Backspace: 'Backspace'}[event.key];
     if (typeof key === 'string') { event.preventDefault(); send(card, 'keys', key); }
   };
   output.oncontextmenu = event => {

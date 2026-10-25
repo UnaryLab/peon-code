@@ -888,7 +888,7 @@ refresh().then(parameters => {document.querySelector('#result').textContent = JS
             process.communicate.assert_called_once_with("message", timeout=20)
 
     def test_keys_validate_identity_and_only_send_allowed_keys(self):
-        keys = ("Tab", "Up", "Down", "Enter", "Escape", "Backspace", "C-c")
+        keys = ("Tab", "Up", "Down", "Left", "Right", "Enter", "Escape", "Backspace", "C-c")
         def deliver(args, text, identity):
             self.assertTrue(self.server.send_lock.locked())
             return subprocess.CompletedProcess(args, 0, "key sent", "")

@@ -212,7 +212,7 @@ peon-code detach [<session>]                 # detach every client of one sessio
 peon-code msg <name|all> 'text' [<session>]  # send text to an agent pane
 peon-code send <pane-id> 'text'|-            # agent to agent: paste into a pane and submit it
 peon-code explain <pane-id>                  # explain selected text from stdin in the same pane
-peon-code key [--submit] <pane-id> <name>    # press Tab, Up, Down, Enter, Escape, BSpace, or C-c (Ctrl+C)
+peon-code key [--submit] <pane-id> <name>    # press Tab, Up, Down, Left, Right, Enter, Escape, BSpace, or C-c (Ctrl+C)
 peon-code rebrief <name|all> [<session>]     # send an agent its launch brief again
 peon-code swap <name> <cli|-> <model|-> <effort|-> [<session>]  # replace an agent's CLI, model, or effort
 peon-code compact [<name|all>] [<session>]   # send /compact, then the brief again once it ends
