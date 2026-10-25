@@ -24,6 +24,11 @@
       <label>Project directory<input name="directory" required placeholder="Absolute or ~ path, resolved on the agent host"></label>
       <label>Session name (optional)<input name="session" placeholder="Folder basename; dots and colons become underscores"></label>
       <label>Team config (optional)<input name="config" type="file" aria-describedby="config-help"><small id="config-help">Local UTF-8 file, up to 200 KiB. Uploaded to the agent host.</small></label>
+      <button id="add-session-agent" type="button">Add agent</button>
+      <div id="new-session-agents"></div>
+      <button id="add-role" type="button">Add role</button>
+      <small>Roles apply to this session only. Write each name in the role column of the team config.</small>
+      <div id="new-session-roles"></div>
       <button type="submit">Start session</button>
       <button type="button" class="cancel">Cancel</button>
     </form>
@@ -40,7 +45,12 @@
     <p id="empty" hidden>No agent panes yet. Start a team with <code>peon-code</code>, then return here.</p>
     <div class="workspace">
       <div class="sidebar">
-        <nav id="agents" aria-label="Agents in this session"></nav>
+        <nav id="agents" aria-label="Agents in this session">
+          <details data-role="manager" open hidden><summary class="tab">Manager (0)</summary><div class="agent-tabs"></div></details>
+          <details data-role="worker" open hidden><summary class="tab">Workers (0)</summary><div class="agent-tabs"></div></details>
+          <details data-role="reviewer" open hidden><summary class="tab">Reviewer (0)</summary><div class="agent-tabs"></div></details>
+          <details data-role="" open hidden><summary class="tab">Agents (0)</summary><div class="agent-tabs"></div></details>
+        </nav>
         <button id="files" type="button" class="swap" hidden>Download/view files</button>
         <button id="upload" type="button" class="swap" aria-expanded="false" aria-controls="upload-form" hidden>Upload files</button>
         <form id="upload-form" class="swap-form" hidden>
@@ -50,6 +60,19 @@
           <button type="button" class="cancel">Cancel</button>
           <input id="upload-files" type="file" multiple hidden>
           <span id="upload-status" class="swap-state" role="status"></span>
+        </form>
+        <button id="add-agent" type="button" class="swap" aria-expanded="false" aria-controls="add-agent-form" disabled hidden>Add agent</button>
+        <form id="add-agent-form" class="swap-form" hidden>
+          <label>Name<input name="name" pattern="[A-Za-z0-9_\-]+" required></label>
+          <label>CLI<select name="cli" required></select></label>
+          <label>Model (optional)<input name="model"></label>
+          <label>Effort (optional)<input name="effort"></label>
+          <label>Extra args (optional)<input name="args" maxlength="200000"></label>
+          <label>Role<select name="role"></select></label>
+          <div id="add-agent-role" hidden></div>
+          <button type="submit">Save</button>
+          <button type="button" class="cancel">Cancel</button>
+          <span id="add-agent-status" class="swap-state" role="status"></span>
         </form>
         <button id="swap" type="button" class="swap" aria-expanded="false" aria-controls="swap-form" data-tip="Change this agent's CLI or model" disabled hidden>Swap agent</button>
         <form id="swap-form" class="swap-form" hidden>
@@ -64,6 +87,27 @@
       <div id="panes"></div>
     </div>
   </main>
+  <template id="session-agent-template">
+    <div class="session-agent">
+      <label>Name<input name="name" pattern="[A-Za-z0-9_\-]+" required></label>
+      <label>CLI<select name="cli" required></select></label>
+      <label>Model (optional)<input name="model"></label>
+      <label>Effort (optional)<input name="effort"></label>
+      <label>Extra args (optional)<input name="args"></label>
+      <label>Role<select name="role"></select></label>
+      <label>Main<input name="main" type="radio"></label>
+      <button type="button" class="remove-agent">Remove</button>
+    </div>
+  </template>
+  <template id="role-template">
+    <div class="session-role">
+      <label>Name<input name="name" maxlength="40" pattern="[A-Za-z0-9_\-]+" required></label>
+      <label>Type<select name="type"><option value="manager">manager</option><option value="worker" selected>worker</option><option value="reviewer">reviewer</option></select></label>
+      <label>Description<input name="description" maxlength="200"></label>
+      <label>Body<textarea name="body" rows="3" maxlength="200000" required></textarea></label>
+      <button type="button" class="remove-role">Remove</button>
+    </div>
+  </template>
   <template id="pane-template">
     <article class="pane" hidden>
       <header class="pane-heading"><div><h2></h2><p class="meta"></p></div><span class="state">Live</span><button type="button" class="stack-order" aria-label="Screens stacked vertically, switch to side by side" data-tip="Stack screens vertically or side by side">↕</button><button type="button" class="add-screen" aria-label="Add screen" data-tip="Show this pane in another screen">+</button></header>

@@ -98,11 +98,11 @@ test_git_deny_settings() {
   done
 
   # Brief files, in pane order, from the @peon_brief options the launch set.
-  boss_brief=$(grep -F '@peon_brief' "$log" | sed -n '1p')
+  boss_brief=$(grep -F ' @peon_brief ' "$log" | sed -n '1p')
   boss_brief=${boss_brief##* }
-  helper_brief=$(grep -F '@peon_brief' "$log" | sed -n '2p')
+  helper_brief=$(grep -F ' @peon_brief ' "$log" | sed -n '2p')
   helper_brief=${helper_brief##* }
-  impl_brief=$(grep -F '@peon_brief' "$log" | sed -n '6p')
+  impl_brief=$(grep -F ' @peon_brief ' "$log" | sed -n '6p')
   impl_brief=${impl_brief##* }
   [ -f "$impl_brief" ] || fail "the deny test did not record all six brief files"
   # Commits belong to the main pane, whichever pane is reading the brief.
@@ -145,9 +145,9 @@ test_git_deny_unstarred_main() {
     *) fail "a non-main claude agent was launched without --settings" ;;
   esac
 
-  front_brief=$(grep -F '@peon_brief' "$log" | sed -n '1p')
+  front_brief=$(grep -F ' @peon_brief ' "$log" | sed -n '1p')
   front_brief=${front_brief##* }
-  boss_brief=$(grep -F '@peon_brief' "$log" | sed -n '2p')
+  boss_brief=$(grep -F ' @peon_brief ' "$log" | sed -n '2p')
   boss_brief=${boss_brief##* }
   [ -f "$boss_brief" ] || fail "the unstarred test did not record the main pane's brief"
   # The manager role carries the git text, and the shared rule names its pane.

@@ -1,14 +1,20 @@
 # shellcheck shell=bash
 
 # Role token: - is none, a token with / is a path (relative to the config
-# file's directory), a bare name is <script dir>/roles/<name>.md.
+# file's directory). A bare name checks <script dir>/roles/<name>.md first,
+# then roles/<name>.md next to the config file.
 resolve_role() {
   local role=$1 conf_dir=$2
   case $role in
     -)   echo "" ;;
     /*)  echo "$role" ;;
     */*) echo "$conf_dir/$role" ;;
-    *)   echo "$SCRIPT_DIR/roles/$role.md" ;;
+    *)
+      if [ -f "$SCRIPT_DIR/roles/$role.md" ]; then
+        echo "$SCRIPT_DIR/roles/$role.md"
+      else
+        echo "$conf_dir/roles/$role.md"
+      fi ;;
   esac
 }
 

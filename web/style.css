@@ -20,9 +20,12 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 6
 .sidebar { display: flex; flex: 0 0 160px; flex-direction: column; gap: 8px; min-width: 0; min-height: 0; }
 .sidebar > button { flex-shrink: 0; }
 #dismiss { background: #fff0ed; color: #9c241b; border-color: #b96c65; }
-#agents { display: flex; flex-direction: column; gap: 4px; min-width: 0; overflow: auto; }
+#agents { display: flex; flex: 1 1 auto; flex-direction: column; gap: 4px; min-width: 0; min-height: 0; overflow-y: auto; }
+#agents details { flex-shrink: 0; }
+#agents summary { cursor: pointer; margin-bottom: 4px; }
+.agent-tabs { display: flex; flex-direction: column; gap: 4px; }
 .tab { background: #fff; border: 1px solid var(--line); border-radius: 4px; color: var(--muted); text-align: left; position: relative; white-space: nowrap; font-size: 15px; padding: 4px 10px; }
-#agents .tab { display: flex; min-width: 0; max-width: 100%; }
+#agents button.tab { display: flex; min-width: 0; max-width: 100%; }
 #agents .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #agents .name > span { display: inline-block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; transition: transform 1s; }
 #agents .figure { flex-shrink: 0; white-space: pre; }
@@ -48,6 +51,9 @@ h2 { font-size: 16px; margin: 0; }
 .state { font-size: 12px; color: var(--muted); }
 #files { margin-top: 12px; }
 #upload-status { flex-basis: 100%; white-space: pre-line; }
+#add-agent-form { max-height: 60vh; max-height: 60dvh; overflow-y: auto; }
+#add-agent-role, #add-agent-status { flex-basis: 100%; }
+#add-agent-status { white-space: pre-line; }
 dialog { width: min(800px, calc(100% - 24px)); max-height: calc(100dvh - 24px); padding: 12px; color: var(--text); border: 1px solid var(--line); border-radius: 6px; }
 dialog::backdrop { background: #0006; }
 .file-heading { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
@@ -78,9 +84,13 @@ dialog footer { padding-top: 12px; }
 .button-form label:last-of-type { flex-basis: 100%; }
 .swap-form { padding: 0; }
 .button-form input, .swap-form input, .swap-form select { width: 100%; min-width: 0; font: inherit; border: 1px solid var(--line); border-radius: 4px; padding: 4px; }
-#new-session-form { flex-wrap: wrap; padding: 8px 0; }
+#new-session-form { flex-wrap: wrap; padding: 8px 0; max-height: 60vh; max-height: 60dvh; overflow-y: auto; }
 #new-session-form label { display: flex; flex: 1 1 240px; flex-direction: column; gap: 4px; min-width: 0; font-size: 13px; }
-#new-session-form input { width: 100%; min-width: 0; font: inherit; border: 1px solid var(--line); border-radius: 4px; padding: 4px; }
+#new-session-form input, #new-session-form select { width: 100%; min-width: 0; font: inherit; border: 1px solid var(--line); border-radius: 4px; padding: 4px; }
+#new-session-roles, #new-session-agents, #new-session-form > small, .session-role label:last-of-type { flex-basis: 100%; }
+#new-session-roles, #new-session-agents { width: 100%; }
+.session-role, .session-agent { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
+#new-session-form input[type="radio"] { width: auto; align-self: flex-start; }
 #config-help { color: var(--muted); }
 .keys, .key-buttons, .key-shortcuts { display: flex; align-items: center; justify-content: flex-start; gap: 4px; flex-wrap: wrap; }
 .keys { flex-shrink: 0; padding: 0 12px 4px; }
@@ -92,9 +102,10 @@ dialog footer { padding-top: 12px; }
 .keys-toggle[aria-expanded="true"] { background: #eef0ec; }
 .selection-note { color: var(--muted); font-size: 12px; margin-left: auto; }
 .swap-state { margin-left: auto; min-width: 0; max-width: 100%; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; text-align: right; }
-button { font: inherit; font-size: 14px; border: 1px solid var(--accent-border); border-radius: 4px; padding: 5px 10px; background: var(--accent); color: #1a1a1a; cursor: pointer; transition: opacity 0s; }
+button { font: inherit; font-size: 14px; border: 1px solid var(--accent-border); border-radius: 4px; padding: 5px 10px; background: var(--accent); color: #1a1a1a; cursor: pointer; }
+button, summary { transition: opacity 0s; }
 button:disabled { opacity: .45; cursor: default; transition: opacity 0s .3s; }
-body.busy button { opacity: .45; transition: opacity 0s .3s; }
+body.busy button, body.busy summary { opacity: .45; transition: opacity 0s .3s; }
 button:focus-visible, input:focus-visible, textarea:focus-visible, .output:focus-visible, a:focus-visible { outline: 2px solid #555; outline-offset: 3px; }
 form { display: flex; flex-shrink: 0; gap: 8px; padding: 0 12px; }
 textarea { resize: vertical; min-height: 44px; max-height: 40vh; width: 100%; font-family: inherit; font-size: 14px; line-height: 1.3; background: #fff; border: 1px solid var(--line); border-radius: 4px; padding: 4px; color: var(--text); }
@@ -111,7 +122,7 @@ form button { align-self: center; white-space: nowrap; }
   main { padding: 8px 12px; }
   .workspace { flex-direction: column; gap: 8px; }
   .sidebar { flex: none; }
-  #agents { flex: none; flex-direction: row; overflow-x: auto; }
+  #agents { flex: none; overflow: visible; }
   #agents .tab { flex-shrink: 0; }
   .screens { flex: none; height: 70vh; height: 70dvh; }
 }

@@ -1,5 +1,5 @@
-const navigation = {session: null, active: new Map(), panes: []};
-const roleOrder = {manager: 0, reviewer: 1, worker: 2};
+const navigation = {session: null, active: new Map(), groups: new Map(), panes: []};
+const roleOrder = {manager: 0, worker: 1, reviewer: 2};
 function paneKey(pane) { return pane.identity ? pane.id + ':' + pane.identity : pane.id; }
 function currentPane() { return navigation.active.get(navigation.session); }
 function chooseSession(session) {
@@ -42,21 +42,41 @@ function updateNavigation() {
   }));
   const project = navigation.panes.find(pane => pane.session === navigation.session)?.projectDir || '';
   document.querySelector('#project-path').textContent = project ? 'Folder: ' + project : '';
-  replaceTabs(document.querySelector('#agents'), navigation.panes.filter(pane => pane.session === navigation.session).map(pane => {
-    let figure = '';
-    if (pane.usage) {
-      const total = pane.usage.input + pane.usage.cacheRead + pane.usage.cacheWrite + pane.usage.output;
-      // Promote K and M values when rounding reaches 1000.
-      figure = ' · ' + (total >= 999995000 ? (total / 1000000000).toFixed(2) + 'B' : total >= 999950 ? (total / 1000000).toFixed(2) + 'M' : total >= 1000 ? (total / 1000).toFixed(1) + 'K' : total);
+  for (const group of document.querySelectorAll('#agents details')) {
+    const role = group.dataset.role;
+    const panes = navigation.panes.filter(pane => pane.session === navigation.session && (role ? pane.role === role : !(pane.role in roleOrder)));
+    const key = JSON.stringify([navigation.session, role]);
+    group.hidden = !panes.length;
+    if (group.dataset.session !== key) {
+      if (group.dataset.session) navigation.groups.set(group.dataset.session, group.open);
+      group.open = navigation.groups.get(key) ?? true;
+      group.dataset.session = key;
     }
-    figure += pane.closed ? ' · closed' : '';
-    const button = tab(pane.name + figure, paneKey(pane) === currentPane(), cards.get(paneKey(pane))?.unread, () => { navigation.active.set(navigation.session, paneKey(pane)); showPane(); }, paneKey(pane), cards.get(paneKey(pane))?.needsAnswer, cards.get(paneKey(pane))?.waitingText);
-    const name = document.createElement('span'), text = document.createElement('span'), value = document.createElement('span');
-    name.className = 'name'; text.textContent = pane.name; name.append(text);
-    value.className = 'figure'; value.textContent = figure;
-    button.replaceChildren(name, value);
-    return button;
-  }));
+    group.ontoggle = () => { navigation.groups.set(group.dataset.session, group.open); updateNavigation(); };
+    const summary = group.querySelector('summary');
+    const label = ({manager: 'Manager', worker: 'Workers', reviewer: 'Reviewer'})[role] || 'Agents';
+    const unread = !group.open && panes.some(pane => cards.get(paneKey(pane))?.unread);
+    const needsAnswer = !group.open && panes.some(pane => cards.get(paneKey(pane))?.needsAnswer);
+    const waitingText = !group.open && panes.some(pane => cards.get(paneKey(pane))?.waitingText);
+    summary.textContent = label + ' (' + panes.length + ')';
+    summary.className = 'tab' + (unread ? ' unread' : '') + (needsAnswer || waitingText ? ' needs-answer' : '');
+    summary.setAttribute('aria-label', summary.textContent + (unread ? ', new output' : '') + (needsAnswer ? ', waiting for an answer' : waitingText ? ', text waiting in the box' : ''));
+    replaceTabs(group.querySelector('.agent-tabs'), panes.map(pane => {
+      let figure = '';
+      if (pane.usage) {
+        const total = pane.usage.input + pane.usage.cacheRead + pane.usage.cacheWrite + pane.usage.output;
+        // Promote K and M values when rounding reaches 1000.
+        figure = ' · ' + (total >= 999995000 ? (total / 1000000000).toFixed(2) + 'B' : total >= 999950 ? (total / 1000000).toFixed(2) + 'M' : total >= 1000 ? (total / 1000).toFixed(1) + 'K' : total);
+      }
+      figure += pane.closed ? ' · closed' : '';
+      const button = tab(pane.name + figure, paneKey(pane) === currentPane(), cards.get(paneKey(pane))?.unread, () => { navigation.active.set(navigation.session, paneKey(pane)); showPane(); }, paneKey(pane), cards.get(paneKey(pane))?.needsAnswer, cards.get(paneKey(pane))?.waitingText);
+      const name = document.createElement('span'), text = document.createElement('span'), value = document.createElement('span');
+      name.className = 'name'; text.textContent = pane.name; name.append(text);
+      value.className = 'figure'; value.textContent = figure;
+      button.replaceChildren(name, value);
+      return button;
+    }));
+  }
   for (const name of document.querySelectorAll('#agents .name')) {
     const distance = name.firstElementChild.scrollWidth - name.clientWidth;
     if (distance > 0) name.parentElement.style.setProperty('--name-overflow', distance + 'px');
@@ -64,7 +84,7 @@ function updateNavigation() {
   }
 }
 function reconcileNavigation(panes, initial) {
-  navigation.panes = panes.slice().sort((a, b) => a.session.localeCompare(b.session) || (roleOrder[a.role] ?? 2) - (roleOrder[b.role] ?? 2) || Number(a.id.slice(1)) - Number(b.id.slice(1)));
+  navigation.panes = panes.slice().sort((a, b) => a.session.localeCompare(b.session) || (roleOrder[a.role] ?? 3) - (roleOrder[b.role] ?? 3) || Number(a.id.slice(1)) - Number(b.id.slice(1)));
   if (navigation.session === null && panes.some(pane => pane.session === initial)) navigation.session = initial;
   if (!panes.some(pane => pane.session === navigation.session)) navigation.session = navigation.panes.find(pane => !pane.closed)?.session;
   for (const session of new Set(panes.map(pane => pane.session))) {

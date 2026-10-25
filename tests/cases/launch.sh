@@ -196,6 +196,37 @@ test_attached_launch_notes() {
   assert_not_contains <(printf '%s\n' "$block") "kill-session"
 }
 
+# shellcheck disable=SC2034,SC2317 # Shared launch functions use these variables and mocks.
+test_brief_write_failure_keeps_launching() (
+  local BRIEF_DIR="$TEST_DIR/brief-write-failure" log="$TEST_DIR/brief-write-failure.log"
+  local NAMES=(first second last) CMDS=(fake-agent fake-agent fake-agent)
+  local PANE_IDS=(%1 %2 %3) RESUME_IDS=('' '' '') CLI_PROVIDERS=(fake-agent) FAILED_AGENTS=()
+  # shellcheck source=lib/launch.sh
+  source "$ROOT/lib/launch.sh"
+  build_brief() { printf 'brief for %s\n' "${NAMES[$1]}"; }
+  systemd-run() { return 1; }
+  tmux() { :; }
+  cli_call() { [ "$2" != launch_command ] || printf 'fake-agent\n'; }
+  with_pane_delivery() { printf 'launch:%s\n' "$1" >>"$log"; }
+  wait_agent_ready() { printf 'wait:%s\n' "$1" >>"$log"; }
+  mkdir -p "$BRIEF_DIR/0.md"
+  : >"$log"
+  launch_agents 2>"$TEST_DIR/brief-write-failure.err" || fail 'brief write failure stopped the launch loop'
+  [ "${FAILED_AGENTS[*]}" = first ] || fail 'brief write failure was not reported exactly once'
+  assert_not_contains "$log" 'launch:%1'
+  assert_not_contains "$log" 'wait:%1'
+  for pane in %2 %3; do
+    assert_contains "$log" "launch:$pane"
+    assert_contains "$log" "wait:$pane"
+  done
+  # A failed single-agent launch has no successful indices to wait for.
+  FAILED_AGENTS=()
+  : >"$log"
+  launch_agents 0 2>"$TEST_DIR/brief-write-failure.err" || fail 'single brief write failure stopped the launch loop'
+  [ "${FAILED_AGENTS[*]}" = first ] || fail 'single brief write failure was not reported'
+  [ ! -s "$log" ] || fail 'launch waited for an agent whose brief could not be written'
+)
+
 test_codex_normal_screen() {
   local fake_bin=$1 work_dir="$TEST_DIR/codex-normal-work" home_dir="$TEST_DIR/home-codex-normal"
   local log="$TEST_DIR/codex-normal.log" mode launch plain own fresh
@@ -315,6 +346,7 @@ test_launch_with_prompt_box "$fake_bin"
 test_headless_launch_order "$fake_bin"
 test_all_commands_before_readiness "$fake_bin"
 test_attached_launch_notes
+test_brief_write_failure_keeps_launching
 test_codex_normal_screen "$fake_bin"
 test_claude_launch_warnings_once "$fake_bin"
 test_restart_watcher_launch "$fake_bin"

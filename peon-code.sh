@@ -13,6 +13,7 @@
 #   ./peon-code.sh explain <pane-id> < selected-text
 #   ./peon-code.sh rebrief <name|all> [<session>]
 #   ./peon-code.sh swap <name> <cli|-> <model|-> <effort|-> [<session>]
+#   ./peon-code.sh add <name> <role> <command...> [--session <name>]
 #   ./peon-code.sh compact [<name|all>] [<session>]
 #   ./peon-code.sh clear [<name|all>] [<session>]
 #   ./peon-code.sh watch [<session>] [<tokens>]
@@ -81,6 +82,7 @@ peon-code.sh rebrief <name|all> [<session>]     send an agent its launch brief a
                                                 (session defaults to the current directory name)
 peon-code.sh swap <name> <cli|-> <model|-> <effort|-> [<session>]
                                                 replace a running agent's CLI, model, or effort
+peon-code.sh add <name> <role> <command...> [--session <name>]  add an agent to the current team
 peon-code.sh compact [<name|all>] [<session>]   send /compact to an agent pane, then send
                                                 its brief again once compaction ends,
                                                 skipping any blocked pane (typed text,
@@ -108,7 +110,8 @@ peon-code.sh --version                          print the version
 
 Config file: one agent per line, "name command... role".
 The role is required; use - for no role. A bare role name reads
-<script dir>/roles/<name>.md; a role token with a / is a file path,
+roles/<name>.md next to peon-code.sh, else roles/<name>.md next to
+the config file. A role token with a / is a file path,
 relative paths resolving against the config file's directory.
 A leading * on a name marks the main agent, whose pane gets the big
 left slot; without it, the first manager, else the first agent.
@@ -151,6 +154,8 @@ source "$SCRIPT_DIR/lib/resume.sh"
 source "$SCRIPT_DIR/lib/brief.sh"
 # shellcheck source=lib/watch.sh
 source "$SCRIPT_DIR/lib/watch.sh"
+# shellcheck source=lib/launch.sh
+source "$SCRIPT_DIR/lib/launch.sh"
 
 START_ARGS=("$@")
 CONF=""
@@ -186,6 +191,7 @@ case "${1:-}" in
   explain) shift; cmd_explain "$@"; exit 0 ;;
   rebrief) shift; cmd_rebrief "$@"; exit 0 ;;
   swap) shift; cmd_swap "$@"; exit $? ;;
+  add) shift; cmd_add "$@"; exit $? ;;
   __swap_job)
     shift
     swap_job "$@" &
@@ -233,5 +239,4 @@ if tmux has-session -t "=$SESSION" 2>/dev/null; then
   goto_session "$SESSION"
 fi
 
-# shellcheck source=lib/launch.sh
-source "$SCRIPT_DIR/lib/launch.sh"
+launch_team

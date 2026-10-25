@@ -1,7 +1,8 @@
 # peon-code team: one agent per line, "name command... role".
 # The role is the last token and is required; use - for no role.
-# A bare role name reads roles/<name>.md next to peon-code.sh;
-# a role token with a / is a file path, relative to this config file.
+# A bare role name reads roles/<name>.md next to peon-code.sh,
+# else roles/<name>.md next to this config file.
+# A role token with a / is a file path, relative to this config file.
 # Full-line # comments and blank lines are skipped. No inline comments.
 # A leading * on a name marks the main agent: its pane gets the big left
 # slot. Without a mark, the first manager-type role is main, else the first

@@ -1,5 +1,175 @@
 # shellcheck shell=bash
 
+initialize_agent_pane() {
+  local i=$1
+  tmux set -pt "${PANE_IDS[$i]}" @peon_name "${NAMES[$i]}"
+  tmux set -pt "${PANE_IDS[$i]}" @peon_role_type "$(role_field "${ROLES[$i]}" type)"
+  tmux set -pt "${PANE_IDS[$i]}" @peon_role "${ROLES[$i]}"
+  tmux set -pt "${PANE_IDS[$i]}" @peon_role_label "$(role_label "${ROLES[$i]}")"
+  tmux set -pt "${PANE_IDS[$i]}" @peon_role_desc "$(role_field "${ROLES[$i]}" description)"
+  tmux set -pt "${PANE_IDS[$i]}" @peon_brief_dir "$BRIEF_DIR"
+  # The CLI binary, read by the watcher to pick the transcript parser.
+  tmux set -pt "${PANE_IDS[$i]}" @peon_bin "${CMDS[$i]%% *}"
+  tmux set -pt "${PANE_IDS[$i]}" @peon_cmd "${CMDS[$i]}"
+  tmux set -pt "${PANE_IDS[$i]}" @peon_main "$((i == MAIN))"
+}
+
+prepare_launch_settings() {
+# The destructive git commands denied to every agent that is not main. This
+# list is the one source: the deny file below and the brief prohibition
+# sentence are both built from it.
+# The deny rules match a literal command prefix, so they do not block git
+# invoked through a global flag (git -C dir reset, git --work-tree=... clean).
+# Closing that needs a permission hook, not a deny list.
+GIT_DENY=(
+  "git reset" "git checkout" "git restore" "git switch" "git clean"
+  "git stash" "git rm" "git commit" "git branch -D" "git branch -M"
+  "git branch --delete" "git branch -f" "git push" "git rebase"
+  "git reflog expire" "git update-ref" "git filter-branch" "git gc"
+)
+
+# Claude uses the normal screen, with git denied outside the main pane.
+# The deny rules bind the pane and every subagent it spawns, which role prose does not.
+NORMAL_TUI=default
+STATUSLINE_SETTINGS=""
+if command -v python3 >/dev/null 2>&1; then
+  # Only the user's global settings are read; merge other scopes if needed.
+  STATUSLINE_SETTINGS=$(python3 -c '
+import json
+import shlex
+import sys
+
+command = shlex.quote(sys.argv[2]) + " statusline"
+try:
+    with open(sys.argv[1], encoding="utf-8") as file:
+        user_command = json.load(file).get("statusLine", {}).get("command", "")
+    if isinstance(user_command, str) and user_command:
+        command += " " + shlex.quote(user_command)
+except (OSError, ValueError, AttributeError):
+    pass
+print(", \"statusLine\": " + json.dumps({"type": "command", "command": command}), end="")
+' "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json" "$SCRIPT_DIR/peon-code.sh" 2>/dev/null
+  ) || STATUSLINE_SETTINGS=""
+fi
+NORMAL_SETTINGS="$BRIEF_DIR/normal-screen.json"
+printf '{"tui":"%s"%s}\n' "$NORMAL_TUI" "$STATUSLINE_SETTINGS" >"$NORMAL_SETTINGS"
+DENY_SETTINGS="$BRIEF_DIR/deny-git.json"
+{
+  printf '{\n  "tui": "%s"%s,\n  "permissions": {\n    "deny": [\n' "$NORMAL_TUI" "$STATUSLINE_SETTINGS"
+  DENY_SEP=""
+  for CMD in "${GIT_DENY[@]}"; do
+    printf '%s      "Bash(%s)", "Bash(%s:*)"' "$DENY_SEP" "$CMD" "$CMD"
+    DENY_SEP=$',\n'
+  done
+  printf '\n    ]\n  }\n}\n'
+} >"$DENY_SETTINGS"
+
+# The same list as prose, for the brief sentence: git plus the bare forms.
+GIT_DENY_PROSE=""
+for CMD in "${GIT_DENY[@]}"; do
+  GIT_DENY_PROSE="${GIT_DENY_PROSE:+$GIT_DENY_PROSE, }${CMD#git }"
+done
+}
+
+launch_agent_command() {
+  local i=$1
+  BRIEF=$(build_brief "$i")
+  BRIEF_FILE="$BRIEF_DIR/${2:-$i}.md"  # Initial briefs use indices; added panes use their stable IDs.
+  printf '%s' "$BRIEF" >"$BRIEF_FILE" || return 1
+  # rebrief finds the brief through this pane option.
+  tmux set -pt "${PANE_IDS[$i]}" @peon_brief "$BRIEF_FILE" ||
+    echo "peon-code: tmux refused the brief path for ${NAMES[$i]} ${PANE_IDS[$i]}; rebrief will not find it" >&2
+  # The pane reads the brief from the file, so the command line stays one line.
+  Q="\"\$(cat $(printf %q "$BRIEF_FILE"))\""
+  # Map known CLIs to their interactive-session-with-initial-prompt syntax.
+  # First token is the binary; trailing user args are preserved before the flag.
+  # A resume id, when there is one, goes right after the binary, since codex
+  # takes it as a subcommand and every CLI reads its options after it. For
+  # copilot, gemini, and qwen the id rides alongside -i: their flag
+  # validation permits the pair, though their docs do not show it.
+  BIN=${CMDS[$i]%% *}
+  ARGS=""
+  [ "${CMDS[$i]}" = "$BIN" ] || ARGS=" ${CMDS[$i]#* }"
+  RID=${RESUME_IDS[$i]}
+  # Quoted for the pane's shell: a qwen id can be a saved-chat tag, not a uuid.
+  RID=${RID:+$(printf %q "$RID")}
+  LAUNCH=$(cli_call "$BIN" launch_command "$BIN" "$ARGS" "$RID" "$Q" "$i")
+  launch_commands[i]=$LAUNCH
+  tmux set -pt "${PANE_IDS[$i]}" @peon_launch \
+    "$(cli_call "$BIN" launch_command "$BIN" "$ARGS" "" "$Q" "$i" 2>/dev/null)"
+  if [ -n "$scope_command" ] &&
+    with_pane_delivery "${PANE_IDS[$i]}" launch_command_locked "${PANE_IDS[$i]}" "$scope_command"; then
+    # wait_shell_ready can return at once while the outer prompt is still
+    # on screen. Bash and zsh (including oh-my-zsh and slow rc files) keep the
+    # launch command as tty typeahead until the login shell rc files finish.
+    # An rc file that flushes tty input drops it, so wait_agent_ready times out.
+    # To handle that, capture the pane after the scope command echoes and wait
+    # until the capture changes (the inner shell has drawn its prompt) before
+    # pasting the launch command.
+    sleep 1
+    wait_shell_ready "${PANE_IDS[$i]}"
+  fi
+  # The pane is still at its shell, whose prompt peon-code cannot predict, so
+  # the box holds no text to check against: Enter follows the paste directly.
+  with_pane_delivery "${PANE_IDS[$i]}" launch_command_locked "${PANE_IDS[$i]}" "$LAUNCH" ||
+    echo "peon-code: no command sent to ${NAMES[$i]} ${PANE_IDS[$i]}" >&2
+}
+
+wait_launched_agent() {
+  local i=$1
+  RID=${RESUME_IDS[$i]}
+  BRIEF=$(cat "$BRIEF_DIR/${2:-$i}.md") || return 1
+  if ! wait_agent_ready "${PANE_IDS[$i]}"; then
+    case $(tmux display -pt "${PANE_IDS[$i]}" '#{pane_current_command}' 2>/dev/null) in
+      sh|bash|zsh|fish|dash|ksh)
+        # Retry once if shell startup lost the first launch paste.
+        if with_pane_delivery "${PANE_IDS[$i]}" launch_command_locked "${PANE_IDS[$i]}" "${launch_commands[$i]}" &&
+          wait_agent_ready "${PANE_IDS[$i]}"; then
+          cli_call "${CMDS[$i]%% *}" brief_after_start
+          return 0
+        fi ;;
+    esac
+    return 1
+  fi
+  cli_call "${CMDS[$i]%% *}" brief_after_start
+}
+
+# Send every agent's launch command first, then wait for each CLI and paste
+# a claude pane's brief once it settles. Agents that never started are named
+# in FAILED_AGENTS.
+launch_agents() {
+  local command bin physical_dir scope_command=""
+  local project_dirs=() launch_commands=() launched_indices=() indices=("${!NAMES[@]}")
+  [ $# -eq 0 ] || indices=("$1")
+  physical_dir=$(pwd -P)
+  project_dirs=("$physical_dir")
+  [ "$physical_dir" = "$PWD" ] || project_dirs+=("$PWD")
+  for bin in "${CLI_PROVIDERS[@]}"; do
+    for i in "${indices[@]}"; do
+      command=${CMDS[$i]}
+      [ "${command%% *}" = "$bin" ] || continue
+      cli_call "$bin" trust_project "${project_dirs[@]}"
+      break
+    done
+  done
+  # Avoid OOMPolicy=stop in tmux pane scopes; the agent still dies if it is the OOM victim.
+  if command -v systemd-run >/dev/null 2>&1 &&
+    systemd-run --user --scope -q -p OOMPolicy=continue -- true >/dev/null 2>&1; then
+    scope_command="systemd-run --user --scope -q -p OOMPolicy=continue -- \"\${SHELL:-sh}\" -l"
+  fi
+  for i in "${indices[@]}"; do
+    if launch_agent_command "$i" "${2:-$i}"; then
+      launched_indices+=("$i")
+    else
+      FAILED_AGENTS+=("${NAMES[$i]}")
+    fi
+  done
+  for i in ${launched_indices[@]+"${launched_indices[@]}"}; do
+    wait_launched_agent "$i" "${2:-$i}" || FAILED_AGENTS+=("${NAMES[$i]}")
+  done
+}
+
+launch_team() {
 # The brief marker that identifies each agent's own thread, so two panes of
 # the same CLI in one directory do not both reopen the newest conversation.
 # The trailing comma closes the session name, so a session name that is a
@@ -56,77 +226,21 @@ if [ "$RESTART_DEAD" = yes ]; then
 else
   tmux set-option -t "$SESSION" @peon_restart 0
 fi
-FAILED_AGENTS=()
-for i in "${!NAMES[@]}"; do
-  tmux set -pt "${PANE_IDS[$i]}" @peon_name "${NAMES[$i]}"
-  tmux set -pt "${PANE_IDS[$i]}" @peon_role_type "$(role_field "${ROLES[$i]}" type)"
-  # The CLI binary, read by the watcher to pick the transcript parser.
-  tmux set -pt "${PANE_IDS[$i]}" @peon_bin "${CMDS[$i]%% *}"
-  tmux set -pt "${PANE_IDS[$i]}" @peon_cmd "${CMDS[$i]}"
-  tmux set -pt "${PANE_IDS[$i]}" @peon_main "$((i == MAIN))"
-  wait_shell_ready "${PANE_IDS[$i]}"
-done
-
 # Briefs go to files: pasting one on a shell command line would fill the
 # pane with thousands of escaped characters before the agent even starts.
 # The directory is left for the OS to clear, since the launcher
 # ends in exec and the panes read the files after it is gone.
 BRIEF_DIR=$(mktemp -d "${TMPDIR:-/tmp}/peon-code.XXXXXX")
 
-# The destructive git commands denied to every agent that is not main. This
-# list is the one source: the deny file below and the brief prohibition
-# sentence are both built from it.
-# The deny rules match a literal command prefix, so they do not block git
-# invoked through a global flag (git -C dir reset, git --work-tree=... clean).
-# Closing that needs a permission hook, not a deny list.
-GIT_DENY=(
-  "git reset" "git checkout" "git restore" "git switch" "git clean"
-  "git stash" "git rm" "git commit" "git branch -D" "git branch -M"
-  "git branch --delete" "git branch -f" "git push" "git rebase"
-  "git reflog expire" "git update-ref" "git filter-branch" "git gc"
-)
-
-# Claude uses the normal screen, with git denied outside the main pane.
-# The deny rules bind the pane and every subagent it spawns, which role prose does not.
-NORMAL_TUI=default
-STATUSLINE_SETTINGS=""
-if command -v python3 >/dev/null 2>&1; then
-  # Only the user's global settings are read; merge other scopes if needed.
-  STATUSLINE_SETTINGS=$(python3 -c '
-import json
-import shlex
-import sys
-
-command = shlex.quote(sys.argv[2]) + " statusline"
-try:
-    with open(sys.argv[1], encoding="utf-8") as file:
-        user_command = json.load(file).get("statusLine", {}).get("command", "")
-    if isinstance(user_command, str) and user_command:
-        command += " " + shlex.quote(user_command)
-except (OSError, ValueError, AttributeError):
-    pass
-print(", \"statusLine\": " + json.dumps({"type": "command", "command": command}), end="")
-' "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json" "$SCRIPT_DIR/peon-code.sh" 2>/dev/null
-  ) || STATUSLINE_SETTINGS=""
-fi
-NORMAL_SETTINGS="$BRIEF_DIR/normal-screen.json"
-printf '{"tui":"%s"%s}\n' "$NORMAL_TUI" "$STATUSLINE_SETTINGS" >"$NORMAL_SETTINGS"
-DENY_SETTINGS="$BRIEF_DIR/deny-git.json"
-{
-  printf '{\n  "tui": "%s"%s,\n  "permissions": {\n    "deny": [\n' "$NORMAL_TUI" "$STATUSLINE_SETTINGS"
-  DENY_SEP=""
-  for CMD in "${GIT_DENY[@]}"; do
-    printf '%s      "Bash(%s)", "Bash(%s:*)"' "$DENY_SEP" "$CMD" "$CMD"
-    DENY_SEP=$',\n'
-  done
-  printf '\n    ]\n  }\n}\n'
-} >"$DENY_SETTINGS"
-
-# The same list as prose, for the brief sentence: git plus the bare forms.
-GIT_DENY_PROSE=""
-for CMD in "${GIT_DENY[@]}"; do
-  GIT_DENY_PROSE="${GIT_DENY_PROSE:+$GIT_DENY_PROSE, }${CMD#git }"
+tmux set-option -t "$SESSION" @peon_brief_dir "$BRIEF_DIR"
+tmux set-option -t "$SESSION" @peon_compact_at "$COMPACT_AT"
+FAILED_AGENTS=()
+for i in "${!NAMES[@]}"; do
+  initialize_agent_pane "$i"
+  wait_shell_ready "${PANE_IDS[$i]}"
 done
+
+prepare_launch_settings
 
 # Roster line for every pane, shared by all briefs.
 ROSTER=""
@@ -137,89 +251,6 @@ for i in "${!NAMES[@]}"; do
   fi
   ROSTER+=$'\n'
 done
-
-# Send every agent's launch command first, then wait for each CLI and paste
-# a claude pane's brief once it settles. Agents that never started are named
-# in FAILED_AGENTS.
-launch_agents() {
-  local command bin physical_dir scope_command=""
-  local project_dirs=() launch_commands=()
-  physical_dir=$(pwd -P)
-  project_dirs=("$physical_dir")
-  [ "$physical_dir" = "$PWD" ] || project_dirs+=("$PWD")
-  for bin in "${CLI_PROVIDERS[@]}"; do
-    for command in "${CMDS[@]}"; do
-      [ "${command%% *}" = "$bin" ] || continue
-      cli_call "$bin" trust_project "${project_dirs[@]}"
-      break
-    done
-  done
-  # Avoid OOMPolicy=stop in tmux pane scopes; the agent still dies if it is the OOM victim.
-  if command -v systemd-run >/dev/null 2>&1 &&
-    systemd-run --user --scope -q -p OOMPolicy=continue -- true >/dev/null 2>&1; then
-    scope_command="systemd-run --user --scope -q -p OOMPolicy=continue -- \"\${SHELL:-sh}\" -l"
-  fi
-  for i in "${!NAMES[@]}"; do
-    BRIEF=$(build_brief "$i")
-    BRIEF_FILE="$BRIEF_DIR/$i.md"  # by index: a CLI-team name is the command, which can hold / or repeat
-    printf '%s' "$BRIEF" >"$BRIEF_FILE"
-    # rebrief finds the brief through this pane option.
-    tmux set -pt "${PANE_IDS[$i]}" @peon_brief "$BRIEF_FILE" ||
-      echo "peon-code: tmux refused the brief path for ${NAMES[$i]} ${PANE_IDS[$i]}; rebrief will not find it" >&2
-    # The pane reads the brief from the file, so the command line stays one line.
-    Q="\"\$(cat $(printf %q "$BRIEF_FILE"))\""
-    # Map known CLIs to their interactive-session-with-initial-prompt syntax.
-    # First token is the binary; trailing user args are preserved before the flag.
-    # A resume id, when there is one, goes right after the binary, since codex
-    # takes it as a subcommand and every CLI reads its options after it. For
-    # copilot, gemini, and qwen the id rides alongside -i: their flag
-    # validation permits the pair, though their docs do not show it.
-    BIN=${CMDS[$i]%% *}
-    ARGS=""
-    [ "${CMDS[$i]}" = "$BIN" ] || ARGS=" ${CMDS[$i]#* }"
-    RID=${RESUME_IDS[$i]}
-    # Quoted for the pane's shell: a qwen id can be a saved-chat tag, not a uuid.
-    RID=${RID:+$(printf %q "$RID")}
-    LAUNCH=$(cli_call "$BIN" launch_command "$BIN" "$ARGS" "$RID" "$Q" "$i")
-    launch_commands[i]=$LAUNCH
-    tmux set -pt "${PANE_IDS[$i]}" @peon_launch \
-      "$(cli_call "$BIN" launch_command "$BIN" "$ARGS" "" "$Q" "$i" 2>/dev/null)"
-    if [ -n "$scope_command" ] &&
-      with_pane_delivery "${PANE_IDS[$i]}" launch_command_locked "${PANE_IDS[$i]}" "$scope_command"; then
-      # wait_shell_ready can return at once while the outer prompt is still
-      # on screen. Bash and zsh (including oh-my-zsh and slow rc files) keep the
-      # launch command as tty typeahead until the login shell rc files finish.
-      # An rc file that flushes tty input drops it, so wait_agent_ready times out.
-      # To handle that, capture the pane after the scope command echoes and wait
-      # until the capture changes (the inner shell has drawn its prompt) before
-      # pasting the launch command.
-      sleep 1
-      wait_shell_ready "${PANE_IDS[$i]}"
-    fi
-    # The pane is still at its shell, whose prompt peon-code cannot predict, so
-    # the box holds no text to check against: Enter follows the paste directly.
-    with_pane_delivery "${PANE_IDS[$i]}" launch_command_locked "${PANE_IDS[$i]}" "$LAUNCH" ||
-      echo "peon-code: no command sent to ${NAMES[$i]} ${PANE_IDS[$i]}" >&2
-  done
-  for i in "${!NAMES[@]}"; do
-    RID=${RESUME_IDS[$i]}
-    BRIEF=$(cat "$BRIEF_DIR/$i.md")
-    if ! wait_agent_ready "${PANE_IDS[$i]}"; then
-      case $(tmux display -pt "${PANE_IDS[$i]}" '#{pane_current_command}' 2>/dev/null) in
-        sh|bash|zsh|fish|dash|ksh)
-          # Retry once if shell startup lost the first launch paste.
-          if with_pane_delivery "${PANE_IDS[$i]}" launch_command_locked "${PANE_IDS[$i]}" "${launch_commands[$i]}" &&
-            wait_agent_ready "${PANE_IDS[$i]}"; then
-            cli_call "${CMDS[$i]%% *}" brief_after_start
-            continue
-          fi ;;
-      esac
-      FAILED_AGENTS+=("${NAMES[$i]}")
-      continue
-    fi
-    cli_call "${CMDS[$i]%% *}" brief_after_start
-  done
-}
 
 if [ -t 0 ]; then
   # The session goes on screen first and the agents start while it is up, so
@@ -267,3 +298,4 @@ if [ "$COMPACT_AT" -gt 0 ] || [ "$RESTART_DEAD" = yes ]; then
   nohup "$SCRIPT_DIR/peon-code.sh" watch "$SESSION" "$COMPACT_AT" >/dev/null 2>>"$BRIEF_DIR/watch.log" </dev/null &
 fi
 goto_session "$SESSION"
+}

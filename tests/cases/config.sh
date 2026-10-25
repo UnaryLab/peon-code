@@ -27,6 +27,31 @@ test_restart_dead_config() (
   done
 )
 
+# shellcheck disable=SC2034 # Config functions read and set these globals.
+test_local_roles() (
+  local conf_dir="$TEST_DIR/local-roles-config"
+  local CONF="$conf_dir/team.conf" CONF_GIVEN=1 DEFAULT_CONF="" SCRIPT_DIR="$ROOT"
+  local NAMES CMDS ROLES MAIN_INDEX
+  local RESTART_DEAD COMPACT_AT
+  # shellcheck source=lib/config.sh
+  source "$ROOT/lib/config.sh"
+  die() { printf '%s\n' "$*" >&2; exit 1; }
+  mkdir -p "$conf_dir/roles"
+  printf -- '---\ntype: worker\ndescription: local worker\n---\nLocal role body.\n' >"$conf_dir/roles/local-worker.md"
+  cp "$conf_dir/roles/local-worker.md" "$conf_dir/roles/manager.md"
+  printf 'lead codex manager\nworker codex local-worker\ncheck codex reviewer\n' >"$CONF"
+  load_team
+  [ "${ROLES[0]}" = "$ROOT/roles/manager.md" ] || fail 'a local role replaced a shipped role'
+  [ "${ROLES[1]}" = "$conf_dir/roles/local-worker.md" ] ||
+    fail 'a bare role name did not load from the config directory'
+
+  printf 'solo codex missing-local-role\n' >"$CONF"
+  if (load_team) 2>"$TEST_DIR/local-roles.err"; then
+    fail 'a missing bare role name loaded'
+  fi
+  assert_contains "$TEST_DIR/local-roles.err" 'role file not found'
+)
+
 test_config_loading() {
   local fake_bin=$1 log="$TEST_DIR/tmux-config.log" home_dir="$TEST_DIR/home-config"
   local config_dir="$TEST_DIR/config" work_dir="$TEST_DIR/config-work" line brief_file
@@ -228,6 +253,7 @@ test_writer_gitignore() {
 
 fake_bin=$(make_fake_commands)
 test_restart_dead_config
+test_local_roles
 test_config_loading "$fake_bin"
 test_shipped_roles
 test_role_frontmatter "$fake_bin"

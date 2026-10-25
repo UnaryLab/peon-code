@@ -138,6 +138,8 @@ SCOPE
   paste_only() { { printf '%s:' "$1"; cat; printf '\n'; } >>"$pasted"; }
   wait_shell_ready() { printf '%s\n' "$1" >>"$TEST_DIR/scope-waits.log"; }
   eval "$(sed -n '/^wait_agent_ready() {/,/^}/p' "$ROOT/lib/tmux.sh")"
+  eval "$(sed -n '/^launch_agent_command() {/,/^}/p' "$ROOT/lib/launch.sh")"
+  eval "$(sed -n '/^wait_launched_agent() {/,/^}/p' "$ROOT/lib/launch.sh")"
   eval "$(sed -n '/^launch_agents() {/,/^}/p' "$ROOT/lib/launch.sh")"
   for mode in supported missing failed sh bash zsh fish dash ksh stuck nonshell closed; do
     : >"$SCOPE_LOG"

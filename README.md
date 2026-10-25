@@ -112,7 +112,7 @@ peon-code-web --ssh my-server --dir /remote/path --config ./team.conf
 
 The command opens your default browser on macOS or Linux. Keep it running while you use the UI; Ctrl-C stops the web server and leaves your agents running. If a browser cannot open, use the printed URL. Start teams with `peon-code`; the browser lists them as they appear.
 
-The page lists the running teams and their agents. The **+** tab starts a team from a project path on the agent host, with an optional local team config file. While no terminal is attached, the browser sizes each pane to its own view; once a terminal is attached, the terminal sets the size, and the browser view can show only what the terminal shows. After the browser has sized a pane, attach with `peon-code <session>`; a plain `tmux attach` shows each agent in its own window until a browser page polls again. Files you upload from the browser land in `<project dir>/<folder>/` on the agent host, `upload/` by default. An upload never replaces an existing file of the same name, and each file can be at most 64 MiB. The browser can list and download files only inside the team's project folder, at most 256 MiB per file. A folder downloads as a zip archive under the same 256 MiB cap, counted on the file sizes before compression. It remembers the last upload folder for each team in this browser only.
+The page lists the running teams and their agents. The **+** tab starts a team from a project path on the agent host, with an optional local team config file. The server deletes session roles and a team config composed in the browser once the team starts, so to launch the same team again, write them as files. While no terminal is attached, the browser sizes each pane to its own view; once a terminal is attached, the terminal sets the size, and the browser view can show only what the terminal shows. After the browser has sized a pane, attach with `peon-code <session>`; a plain `tmux attach` shows each agent in its own window until a browser page polls again. Files you upload from the browser land in `<project dir>/<folder>/` on the agent host, `upload/` by default. An upload never replaces an existing file of the same name, and each file can be at most 64 MiB. The browser can list and download files only inside the team's project folder, at most 256 MiB per file. A folder downloads as a zip archive under the same 256 MiB cap, counted on the file sizes before compression. It remembers the last upload folder for each team in this browser only.
 
 For SSH, install `peon-code-web` on your Mac and on the remote host, then run `peon-code-web --ssh <your-usual-SSH-host>` **on your Mac**. It starts the remote web server, forwards a loopback port, and opens your local browser. Your SSH config, keys, and authentication apply, and the Mac needs no tmux. The browser lists the running teams of all project folders on the host. Keep the command running; Ctrl-C closes the tunnel and its remote web server and leaves the agents running. A stale web server from a lost tunnel is replaced automatically.
 
@@ -177,6 +177,14 @@ A swap that keeps the CLI keeps every other flag of the pane's command and repla
 
 When the check passes, the swap writes folder trust for the new CLI, updates the agent's brief with its new command, clears the pane's usage and weekly figures, and asks the old agent to quit with `/exit`. The [context watcher](#context-watcher) then relaunches the pane with the new command and pastes the brief, and the pane is marked done; with `restart-dead no`, the swap relaunches the pane itself. A swap to a different CLI starts a new conversation. A swap that keeps the CLI resumes the agent's conversation from this session when its transcript is found, now with the new model and effort, and starts fresh when none is found. A swap does not count toward the watcher's limit of 3 restarts per hour. The swap fails and restores the old command when the old agent's input box holds typed text, shows a dialog or a menu, or the agent has not quit within 30 seconds. A swap from the pane you run it in, of a pane already at its shell, or while another swap of that pane is still checking is refused.
 
+### Add
+
+`peon-code add <name> <role> <command...> [--session <name>]` adds an agent to a running team in a new pane of that team's session. The session defaults to the team of the pane you run it from, else the current directory name. Every word after the role is the agent command.
+
+The role is `-`, a shipped role name, or a role file path relative to the current directory. A bare name that is not shipped reads `roles/<name>.md` in the current directory. The role file needs a `type:` frontmatter line. A team has at most one manager, so a manager-type role is refused when the team already has one. The name must match `[A-Za-z0-9_-]+` and differ from every agent name in the session. The command cannot contain the word `--session`, because `add` reads it as its own option.
+
+The new agent's brief holds the full roster. Every other agent gets a one-line note about its new teammate, and its stored brief gains the new roster line, so `rebrief`, `compact`, and `clear` keep the new agent in the roster. If the new agent does not start, its pane is killed and the team stays as it was. `add` refuses a team whose panes have no stored brief; launch that team again first. If the team uses the [context watcher](#context-watcher) and no watcher runs, `add` starts one.
+
 ### Compact and clear
 
 `peon-code compact [<name|all>] [<session>]` and `peon-code clear [<name|all>] [<session>]` send `/compact` or `/clear` to the named agent's pane, or to every agent pane, then paste that pane's brief back once the command has finished, since both commands drop the standing instructions. The name defaults to `all`.
@@ -215,6 +223,7 @@ peon-code explain <pane-id>                  # explain selected text from stdin 
 peon-code key [--submit] <pane-id> <name>    # press Tab, Up, Down, Left, Right, Enter, Escape, BSpace, or C-c (Ctrl+C)
 peon-code rebrief <name|all> [<session>]     # send an agent its launch brief again
 peon-code swap <name> <cli|-> <model|-> <effort|-> [<session>]  # replace an agent's CLI, model, or effort
+peon-code add <name> <role> <command...> [--session <name>]  # add an agent to a running team
 peon-code compact [<name|all>] [<session>]   # send /compact, then the brief again once it ends
 peon-code clear [<name|all>] [<session>]     # send /clear, then the brief again
 peon-code watch [<session>] [<tokens>]       # compact a pane whose context reaches <tokens> and restart dead agents; started by each launch unless both are off
@@ -251,7 +260,7 @@ weird    claude                                       ./my-roles/chaos.md
 
 - Names must match `[A-Za-z0-9_-]+` and be unique. A leading `*` marks the main agent (see [Start and attach](#start-and-attach)); at most one line may carry it.
 - The role field is required. `-` means no role.
-- A bare role name reads `roles/<name>.md` next to `peon-code.sh`. A role token with a `/` is a file path, relative paths resolving against the config file's directory.
+- A bare role name reads `roles/<name>.md` next to `peon-code.sh`, else `roles/<name>.md` next to the config file. A role token with a `/` is a file path, relative paths resolving against the config file's directory.
 - A line `compact-at <tokens>` sets the context watcher's threshold, and a line `restart-dead yes` or `restart-dead no` (default `yes`) turns the restart of dead agents on or off (see [Context watcher](#context-watcher)); these are the only non-agent lines.
 - Full-line `#` comments and blank lines are skipped. Inline comments are not.
 - A role file opens with a frontmatter block: `type:` (one of `manager`, `worker`, `reviewer`), `description:` (one line, shown in the roster). The type picks the agent's duties in `roles/protocol.md`; the body below the block holds only the job-specific rules.

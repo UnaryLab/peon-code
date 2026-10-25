@@ -94,11 +94,46 @@ async function api(path, data) {
 const newSession = document.querySelector('#new-session');
 const newSessionForm = document.querySelector('#new-session-form');
 const newSessionStatus = document.querySelector('#new-session-status');
+const sessionRoles = document.querySelector('#new-session-roles');
+const sessionAgents = document.querySelector('#new-session-agents');
+let shippedRoles = [];
+function updateAgentRoles() {
+  const names = [...new Set(['-', ...shippedRoles.map(role => role.name), ...[...sessionRoles.children].map(role => role.querySelector('[name="name"]').value.trim()).filter(Boolean)])];
+  for (const agent of sessionAgents.children) {
+    const select = agent.querySelector('[name="role"]'), value = select.value;
+    select.replaceChildren(...names.map(name => new Option(name, name)));
+    select.value = names.includes(value) ? value : '-';
+  }
+}
+function updateAgentClis() {
+  for (const select of document.querySelectorAll('#new-session-agents [name="cli"], #add-agent-form [name="cli"]')) {
+    const value = select.value;
+    select.replaceChildren(...availableClis.map(cli => new Option(cli, cli)));
+    if (availableClis.includes(value)) select.value = value;
+  }
+}
+document.querySelector('#add-session-agent').onclick = () => {
+  const agent = document.querySelector('#session-agent-template').content.firstElementChild.cloneNode(true);
+  agent.querySelector('.remove-agent').onclick = () => agent.remove();
+  sessionAgents.append(agent);
+  updateAgentClis(); updateAgentRoles();
+  agent.querySelector('[name="name"]').focus();
+};
+document.querySelector('#add-role').onclick = () => {
+  const role = document.querySelector('#role-template').content.firstElementChild.cloneNode(true);
+  role.querySelector('.remove-role').onclick = () => { role.remove(); updateAgentRoles(); };
+  role.querySelector('[name="name"]').oninput = updateAgentRoles;
+  sessionRoles.append(role);
+  updateAgentRoles();
+  role.querySelector('[name="name"]').focus();
+};
 function closeNewSession() {
   const focused = document.activeElement;
   newSessionForm.hidden = true;
   newSession.setAttribute('aria-expanded', 'false');
   if (newSessionForm.contains(focused) || focused === newSession || focused === document.body) newSession.focus();
+  sessionRoles.replaceChildren();
+  sessionAgents.replaceChildren();
 }
 newSession.onclick = () => {
   if (!newSessionForm.hidden) { closeNewSession(); return; }
@@ -122,7 +157,31 @@ newSessionForm.onsubmit = async event => {
     const data = {directory: newSessionForm.elements.directory.value};
     const session = newSessionForm.elements.session.value.trim();
     if (session) data.session = session;
+    const roles = [...sessionRoles.children].map(role => Object.fromEntries([...role.querySelectorAll('[name]')].map(input => [input.name, input.value])));
+    const agents = [...sessionAgents.children];
     const file = newSessionForm.elements.config.files[0];
+    if (agents.length && file) throw new Error('Choose agent rows or a team config upload, not both');
+    if (roles.length && !file && !agents.length) throw new Error('Roles need a team config that names them');
+    if (roles.length) data.roles = roles;
+    if (agents.length) {
+      const names = new Set();
+      data.config_name = 'team.conf';
+      data.config_text = agents.map(agent => {
+        const values = Object.fromEntries([...agent.querySelectorAll('[name]')].map(input => [input.name, input.value.trim()]));
+        if (!/^[A-Za-z0-9_-]+$/.test(values.name)) throw new Error('Agent name must use letters, digits, hyphens, or underscores');
+        if (names.has(values.name)) throw new Error('Agent name ' + values.name + ' is used twice');
+        names.add(values.name);
+        if (!availableClis.includes(values.cli)) throw new Error('Choose an available CLI');
+        for (const field of ['model', 'effort']) {
+          if (values[field] && !/^(-|[A-Za-z0-9._=/][A-Za-z0-9._=/-]*)$/.test(values[field])) throw new Error(field + ' must be one token');
+        }
+        if (/[\r\n\0]/.test(values.args)) throw new Error('Extra args must be one line without NUL');
+        let command = values.cli + (values.args ? ' ' + values.args : '');
+        if (values.model && values.model !== '-') command += ' --model ' + values.model;
+        if (values.effort && values.effort !== '-') command += (values.cli === 'claude' ? ' --effort ' : ' -c model_reasoning_effort=') + values.effort;
+        return (agent.querySelector('[name="main"]').checked ? '*' : '') + values.name + ' ' + command + ' ' + values.role;
+      }).join('\n') + '\n';
+    }
     if (file) {
       if (file.size > 200 * 1024) throw new Error('Team config must be at most 200 KiB.');
       const text = await new Promise((resolve, reject) => {
@@ -188,6 +247,7 @@ async function loadUploadFolders() {
 }
 function openUpload() {
   if (!swapForm.hidden) closeSwap();
+  if (!addAgentForm.hidden) closeAddAgent();
   uploadForm.hidden = false;
   upload.setAttribute('aria-expanded', 'true');
   uploadDir.focus();
@@ -366,6 +426,7 @@ filesButton.onclick = () => {
   if (!card || card.closed) return;
   if (!uploadForm.hidden) closeUpload();
   if (!swapForm.hidden) closeSwap();
+  if (!addAgentForm.hidden) closeAddAgent();
   if (filesSession !== card.latest.session) fileDir = '';
   filesSession = card.latest.session;
   filesDialog.showModal();
@@ -397,6 +458,85 @@ let swapPrefill;
 let availableClis = [];
 let swapRevision = 0;
 let swapPending = false;
+const addAgent = document.querySelector('#add-agent');
+const addAgentForm = document.querySelector('#add-agent-form');
+const addAgentRole = document.querySelector('#add-agent-role');
+const addAgentStatus = document.querySelector('#add-agent-status');
+let addSession;
+let addPending = false;
+const inlineRole = document.querySelector('#role-template').content.firstElementChild.cloneNode(true);
+inlineRole.querySelector('.remove-role').remove();
+addAgentRole.append(inlineRole);
+function updateAddRoles() {
+  const select = addAgentForm.querySelector('[name="role"]'), value = select.value;
+  select.replaceChildren(new Option('-', '-'), ...shippedRoles.map(role => new Option(role.name, role.name)), new Option('New role', 'new'));
+  if ([...select.options].some(option => option.value === value)) select.value = value;
+}
+function closeAddAgent() {
+  const focused = addAgentForm.contains(document.activeElement);
+  addAgentForm.hidden = true; addAgentForm.reset(); addAgentRole.hidden = true;
+  addSession = null;
+  addAgent.setAttribute('aria-expanded', 'false');
+  if (focused) (addAgent.disabled ? cards.get(currentPane())?.el.querySelector('.output') : addAgent)?.focus();
+}
+function updateAddAgent() {
+  const card = cards.get(currentPane());
+  addAgent.hidden = !card || card.closed;
+  addAgent.disabled = addAgent.hidden || card.busy || addPending || swapPending;
+  if (!addAgentForm.hidden && card?.latest?.session !== addSession) closeAddAgent();
+  for (const control of addAgentForm.querySelectorAll('input, select, textarea, button')) control.disabled = addAgent.disabled;
+  for (const control of addAgentRole.querySelectorAll('input, select, textarea')) control.disabled = addAgent.disabled || addAgentRole.hidden;
+}
+addAgent.onclick = () => {
+  updateAddAgent();
+  if (addAgent.disabled) return;
+  if (!addAgentForm.hidden) { closeAddAgent(); return; }
+  if (!swapForm.hidden) closeSwap();
+  if (!uploadForm.hidden) closeUpload();
+  addSession = cards.get(currentPane()).latest.session;
+  addAgentForm.hidden = false;
+  addAgentStatus.textContent = ''; addAgentStatus.classList.remove('error');
+  addAgent.setAttribute('aria-expanded', 'true');
+  updateAddAgent();
+  addAgentForm.querySelector('[name="name"]').focus();
+};
+addAgentForm.querySelector('.cancel').onclick = closeAddAgent;
+addAgentForm.onkeydown = event => {
+  if (event.key === 'Escape' && !addPending) { event.preventDefault(); closeAddAgent(); }
+};
+addAgentForm.querySelector('[name="role"]').onchange = () => {
+  addAgentRole.hidden = addAgentForm.querySelector('[name="role"]').value !== 'new';
+  updateAddAgent();
+  if (!addAgentRole.hidden) addAgentRole.querySelector('[name="name"]').focus();
+};
+addAgentForm.onsubmit = async event => {
+  event.preventDefault();
+  updateAddAgent();
+  if (addAgent.disabled) return;
+  const card = cards.get(currentPane()), session = addSession;
+  const data = {session};
+  for (const field of ['name', 'cli', 'model', 'effort', 'args', 'role']) data[field] = addAgentForm.querySelector('[name="' + field + '"]').value.trim();
+  if (data.role === 'new') {
+    data.newRole = Object.fromEntries([...addAgentRole.querySelectorAll('[name]')].map(input => [input.name, input.value]));
+    data.role = data.newRole.name;
+  }
+  addPending = true; card.busy = true; setSelection(card, card.selected);
+  addAgentStatus.classList.remove('error'); addAgentStatus.textContent = 'Adding agent...';
+  try {
+    const result = await api('/api/add', data);
+    if (addSession === session && !addAgentForm.hidden) {
+      addAgentForm.reset(); addAgentRole.hidden = true;
+      addAgentStatus.textContent = result.message;
+    }
+    await refresh();
+  } catch (error) {
+    if (addSession === session && !addAgentForm.hidden) {
+      addAgentStatus.textContent = error.message; addAgentStatus.classList.add('error');
+    }
+  } finally {
+    addPending = false; card.busy = false; setSelection(card, card.selected);
+  }
+};
 function swapValues(card) {
   const words = [];
   let word = '', quote = '', escaped = false;
@@ -438,7 +578,7 @@ function updateSwap() {
     swapRevision++;
     if (!swapForm.hidden && !targetGone) prefillSwap(card);
   }
-  const disabled = !card || card.closed || card.busy || swapPending || !!card.latest?.swap?.startsWith('checking');
+  const disabled = !card || card.closed || card.busy || swapPending || addPending || !!card.latest?.swap?.startsWith('checking');
   if (!swapForm.hidden && targetGone) {
     swapForm.hidden = true;
     swap.setAttribute('aria-expanded', 'false');
@@ -467,7 +607,7 @@ function updateSwap() {
   if ((disabled && focused) || ((disabled || uploading) && uploadFocused)) card?.el.querySelector('.output').focus();
 }
 const renderNavigation = updateNavigation;
-updateNavigation = () => { renderNavigation(); updateSwap(); };
+updateNavigation = () => { renderNavigation(); updateSwap(); updateAddAgent(); };
 function closeSwap() {
   const focused = document.activeElement;
   swapForm.hidden = true;
@@ -480,6 +620,7 @@ swap.onclick = () => {
   if (swap.disabled) return;
   if (!swapForm.hidden) { closeSwap(); return; }
   if (!uploadForm.hidden) closeUpload();
+  if (!addAgentForm.hidden) closeAddAgent();
   const card = cards.get(currentPane());
   prefillSwap(card);
   swapForm.hidden = false;
@@ -545,13 +686,14 @@ function feedback(card, message, error = false) {
   card.el.querySelector('.feedback').classList.toggle('error', error);
 }
 function updateBusy() {
-  document.body.classList.toggle('busy', [...cards.values()].some(card => card.busy));
+  document.body.classList.toggle('busy', addPending || [...cards.values()].some(card => card.busy));
 }
 function setSelection(card, text) {
   updateBusy();
   card.selected = text;
   for (const button of card.el.querySelectorAll('.prompt-buttons button, .add-button, .button-form button, .stack-order, .add-screen, .close-screen')) button.disabled = card.busy || card.closed;
   updateSwap();
+  updateAddAgent();
   card.el.querySelector('.explain').disabled = !text.trim() || card.busy || card.closed;
   card.el.querySelector('.discard').hidden = !card.closed;
   card.el.querySelector('.discard').disabled = card.busy;
@@ -1010,10 +1152,16 @@ async function refresh() {
 }
 api('/api/clis').then(clis => {
   availableClis = clis;
+  updateAgentClis();
   swapForm.elements.cli.replaceChildren(...clis.map(cli => {
     const option = document.createElement('option'); option.value = cli; option.textContent = cli; return option;
   }));
   if (!swapForm.hidden) prefillSwap(cards.get(currentPane()));
+}).catch(error => { connection.textContent = error.message; });
+api('/api/roles').then(roles => {
+  shippedRoles = roles;
+  updateAgentRoles();
+  updateAddRoles();
 }).catch(error => { connection.textContent = error.message; });
 refresh().then(async function refreshButtons() {
   try {
