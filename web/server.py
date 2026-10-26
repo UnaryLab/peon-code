@@ -170,11 +170,12 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def allowed(self, authenticated=False):
-        if self.headers.get("Host") != self.server.address:
+        loopback = r"(?:127\.0\.0\.1|localhost|\[::1\])(?::[0-9]+)?"
+        if not re.fullmatch(loopback, self.headers.get("Host", ""), re.IGNORECASE):
             self.respond(403, {"error": "Invalid host"})
             return False
         origin = self.headers.get("Origin")
-        if origin and origin != self.server.origin:
+        if origin and not re.fullmatch("http://" + loopback, origin, re.IGNORECASE):
             self.respond(403, {"error": "Invalid origin"})
             return False
         if authenticated and not secrets.compare_digest(self.headers.get("X-Peon-Token", "").encode("utf-8"), self.server.token.encode("ascii")):

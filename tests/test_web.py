@@ -374,6 +374,43 @@ class WebTests(unittest.TestCase):
         self.assertIn("日本語", json.loads(body)["panes"][0]["output"])
         self.assertEqual(json.loads(body)["version"], (ROOT / "VERSION").read_text(encoding="utf-8").strip())
 
+    def test_access_accepts_loopback_names_and_forwarded_ports(self):
+        port = str(self.server.server_port)
+        forwarded = str(self.server.server_port % 65535 + 1)
+        cases = ({"Host": "127.0.0.1:" + forwarded}, {"Host": "localhost:" + port},
+                 {"Host": "[::1]:" + forwarded}, {"Origin": "http://127.0.0.1:" + forwarded},
+                 {"Host": "localhost:" + forwarded, "Origin": "http://localhost:" + forwarded},
+                 {"Host": "[::1]", "Origin": "http://[::1]"},
+                 {"Host": "localhost", "Origin": "http://localhost"})
+        with patch.object(web, "available_clis", return_value=["codex"]):
+            for headers in cases:
+                with self.subTest(headers=headers):
+                    self.assertEqual(self.request("GET", "/", headers=headers)[0], 200)
+                    status, body = self.request("GET", "/api/clis", headers=headers)
+                    self.assertEqual(status, 200)
+                    self.assertEqual(json.loads(body), ["codex"])
+
+    def test_access_rejects_foreign_or_malformed_hosts_and_origins(self):
+        port = str(self.server.server_port)
+        cases = ({"Host": "example.com:" + port}, {"Host": "localhost.evil.test:" + port},
+                 {"Host": "user@localhost:" + port}, {"Host": "127.0.0.1:" + port + "/path"},
+                 {"Origin": "http://example.com:" + port}, {"Origin": "http://localhost.evil.test:" + port},
+                 {"Origin": "https://127.0.0.1:" + port}, {"Origin": "null"},
+                 {"Origin": "http://user@localhost:" + port}, {"Origin": "http://localhost:" + port + "/path"})
+        for headers in cases:
+            with self.subTest(headers=headers):
+                status, body = self.request("GET", "/api/clis", headers=headers)
+                self.assertEqual(status, 403)
+                self.assertEqual(json.loads(body)["error"], "Invalid host" if "Host" in headers else "Invalid origin")
+
+    def test_access_on_forwarded_loopback_hosts_still_requires_a_token(self):
+        for host in ("127.0.0.1:1", "localhost:1", "[::1]:1"):
+            for token in ("", "bad-token"):
+                with self.subTest(host=host, token=token):
+                    status, body = self.request("GET", "/api/clis", headers={"Host": host, "X-Peon-Token": token})
+                    self.assertEqual(status, 403)
+                    self.assertEqual(json.loads(body)["error"], "Invalid access token; reopen the launch URL")
+
     def test_version_is_read_once_at_startup_and_missing_is_empty(self):
         for contents, expected in ((" 2.3.4\n", "2.3.4"), (FileNotFoundError(), "")):
             with self.subTest(expected=expected), patch.object(Path, "read_text", **({"side_effect": contents} if isinstance(contents, OSError) else {"return_value": contents})) as read:

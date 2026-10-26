@@ -125,6 +125,15 @@ const assert = require('node:assert/strict');
     const paneTab = id => page.locator(`#agents [data-key="${id}:${roles.find(pane => pane.id === id).identity}"]`);
     const sessionTab = name => page.locator(`#sessions [data-key="${name}"]`);
     const agentGroup = role => page.locator('#agents details[data-role="' + role + '"]');
+    async function checkSidebarAlignment(label) {
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      const bottoms = await page.evaluate(() => ({
+        dismiss: document.querySelector('#dismiss').getBoundingClientRect().bottom,
+        output: document.querySelector('.pane:not([hidden]) .screens').lastElementChild.querySelector('.output').getBoundingClientRect().bottom
+      }));
+      assert(Math.abs(bottoms.dismiss - bottoms.output) <= 1,
+        'Close session aligns with the black output: ' + JSON.stringify({label, ...bottoms}));
+    }
     async function selectFirstLine() {
       await card('%3').locator('.output').first().evaluate(el => {
         el.scrollTop = 0;
@@ -513,9 +522,48 @@ const assert = require('node:assert/strict');
     assert(await agentGroup('').isHidden());
     assert(await page.locator('.sidebar').evaluate(el => {
       const agents = el.querySelector('#agents').getBoundingClientRect();
-      return agents.bottom <= el.querySelector('#files').getBoundingClientRect().top &&
-        Math.abs(el.querySelector('#dismiss').getBoundingClientRect().bottom - el.getBoundingClientRect().bottom) <= 1;
-    }), 'Sidebar actions stay below the agent groups and at the bottom');
+      return agents.bottom <= el.querySelector('#files').getBoundingClientRect().top;
+    }), 'Sidebar actions stay below the agent groups');
+    for (const count of [3, 10]) {
+      const extraAgents = Array.from({length: count - 3}, (_, i) => ({id: '%' + (100 + i), identity: 'layout:' + i, name: 'Layout' + i, role: 'worker', session: 'alpha'}));
+      roles.push(...extraAgents);
+      await page.evaluate(() => refresh());
+      await page.waitForFunction(count => document.querySelectorAll('#agents button').length === count, count);
+      for (const viewport of [{width: 1440, height: 950}, {width: 1280, height: 720}, {width: 1024, height: 600}]) {
+        await page.setViewportSize(viewport);
+        for (const state of ['expanded', 'keys', 'draft', 'feedback', 'collapsed', 'swap']) {
+          if (state === 'keys') await card('%3').locator('.keys-toggle').click();
+          if (state === 'draft') {
+            await card('%3').locator('.keys-toggle').click();
+            await card('%3').locator('.message-form textarea').fill('First draft line\nSecond draft line');
+            await card('%3').locator('.message-form textarea').evaluate(el => { el.style.height = '100px'; });
+          }
+          const previousFeedback = await card('%3').locator('.feedback').textContent();
+          if (state === 'feedback') await card('%3').locator('.feedback').evaluate(el => { el.textContent = 'Long feedback line. '.repeat(40); });
+          if (state === 'collapsed') await agentGroup('worker').locator('summary').click();
+          if (state === 'swap') {
+            await agentGroup('worker').locator('summary').click();
+            await swap.click();
+          }
+          await checkSidebarAlignment({count, viewport, state});
+          if (state === 'draft') {
+            await card('%3').locator('.message-form textarea').fill('');
+            await card('%3').locator('.message-form textarea').evaluate(el => { el.style.height = ''; });
+          }
+          if (state === 'feedback') await card('%3').locator('.feedback').evaluate((el, text) => { el.textContent = text; }, previousFeedback);
+          if (state === 'swap') await swapForm.locator('.cancel').click();
+        }
+      }
+      if (extraAgents.length) roles.splice(roles.length - extraAgents.length, extraAgents.length);
+      await page.evaluate(() => refresh());
+      await page.waitForFunction(() => document.querySelectorAll('#agents button').length === 3);
+    }
+    await page.setViewportSize({width: 1440, height: 950});
+    await paneTab('%5').click();
+    await checkSidebarAlignment('switch to worker');
+    await paneTab('%3').click();
+    await checkSidebarAlignment('switch back to manager');
+    await page.mouse.move(0, 0);
     assert.deepEqual(await paneTab('%3').locator('.name > span').allTextContents(), ['Boss']);
     assert.deepEqual(await paneTab('%3').locator('.figure').allTextContents(), [' · 1.23M']);
     assert.equal(await paneTab('%3').evaluate(el => el.style.getPropertyValue('--name-overflow')), '', 'Fitting names do not scroll');
@@ -1207,6 +1255,7 @@ const assert = require('node:assert/strict');
     assert.equal(await card('%3').locator('.screen').first().locator('.close-screen').count(), 0, 'The first screen has no close button');
     const extraOutput = screenOutputs.nth(1);
     assert(await extraOutput.evaluate(el => el.scrollHeight - el.scrollTop - el.clientHeight <= 1), 'An added screen starts at the bottom');
+    await checkSidebarAlignment('added vertical screen');
     const screens = card('%3').locator('.screens'), stackOrder = card('%3').locator('.stack-order');
     assert.equal(await screens.evaluate(el => el.classList.contains('horizontal')), false, 'Screens start in vertical order');
     const firstVertical = await screenOutputs.first().boundingBox(), secondVertical = await extraOutput.boundingBox();
@@ -1423,6 +1472,7 @@ const assert = require('node:assert/strict');
     assert(mobileGrid.get('cols') !== desktopGrid.get('cols') || mobileGrid.get('rows') !== desktopGrid.get('rows'), 'Viewport resize requests new terminal dimensions');
     assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
     assert(await page.locator('.sidebar').evaluate(el => el.querySelector('#files').getBoundingClientRect().top >= el.querySelector('#agents').getBoundingClientRect().bottom), 'Mobile actions stay below the grouped tabs');
+    assert.equal(await page.locator('.sidebar').evaluate(el => getComputedStyle(el).paddingBottom), '0px', 'Mobile sidebar has no output alignment padding');
     roles.find(pane => pane.id === '%3').name = longName;
     await page.waitForFunction(name => document.querySelector('#agents .name').textContent === name, longName);
     assert(await paneTab('%3').evaluate(el => {

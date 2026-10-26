@@ -616,8 +616,23 @@ function updateSwap() {
   for (const control of swapForm.querySelectorAll('input, select, button')) control.disabled = disabled;
   if ((disabled && focused) || ((disabled || uploading) && uploadFocused)) card?.el.querySelector('.output').focus();
 }
+let sidebarPane;
+const sidebarObserver = new ResizeObserver(updateSidebarFoot);
+function updateSidebarFoot() {
+  const pane = cards.get(currentPane())?.el;
+  if (pane !== sidebarPane) {
+    sidebarObserver.disconnect();
+    sidebarPane = pane;
+    if (pane) {
+      sidebarObserver.observe(pane);
+      sidebarObserver.observe(pane.querySelector('.screens'));
+    }
+  }
+  const foot = pane ? pane.getBoundingClientRect().bottom - pane.querySelector('.screens').getBoundingClientRect().bottom : 0;
+  document.querySelector('.sidebar').style.setProperty('--pane-foot', foot + 'px');
+}
 const renderNavigation = updateNavigation;
-updateNavigation = () => { renderNavigation(); updateSwap(); updateAddAgent(); };
+updateNavigation = () => { renderNavigation(); updateSwap(); updateAddAgent(); updateSidebarFoot(); };
 function closeSwap() {
   const focused = document.activeElement;
   swapForm.hidden = true;
