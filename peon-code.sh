@@ -13,7 +13,7 @@
 #   ./peon-code.sh explain <pane-id> < selected-text
 #   ./peon-code.sh rebrief <name|all> [<session>]
 #   ./peon-code.sh swap <name> <cli|-> <model|-> <effort|-> [<session>]
-#   ./peon-code.sh add <name> <role> <command...> [--session <name>]
+#   ./peon-code.sh add <name> <role> <command...> [--session <name>] [--save]
 #   ./peon-code.sh compact [<name|all>] [<session>]
 #   ./peon-code.sh clear [<name|all>] [<session>]
 #   ./peon-code.sh watch [<session>] [<tokens>]
@@ -83,6 +83,7 @@ peon-code.sh rebrief <name|all> [<session>]     send an agent its launch brief a
 peon-code.sh swap <name> <cli|-> <model|-> <effort|-> [<session>]
                                                 replace a running agent's CLI, model, or effort
 peon-code.sh add <name> <role> <command...> [--session <name>]  add an agent to the current team
+  --save                                      keep the added agent and its role in the team config
 peon-code.sh compact [<name|all>] [<session>]   send /compact to an agent pane, then send
                                                 its brief again once compaction ends,
                                                 skipping any blocked pane (typed text,
@@ -227,6 +228,11 @@ esac
 SESSION=$(session_name "${1:-}")  # default session name: current directory
 [ $# -gt 0 ] && shift
 load_team "$@"
+if [ $# -eq 0 ] && [ -f "$CONF" ]; then
+  CONF="$(cd -- "$(dirname -- "$CONF")" && pwd)/$(basename -- "$CONF")"
+else
+  CONF=""
+fi
 N=${#NAMES[@]}
 
 # A pull rewrites this file under a bash that reads it lazily, so restart on

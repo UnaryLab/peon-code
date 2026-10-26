@@ -97,7 +97,13 @@ const newSessionStatus = document.querySelector('#new-session-status');
 const sessionRoles = document.querySelector('#new-session-roles');
 const sessionAgents = document.querySelector('#new-session-agents');
 let shippedRoles = [];
+function updateTeamSave() {
+  document.querySelector('#save-team').hidden = !sessionAgents.children.length && !sessionRoles.children.length;
+  newSessionForm.elements.save.disabled = !!newSessionForm.elements.config.files.length;
+}
+newSessionForm.elements.config.onchange = updateTeamSave;
 function updateAgentRoles() {
+  updateTeamSave();
   const names = [...new Set(['-', ...shippedRoles.map(role => role.name), ...[...sessionRoles.children].map(role => role.querySelector('[name="name"]').value.trim()).filter(Boolean)])];
   for (const agent of sessionAgents.children) {
     const select = agent.querySelector('[name="role"]'), value = select.value;
@@ -114,7 +120,7 @@ function updateAgentClis() {
 }
 document.querySelector('#add-session-agent').onclick = () => {
   const agent = document.querySelector('#session-agent-template').content.firstElementChild.cloneNode(true);
-  agent.querySelector('.remove-agent').onclick = () => agent.remove();
+  agent.querySelector('.remove-agent').onclick = () => { agent.remove(); updateAgentRoles(); };
   sessionAgents.append(agent);
   updateAgentClis(); updateAgentRoles();
   agent.querySelector('[name="name"]').focus();
@@ -134,6 +140,8 @@ function closeNewSession() {
   if (newSessionForm.contains(focused) || focused === newSession || focused === document.body) newSession.focus();
   sessionRoles.replaceChildren();
   sessionAgents.replaceChildren();
+  newSessionForm.elements.save.checked = true;
+  updateTeamSave();
 }
 newSession.onclick = () => {
   if (!newSessionForm.hidden) { closeNewSession(); return; }
@@ -164,6 +172,7 @@ newSessionForm.onsubmit = async event => {
     if (roles.length && !file && !agents.length) throw new Error('Roles need a team config that names them');
     if (roles.length) data.roles = roles;
     if (agents.length) {
+      data.save = newSessionForm.elements.save.checked;
       const names = new Set();
       data.config_name = 'team.conf';
       data.config_text = agents.map(agent => {
@@ -515,6 +524,7 @@ addAgentForm.onsubmit = async event => {
   if (addAgent.disabled) return;
   const card = cards.get(currentPane()), session = addSession;
   const data = {session};
+  data.save = addAgentForm.querySelector('[name="save"]').checked;
   for (const field of ['name', 'cli', 'model', 'effort', 'args', 'role']) data[field] = addAgentForm.querySelector('[name="' + field + '"]').value.trim();
   if (data.role === 'new') {
     data.newRole = Object.fromEntries([...addAgentRole.querySelectorAll('[name]')].map(input => [input.name, input.value]));

@@ -153,4 +153,98 @@ test_add() (
   [ "$(tmux show-options -pqv -t "$pane" @peon_cmd)" = 'sleep 600' ] || fail 'three-field add changed the command'
 )
 test_add
+
+# shellcheck disable=SC2034,SC2317 # Shared launch functions call these test providers.
+test_add_save() (
+  local socket="peon-add-save-$$" session="add-save-$$" project="$TEST_DIR/save-project" caller="$TEST_DIR/save-caller"
+  local BRIEF_DIR="$TEST_DIR/save-briefs" MAIN=0 N=3 i pane conf user_conf
+  local NAMES=(boss impl archie) CMDS=('sleep 600' 'sleep 600' 'sleep 600')
+  local ROLES=("$ROOT/roles/manager.md" "$ROOT/roles/implementer.md" "$ROOT/roles/reviewer.md") PANE_IDS=()
+  tmux() { command tmux -L "$socket" -f /dev/null "$@"; }
+  trap 'tmux kill-session -t "=$session" 2>/dev/null || true' EXIT
+  systemd-run() { return 1; }
+  sleep_launch_command() { printf 'sleep 600\n'; }
+  with_pane_delivery() { shift; "$@"; }
+  launch_command_locked() { tmux send-keys -t "$1" -l "$2"; tmux send-keys -t "$1" Enter; }
+  cmd_send() { :; }
+  mkdir -p "$project/roles" "$caller" "$BRIEF_DIR"
+  cp "$ROOT/roles/implementer.md" "$project/roles/kept-worker.md"
+  cp "$ROOT/roles/implementer.md" "$caller/copied-worker.md"
+  cp "$ROOT/roles/implementer.md" "$caller/ephemeral.md"
+  cd "$project"
+  create_agent_session "$session" 3 0
+  tmux resize-window -t "$session":agents -x 200 -y 100
+  tmux set-option -t "$session" @peon_restart 0
+  tmux set-option -t "$session" @peon_compact_at 0
+  for i in "${!NAMES[@]}"; do
+    initialize_agent_pane "$i"
+    printf 'original brief\n' >"$BRIEF_DIR/$i.md"
+    tmux set -pt "${PANE_IDS[$i]}" @peon_brief "$BRIEF_DIR/$i.md"
+  done
+  tmux set -pt "${PANE_IDS[1]}" @peon_role_label kept-worker
+  cd "$caller"
+  cmd_add volatile "$caller/ephemeral.md" 'sleep 600' --session "$session" >"$TEST_DIR/save.out" 2>"$TEST_DIR/save.err"
+  [ ! -e "$project/peon-code.conf" ] || fail 'add without --save created a config'
+  [ ! -e "$project/roles/ephemeral.md" ] || fail 'add without --save copied a role'
+  mv "$caller/ephemeral.md" "$caller/ephemeral-source.md"
+  tmux set-option -t "$session" @peon_conf "$caller/deleted.conf"
+  if cmd_add missing-role "$caller/copied-worker.md" 'sleep 600' --save --session "$session" >"$TEST_DIR/save.out" 2>"$TEST_DIR/save.err"; then
+    fail 'save dropped an existing agent role'
+  fi
+  assert_contains "$TEST_DIR/save.err" 'cannot save agent volatile: missing role ephemeral; write roles/ephemeral.md next to the config first'
+  [ ! -e "$project/peon-code.conf" ] || fail 'missing existing role created a config'
+  [ ! -e "$project/roles/copied-worker.md" ] || fail 'missing existing role copied the new role'
+  cp "$caller/ephemeral-source.md" "$project/roles/ephemeral.md"
+  user_conf="$TEST_DIR/save-home/.config/peon-code/peon-code.conf"
+  mkdir -p "$(dirname -- "$user_conf")"
+  printf '# User config\n*global codex -\n' >"$user_conf"
+  cp "$user_conf" "$TEST_DIR/save-user.expected"
+  tmux set-option -t "$session" @peon_conf "$user_conf"
+  HOME="$TEST_DIR/save-home" cmd_add persisted "$caller/copied-worker.md" 'sleep 600' --save --session "$session" >"$TEST_DIR/save.out" 2>"$TEST_DIR/save.err"
+  cmp "$TEST_DIR/save-user.expected" "$user_conf" || fail 'save changed the user config'
+  conf="$project/peon-code.conf"
+  printf '%s\n' '*boss sleep 600 manager' 'impl sleep 600 kept-worker' 'archie sleep 600 reviewer' \
+    'volatile sleep 600 ephemeral' 'persisted sleep 600 copied-worker' >"$TEST_DIR/save.expected"
+  cmp "$TEST_DIR/save.expected" "$conf" || fail 'save did not rebuild the full roster and main marker'
+  cmp "$caller/copied-worker.md" "$project/roles/copied-worker.md" || fail 'save changed the copied role'
+  [ "$(tmux show-options -qv -t "$session" @peon_conf)" = "$conf" ] || fail 'save did not store the new config path'
+  tmux set-option -t "$session" @peon_conf "$caller/deleted.conf"
+  if cmd_add unrelated - 'sleep 600' --save --session "$session" >"$TEST_DIR/save.out" 2>"$TEST_DIR/save.err"; then
+    fail 'save appended to a project config that the session did not use'
+  fi
+  assert_contains "$TEST_DIR/save.err" 'config already exists but was not used by this session'
+  cmp "$TEST_DIR/save.expected" "$conf" || fail 'save changed an unrelated project config'
+  tmux set-option -t "$session" @peon_conf "$user_conf"
+  if HOME="$TEST_DIR/save-home" cmd_add unrelated-user - 'sleep 600' --save --session "$session" >"$TEST_DIR/save.out" 2>"$TEST_DIR/save.err"; then
+    fail 'save appended to a user config when the project config already existed'
+  fi
+  cmp "$TEST_DIR/save-user.expected" "$user_conf" || fail 'save changed the user config on conflict'
+  cmp "$TEST_DIR/save.expected" "$conf" || fail 'save changed a conflicting project config'
+  mkdir -p "$project/saved elsewhere"
+  conf="$project/saved elsewhere/team.conf"
+  printf '# Preserve this comment\ncompact-at 0\n*original codex -' >"$conf"
+  cp "$conf" "$TEST_DIR/save-existing.expected"
+  printf '\nshipped sleep 600 implementer\n' >>"$TEST_DIR/save-existing.expected"
+  tmux set-option -t "$session" @peon_conf "$conf"
+  cmd_add shipped implementer 'sleep 600' --session "$session" --save >"$TEST_DIR/save.out" 2>"$TEST_DIR/save.err"
+  cmp "$TEST_DIR/save-existing.expected" "$conf" || fail 'save rewrote existing config lines or lost a missing final newline'
+  cmp "$TEST_DIR/save.expected" "$project/peon-code.conf" || fail 'save ignored the recorded config path'
+  mkdir -p "$project/saved elsewhere/roles"
+  printf 'Different role\n' >"$project/saved elsewhere/roles/copied-worker.md"
+  if cmd_add clash "$caller/copied-worker.md" 'sleep 600' --save --session "$session" >"$TEST_DIR/save.out" 2>"$TEST_DIR/save.err"; then
+    fail 'save overwrote a clashing role file'
+  fi
+  assert_contains "$TEST_DIR/save.err" 'role file already exists with different content'
+  cmp "$TEST_DIR/save-existing.expected" "$conf" || fail 'role clash changed the config'
+  [ "$(cat "$project/saved elsewhere/roles/copied-worker.md")" = 'Different role' ] || fail 'role clash changed the existing role'
+  cp "$caller/copied-worker.md" "$caller/failed-worker.md"
+  if (wait_agent_ready() { return 1; }; cmd_add failed "$caller/failed-worker.md" 'sleep 600' --save --session "$session") >"$TEST_DIR/save.out" 2>"$TEST_DIR/save.err"; then
+    fail 'saved an agent that failed to start'
+  fi
+  cmp "$TEST_DIR/save-existing.expected" "$conf" || fail 'failed launch changed the config'
+  [ ! -e "$project/saved elsewhere/roles/failed-worker.md" ] || fail 'failed launch copied its role'
+  cmd_add unsaved - 'sleep 600' --session "$session" >"$TEST_DIR/save.out" 2>"$TEST_DIR/save.err"
+  cmp "$TEST_DIR/save-existing.expected" "$conf" || fail 'add without --save changed an existing config'
+)
+test_add_save
 echo 'add: PASS'

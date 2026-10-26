@@ -221,6 +221,7 @@ if [ "$MAIN" -lt 0 ]; then
 fi
 
 create_agent_session "$SESSION" "$N" "$MAIN"
+tmux set-option -t "$SESSION" @peon_conf "$CONF"
 if [ "$RESTART_DEAD" = yes ]; then
   tmux set-option -t "$SESSION" @peon_restart 1
 else

@@ -339,6 +339,35 @@ FAKE_NOHUP
   done
 }
 
+test_launch_config_option() {
+  local fake_bin=$1 work_dir="$TEST_DIR/conf-option-work" home_dir="$TEST_DIR/home-conf-option"
+  local bin_dir="$TEST_DIR/conf-option-bin" log="$TEST_DIR/conf-option.log" mode expected count
+  mkdir -p "$work_dir" "$home_dir" "$bin_dir"
+  printf '#!/bin/sh\nexit 0\n' >"$bin_dir/nohup"
+  chmod +x "$bin_dir/nohup"
+  printf 'compact-at 0\nrestart-dead no\nboss codex -\n' >"$work_dir/team.conf"
+  for mode in config cli default; do
+    : >"$log"
+    count=1
+    [ "$mode" != default ] || count=2
+    (
+      cd "$work_dir"
+      case $mode in
+        config) set -- -c ./team.conf conf-option ;;
+        cli) set -- -c ./team.conf conf-option codex ;;
+        default) set -- conf-option ;;
+      esac
+      PATH="$bin_dir:$fake_bin:$PATH" HOME="$home_dir" TMPDIR="$TEST_DIR" \
+        FAKE_TMUX_LOG="$log" FAKE_TMUX_MODE=launch FAKE_TMUX_CMD=node FAKE_TMUX_PANES="$count" \
+        FAKE_TMUX_CAPTURE=$'work\n❯ [12:34:56]' \
+        "$ROOT/peon-code.sh" "$@"
+    ) >"$TEST_DIR/conf-option.out" 2>"$TEST_DIR/conf-option.err" </dev/null || fail 'config option launch failed'
+    expected=""
+    [ "$mode" != config ] || expected="$work_dir/team.conf"
+    grep -Fx -- "set-option -t conf-option @peon_conf $expected" "$log" >/dev/null || fail "launch stored the wrong config path for $mode"
+  done
+}
+
 fake_bin=$(make_fake_commands)
 test_resume_args
 test_unique_buffers_and_launch_failure "$fake_bin"
@@ -350,4 +379,5 @@ test_brief_write_failure_keeps_launching
 test_codex_normal_screen "$fake_bin"
 test_claude_launch_warnings_once "$fake_bin"
 test_restart_watcher_launch "$fake_bin"
+test_launch_config_option "$fake_bin"
 echo "launch: PASS"

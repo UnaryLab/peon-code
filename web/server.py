@@ -402,6 +402,9 @@ class Handler(BaseHTTPRequestHandler):
             data = json.loads(self.rfile.read(size))
             if parsed.path == "/api/add":
                 session, name = data.get("session"), data.get("name")
+                save = data.get("save", False)
+                if not isinstance(save, bool):
+                    raise ValueError("Save must be true or false")
                 cli, model, effort = data.get("cli"), data.get("model", ""), data.get("effort", "")
                 extra, role = data.get("args", ""), data.get("role")
                 if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", name):
@@ -437,7 +440,10 @@ class Handler(BaseHTTPRequestHandler):
                         path = role_dir / (new_role["name"] + ".md")
                         path.write_text("---\ntype: " + new_role["type"] + "\ndescription: " + new_role["description"] + "\n---\n" + new_role["body"] + "\n", encoding="utf-8", newline="\n")
                         role = str(path)
-                    result = run_delivery([str(ROOT / "peon-code.sh"), "add", name, role, command, "--session", session], "", "", timeout=300)
+                    args = [str(ROOT / "peon-code.sh"), "add", name, role, command, "--session", session]
+                    if save:
+                        args.append("--save")
+                    result = run_delivery(args, "", "", timeout=300)
                 finally:
                     if upload_dir is not None:
                         shutil.rmtree(upload_dir, ignore_errors=True)
@@ -450,8 +456,11 @@ class Handler(BaseHTTPRequestHandler):
             if parsed.path == "/api/open":
                 directory, session = data.get("directory"), data.get("session", "")
                 create = data.get("create", False)
+                save = data.get("save", False)
                 if not isinstance(create, bool):
                     raise ValueError("Create must be true or false")
+                if not isinstance(save, bool):
+                    raise ValueError("Save must be true or false")
                 if not isinstance(directory, str) or not directory.strip() or len(directory) > 4096 or "\0" in directory:
                     raise ValueError("Project directory must contain 1 to 4096 characters without NUL")
                 if not Path(directory).is_absolute() and not directory.startswith("~"):
@@ -485,26 +494,65 @@ class Handler(BaseHTTPRequestHandler):
                 roles = [validate_role(role) for role in roles]
                 if len({role["name"] for role in roles}) != len(roles):
                     raise ValueError("Role names must be unique")
+                if save and content is None:
+                    raise ValueError("Saving a team needs a team config")
+                written = []
+                launched = False
                 try:
                     if content is not None:
-                        uploads = Path.home() / REMOTE_CONFIG_DIR
-                        uploads.mkdir(mode=0o700, parents=True, exist_ok=True)
-                        upload_dir = Path(tempfile.mkdtemp(dir=uploads, prefix="team-"))
-                        config = upload_dir / name
-                        config.touch(mode=0o600)
-                        config.write_bytes(content)
-                        if roles:
+                        if save:
+                            project = Path(directory).expanduser().resolve()
+                            team = (session or project.name).replace(".", "_").replace(":", "_")
+                            if not team or team.startswith("-") or any(ord(char) < 32 or ord(char) == 127 for char in team):
+                                raise ValueError("Choose a valid SESSION name; the project folder must have a basename")
+                            exists = subprocess.run(["tmux", "has-session", "-t", "=" + team], capture_output=True, timeout=5)
+                            if exists.returncode == 0:
+                                raise FileExistsError("Session " + team + " already runs; nothing saved. Choose another session name.")
+                            if not project.is_dir():
+                                if project.exists():
+                                    raise ValueError("Project path is not a directory: " + str(project))
+                                if not create:
+                                    raise MissingProjectFolder(project)
+                                project.mkdir(parents=True, exist_ok=True)
+                            config = project / "peon-code.conf"
+                            role_dir = project / "roles"
+                            paths = [config] + [role_dir / (role["name"] + ".md") for role in roles]
+                            for path in paths:
+                                if path.exists() or path.is_symlink():
+                                    raise FileExistsError("Already exists; choose another project or turn off keeping the team: " + str(path))
+                            if roles and (role_dir.is_symlink() or (role_dir.exists() and not role_dir.is_dir())):
+                                raise FileExistsError("Roles must be a directory in the project: " + str(role_dir))
+                        else:
+                            uploads = Path.home() / REMOTE_CONFIG_DIR
+                            uploads.mkdir(mode=0o700, parents=True, exist_ok=True)
+                            upload_dir = Path(tempfile.mkdtemp(dir=uploads, prefix="team-"))
+                            config = upload_dir / name
                             role_dir = upload_dir / "roles"
-                            role_dir.mkdir()
+                        with config.open("xb") as file:
+                            written.append(config)
+                            config.chmod(0o600)
+                            file.write(content)
+                        if roles:
+                            role_dir.mkdir(exist_ok=save)
                             for role in roles:
-                                (role_dir / (role["name"] + ".md")).write_text("---\ntype: " + role["type"] + "\ndescription: " + role["description"] + "\n---\n" + role["body"] + "\n", encoding="utf-8", newline="\n")
+                                path = role_dir / (role["name"] + ".md")
+                                with path.open("x", encoding="utf-8", newline="\n") as file:
+                                    written.append(path)
+                                    file.write("---\ntype: " + role["type"] + "\ndescription: " + role["description"] + "\n---\n" + role["body"] + "\n")
                     opened = open_project(SimpleNamespace(directory=directory, session=session, config=config), ROOT, timeout=300, create=create)
+                    launched = True
+                except FileExistsError as error:
+                    self.respond(409, {"error": str(error)})
+                    return
                 except MissingProjectFolder as error:
                     self.respond(409, {"error": str(error), "create": True, "directory": error.directory})
                     return
                 except RuntimeError as error:
                     raise ValueError(str(error)) from error
                 finally:
+                    if not launched:
+                        for path in written:
+                            path.unlink(missing_ok=True)
                     if upload_dir is not None:
                         shutil.rmtree(upload_dir, ignore_errors=True)
                 self.server.session = None

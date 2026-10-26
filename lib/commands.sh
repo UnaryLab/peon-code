@@ -719,16 +719,18 @@ swap_handoff_locked() {
 cmd_add() (
   local session=${PEON_CODE_SESSION:-} name role command argument path type panes id known index
   local label description line new_line new_pane project_dir brief_file temporary watcher watcher_args="" restart threshold has_roles=0
-  local fields=() briefs=()
+  local save=0 rebuild=0 conf conf_dir saved_role role_target="" marker
+  local fields=() briefs=() saved_roles=()
   while [ $# -gt 0 ]; do
     case $1 in
+      --save) save=1; shift ;;
       --session)
         [ $# -ge 2 ] && [ -n "$2" ] || die "--session needs a session name"
         session=$2; shift 2 ;;
       *) fields+=("$1"); shift ;;
     esac
   done
-  [ ${#fields[@]} -ge 3 ] || die "usage: peon-code.sh add <name> <role> <command...> [--session <name>]"
+  [ ${#fields[@]} -ge 3 ] || die "usage: peon-code.sh add <name> <role> <command...> [--session <name>] [--save]"
   name=${fields[0]}; role=${fields[1]}; command=${fields[2]}
   [ ${#fields[@]} -le 3 ] || for argument in "${fields[@]:3}"; do command+=" $(printf %q "$argument")"; done
   [[ $name =~ ^[A-Za-z0-9_-]+$ ]] || die "name \"$name\" must be letters, digits, _ or -"
@@ -773,6 +775,45 @@ cmd_add() (
   [ -z "$type" ] || [ "$has_roles" -eq 1 ] || die "session $SESSION has no roles; add a roleless agent (-) or launch a role team"
   [ -d "$BRIEF_DIR" ] || die "session $SESSION has no stored brief directory; launch it again"
   project_dir=$(tmux show-options -qv -t "$SESSION" @peon_project_dir)
+  if [ "$save" -eq 1 ]; then
+    conf=$(tmux show-options -qv -t "$SESSION" @peon_conf)
+    case $conf in
+      "$HOME/.config/peon-code/peon-code.conf") conf="" ;;
+      "$project_dir"/*) [ -f "$conf" ] || conf="" ;;
+      *) conf="" ;;
+    esac
+    if [ -z "$conf" ]; then
+      rebuild=1
+      conf="$project_dir/peon-code.conf"
+      [ ! -e "$conf" ] && [ ! -L "$conf" ] || die "config already exists but was not used by this session: $conf"
+    fi
+    conf_dir=$(cd -- "$(dirname -- "$conf")" && pwd)
+    if [ ! -f "$conf" ]; then
+      for index in "${!NAMES[@]}"; do
+        label=$(tmux show-options -pqv -t "${PANE_IDS[$index]}" @peon_role_label)
+        role=$(tmux show-options -pqv -t "${PANE_IDS[$index]}" @peon_role_type)
+        if [ -n "$role" ]; then
+          [ -f "$SCRIPT_DIR/roles/$label.md" ] || [ -f "$conf_dir/roles/$label.md" ] ||
+            die "cannot save agent ${NAMES[$index]}: missing role $label; write roles/$label.md next to the config first"
+          saved_roles+=("$label")
+        else
+          saved_roles+=(-)
+        fi
+      done
+    fi
+    saved_role=-
+    if [ -n "$path" ]; then
+      saved_role=$(role_label "$path")
+      [[ $saved_role =~ ^[A-Za-z0-9_-]+$ ]] || die "cannot save role name: $saved_role"
+      if [ "$path" != "$SCRIPT_DIR/roles/$saved_role.md" ]; then
+        [ ! -f "$SCRIPT_DIR/roles/$saved_role.md" ] || die "cannot save custom role named $saved_role; a shipped role has that name"
+        role_target="$conf_dir/roles/$saved_role.md"
+        if [ -e "$role_target" ] || [ -L "$role_target" ]; then
+          cmp -s "$path" "$role_target" || die "role file already exists with different content: $role_target"
+        fi
+      fi
+    fi
+  fi
   cd -- "$project_dir" || die "cannot enter session project directory: $project_dir"
   prepare_launch_settings
   index=${#NAMES[@]}
@@ -801,6 +842,32 @@ cmd_add() (
       echo "peon-code: could not notify ${NAMES[$index]} ${PANE_IDS[$index]} about $name" >&2
     fi
   done
+  if [ "$save" -eq 1 ]; then
+    if [ "$rebuild" -eq 1 ] && { [ -e "$conf" ] || [ -L "$conf" ]; }; then
+      die "config already exists but was not used by this session: $conf"
+    fi
+    if [ -n "$role_target" ]; then
+      if [ -e "$role_target" ] || [ -L "$role_target" ]; then
+        cmp -s "$path" "$role_target" || die "role file already exists with different content: $role_target"
+      else
+        mkdir -p "$conf_dir/roles" && cp "$path" "$role_target" || die "cannot save role: $role_target"
+      fi
+    fi
+    temporary=$(mktemp "$conf.XXXXXX") || die "cannot save config: $conf"
+    if [ -f "$conf" ]; then
+      cat "$conf" >"$temporary" || die "cannot read config: $conf"
+      [ ! -s "$conf" ] || [ -z "$(tail -c1 "$conf")" ] || printf '\n' >>"$temporary"
+    else
+      for ((index = 0; index < N - 1; index++)); do
+        marker=""
+        [ "$index" -ne "$MAIN" ] || marker='*'
+        printf '%s%s %s %s\n' "$marker" "${NAMES[$index]}" "${CMDS[$index]}" "${saved_roles[$index]}" >>"$temporary" || die "cannot write config: $conf"
+      done
+    fi
+    printf '%s %s %s\n' "$name" "$command" "$saved_role" >>"$temporary" &&
+      mv "$temporary" "$conf" || die "cannot save config: $conf"
+    tmux set-option -t "$SESSION" @peon_conf "$conf"
+  fi
   restart=$(tmux show-options -qv -t "$SESSION" @peon_restart)
   threshold=$(tmux show-options -qv -t "$SESSION" @peon_compact_at)
   if [ "${threshold:-0}" -gt 0 ] || [ "$restart" = 1 ]; then

@@ -27,8 +27,9 @@
       <button id="add-session-agent" type="button">Add agent</button>
       <div id="new-session-agents"></div>
       <button id="add-role" type="button">Add role</button>
-      <small>Roles apply to this session only. Write each name in the role column of the team config.</small>
+      <small>Write each role name in the role column of the team config.</small>
       <div id="new-session-roles"></div>
+      <label id="save-team" hidden>Keep this team for future launches<input type="checkbox" name="save" checked data-tip="Uploaded configs are not saved"></label>
       <button type="submit">Start session</button>
       <button type="button" class="cancel">Cancel</button>
     </form>
@@ -70,6 +71,7 @@
           <label>Extra args (optional)<input name="args" maxlength="200000"></label>
           <label>Role<select name="role"></select></label>
           <div id="add-agent-role" hidden></div>
+          <label>Keep for future launches<input type="checkbox" name="save" checked></label>
           <button type="submit">Save</button>
           <button type="button" class="cancel">Cancel</button>
           <span id="add-agent-status" class="swap-state" role="status"></span>
