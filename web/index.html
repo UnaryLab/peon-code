@@ -24,12 +24,10 @@
       <label>Project directory<input name="directory" required placeholder="Absolute or ~ path, resolved on the agent host"></label>
       <label>Session name (optional)<input name="session" placeholder="Folder basename; dots and colons become underscores"></label>
       <label>Team config (optional)<input name="config" type="file" aria-describedby="config-help"><small id="config-help">Local UTF-8 file, up to 200 KiB. Uploaded to the agent host.</small></label>
-      <button id="add-session-agent" type="button">Add agent</button>
-      <div id="new-session-agents"></div>
-      <button id="add-role" type="button">Add role</button>
-      <small>Write each role name in the role column of the team config.</small>
+      <div class="form-line"><button id="add-role" type="button">Add role</button></div>
       <div id="new-session-roles"></div>
-      <label id="save-team" hidden>Keep this team for future launches<input type="checkbox" name="save" checked data-tip="Uploaded configs are not saved"></label>
+      <div class="form-line"><button id="add-session-agent" type="button">Add agent</button></div>
+      <div id="new-session-agents"></div>
       <button type="submit">Start session</button>
       <button type="button" class="cancel">Cancel</button>
     </form>

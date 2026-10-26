@@ -88,7 +88,7 @@ dialog footer { padding-top: 12px; }
 #new-session-form { flex-wrap: wrap; padding: 8px 0; max-height: 60vh; max-height: 60dvh; overflow-y: auto; }
 #new-session-form label { display: flex; flex: 1 1 240px; flex-direction: column; gap: 4px; min-width: 0; font-size: 13px; }
 #new-session-form input, #new-session-form select { width: 100%; min-width: 0; font: inherit; border: 1px solid var(--line); border-radius: 4px; padding: 4px; }
-#new-session-roles, #new-session-agents, #new-session-form > small, .session-role label:last-of-type { flex-basis: 100%; }
+#new-session-roles, #new-session-agents, .session-role label:last-of-type, .form-line { flex-basis: 100%; }
 #new-session-roles, #new-session-agents { width: 100%; }
 .session-role, .session-agent { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
 #new-session-form input[type="radio"] { width: auto; align-self: flex-start; }
