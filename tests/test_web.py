@@ -1640,7 +1640,7 @@ elif command == "pull":
                 self.assertTrue(run.call_args.args[0][1].startswith("http://127.0.0.1:"))
 
     def test_occupied_port_does_not_start_agents(self):
-        args = SimpleNamespace(ssh=None, directory='/project', port=8765)
+        args = SimpleNamespace(ssh=None, directory='/project', port=8765, port_range=1)
         with patch.object(web, 'arguments', return_value=args), patch.object(web, 'ThreadingHTTPServer', side_effect=OSError('address in use')), patch.object(web, 'open_project') as start, self.assertRaisesRegex(SystemExit, 'Use --port'):
             web.main()
         start.assert_not_called()
@@ -1653,7 +1653,7 @@ elif command == "pull":
                 (None, "team", "team", "team"),
                 (None, None, None, None)):
             args = SimpleNamespace(ssh=None, directory=directory, session=session,
-                                   port=0, stdio=False, no_open=True)
+                                   port=0, port_range=1, stdio=False, no_open=True)
             with self.subTest(directory=directory, session=session), \
                     patch.object(web, "arguments", return_value=args), \
                     patch.object(web, "ThreadingHTTPServer", return_value=self.server), \
@@ -1682,7 +1682,7 @@ elif command == "pull":
         with tempfile.TemporaryDirectory() as directory:
             project = Path(directory) / "project"
             for stdio, interactive, reply, approved in ((False, False, "y", False), (False, True, "", False), (False, True, "n", False), (False, True, "YES", True), (False, True, EOFError(), False), (True, False, "y\n", True), (True, False, "n\n", False), (True, False, "", False)):
-                args = SimpleNamespace(ssh=None, directory=str(project), session=None, port=0, stdio=stdio, no_open=True)
+                args = SimpleNamespace(ssh=None, directory=str(project), session=None, port=0, port_range=1, stdio=stdio, no_open=True)
                 server = Mock(server_port=9123)
                 missing = launch.MissingProjectFolder(project)
                 with self.subTest(stdio=stdio, interactive=interactive, reply=reply), \
@@ -1708,7 +1708,7 @@ elif command == "pull":
                     server.server_close.assert_called_once()
 
     def test_failed_creation_closes_reserved_server(self):
-        args = SimpleNamespace(ssh=None, directory='/project', port=0)
+        args = SimpleNamespace(ssh=None, directory='/project', port=0, port_range=1)
         with patch.object(web, 'arguments', return_value=args), patch.object(web, 'ThreadingHTTPServer') as server, patch.object(web, 'open_project', side_effect=RuntimeError('bad project')), self.assertRaisesRegex(SystemExit, 'bad project'):
             web.main()
         server.return_value.server_close.assert_called_once()
@@ -1743,6 +1743,36 @@ class ServerLifecycleTests(unittest.TestCase):
             web.bind_server(None)
         self.assertIs(raised.exception, error)
         self.assertEqual(bind.call_count, 1)
+
+    def test_port_range_skips_busy_port_and_preserves_original_error_when_full(self):
+        server = Mock(server_port=8766)
+        with patch.object(web, "ThreadingHTTPServer", side_effect=[self.error, server]) as bind:
+            self.assertIs(web.bind_server(8765, 10), server)
+        self.assertEqual([call.args[0] for call in bind.call_args_list], [("127.0.0.1", 8765), ("127.0.0.1", 8766)])
+        with patch.object(web, "ThreadingHTTPServer", side_effect=self.error) as bind, self.assertRaises(OSError) as raised:
+            web.bind_server(8765, 10)
+        self.assertIs(raised.exception, self.error)
+        self.assertEqual([call.args[0] for call in bind.call_args_list], [("127.0.0.1", port) for port in range(8765, 8775)])
+
+    def test_port_range_replaces_stale_server_on_later_candidate(self):
+        web.pid_file(8766).write_text("12345\n")
+        server = Mock(server_port=8766)
+        with patch.object(web, "ThreadingHTTPServer", side_effect=[self.error, self.error, server]) as bind, \
+                patch.object(web.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "python /project/web/server.py\n", "")), \
+                patch.object(web.os, "kill") as kill, \
+                patch.object(web.socket, "create_connection", side_effect=ConnectionRefusedError):
+            self.assertIs(web.bind_server(8765, 10), server)
+        self.assertEqual([call.args[0] for call in bind.call_args_list], [("127.0.0.1", 8765), ("127.0.0.1", 8766), ("127.0.0.1", 8766)])
+        kill.assert_called_once_with(12345, signal.SIGTERM)
+
+    def test_exhausted_port_range_reports_range_before_starting_agents(self):
+        args = SimpleNamespace(ssh=None, directory='/project', port=8765, port_range=10)
+        with patch.object(web, 'arguments', return_value=args), \
+                patch.object(web, 'ThreadingHTTPServer', side_effect=self.error), \
+                patch.object(web, 'open_project') as start, \
+                self.assertRaisesRegex(SystemExit, 'Cannot listen on loopback ports 8765-8774.*Use --port'):
+            web.main()
+        start.assert_not_called()
 
     def test_real_busy_default_binds_another_loopback_port(self):
         with web.socket.socket() as occupied:
@@ -1834,7 +1864,7 @@ class ServerLifecycleTests(unittest.TestCase):
             self.assertEqual(sleep.call_count, int(retry))
 
     def test_main_records_bound_port_and_cleans_up_on_exit(self):
-        args = SimpleNamespace(ssh=None, directory=None, session=None, port=0, stdio=True, no_open=True)
+        args = SimpleNamespace(ssh=None, directory=None, session=None, port=0, port_range=1, stdio=True, no_open=True)
         path = web.pid_file(9123)
         pid = str(os.getpid())
         for outcome in ("normal", "term", "new-owner"):
@@ -1857,7 +1887,7 @@ class ServerLifecycleTests(unittest.TestCase):
                     self.assertEqual(raised.exception.code, 0)
                 else:
                     web.main()
-            bind.assert_called_once_with(0)
+            bind.assert_called_once_with(0, 1)
             server.server_close.assert_called_once_with()
             self.assertEqual(signal.getsignal(signal.SIGTERM), previous_handler)
             self.assertEqual(thread.call_count, 2)

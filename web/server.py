@@ -646,17 +646,20 @@ def pid_file(port):
     return config_dir() / ("web-" + str(port) + ".pid")
 
 
-def bind_server(port):
+def bind_server(port, port_range=1):
     automatic = port is None
     if automatic:
         port = DEFAULT_PORT
-    try:
-        return ThreadingHTTPServer(("127.0.0.1", port), Handler)
-    except OSError as error:
-        original = error
-    if original.errno == errno.EADDRINUSE:
+    for candidate in range(port, port + port_range):
         try:
-            pid = int(pid_file(port).read_text())
+            return ThreadingHTTPServer(("127.0.0.1", candidate), Handler)
+        except OSError as error:
+            if error.errno != errno.EADDRINUSE:
+                raise
+            if candidate == port:
+                original = error
+        try:
+            pid = int(pid_file(candidate).read_text())
             if not 1 < pid <= 2147483647 or pid == os.getpid():
                 raise ValueError("Invalid server PID")
             process = subprocess.run(["ps", "-o", "args=", "-p", str(pid)],
@@ -667,18 +670,18 @@ def bind_server(port):
             deadline = time.monotonic() + 2
             while time.monotonic() < deadline:
                 try:
-                    with socket.create_connection(("127.0.0.1", port), timeout=0.1):
+                    with socket.create_connection(("127.0.0.1", candidate), timeout=0.1):
                         pass
                 except OSError:
                     break
                 time.sleep(0.05)
-            return ThreadingHTTPServer(("127.0.0.1", port), Handler)
+            return ThreadingHTTPServer(("127.0.0.1", candidate), Handler)
         except (OSError, ValueError, OverflowError, UnicodeError, subprocess.TimeoutExpired):
             pass
-        if automatic:
-            server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-            print(f"port {port} is busy, using {server.server_port}", file=sys.stderr)
-            return server
+    if automatic and port_range == 1:
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        print(f"port {port} is busy, using {server.server_port}", file=sys.stderr)
+        return server
     raise original
 
 
@@ -705,9 +708,11 @@ def main():
     if not shutil.which("tmux"):
         raise SystemExit("peon-code-web requires tmux on the agent host")
     try:
-        server = bind_server(args.port)
+        server = bind_server(args.port, args.port_range)
     except OSError as error:
-        raise SystemExit("Cannot listen on loopback port " + str(args.port if args.port is not None else DEFAULT_PORT) + ": " + str(error) + ". Use --port <free-port>.") from error
+        port = args.port if args.port is not None else DEFAULT_PORT
+        ports = f"ports {port}-{port + args.port_range - 1}" if args.port_range > 1 else f"port {port}"
+        raise SystemExit("Cannot listen on loopback " + ports + ": " + str(error) + ". Use --port <free-port>.") from error
     stopped = threading.Event()
     path = pid_file(server.server_port)
     pid = str(os.getpid())

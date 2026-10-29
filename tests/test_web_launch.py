@@ -28,6 +28,16 @@ class LaunchTests(unittest.TestCase):
             with self.subTest(options=options), patch.object(sys, "argv", ["peon-code-web"] + options), contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
                 launch.arguments()
 
+    def test_hidden_port_range_validates_bounds(self):
+        with patch.object(sys, "argv", ["peon-code-web", "--stdio", "--port", "8765", "--port-range", "10"]):
+            self.assertEqual(launch.arguments().port_range, 10)
+        for options in (["--port-range", "0"], ["--port-range", "-1"], ["--port", "65535", "--port-range", "2"], ["--port", "0", "--port-range", "2"]):
+            with self.subTest(options=options), patch.object(sys, "argv", ["peon-code-web"] + options), contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                launch.arguments()
+        with patch.object(sys, "argv", ["peon-code-web", "--help"]), contextlib.redirect_stdout(io.StringIO()) as output, self.assertRaises(SystemExit):
+            launch.arguments()
+        self.assertNotIn("--port-range", output.getvalue())
+
     def test_config_requires_directory_and_local_file(self):
         with tempfile.TemporaryDirectory() as directory:
             config = Path(directory) / "team.conf"
@@ -111,17 +121,25 @@ class LaunchTests(unittest.TestCase):
         remote_args = shlex.split(command[-1].split('exec peon-code-web ', 1)[1].split('; else', 1)[0])
         self.assertEqual(remote_args[-1], session)
         self.assertIn('"$HOME/.local/bin/peon-code-web"', command[-1])
+        self.assertNotIn('--port-range', remote_args)
+        self.assertEqual(command.count('-L'), 1)
+        args.port = None
+        command = launch.ssh_command(args)
+        forwards = [command[i + 1] for i, value in enumerate(command) if value == '-L']
+        self.assertEqual(forwards, [f'127.0.0.1:{port}:127.0.0.1:{port}' for port in range(8765, 8775)])
+        remote_args = shlex.split(command[-1].split('exec peon-code-web ', 1)[1].split('; else', 1)[0])
+        self.assertEqual(remote_args, ['--stdio', '--no-open', '--port', '8765', '--port-range', '10', '--', session])
 
     def test_ssh_default_adapts_only_local_forward_and_rewrites_validated_url(self):
-        for port, busy, local in ((None, False, 8765), (None, True, 9123), (9123, False, 9123)):
-            remote = port if port is not None else 8765
+        for port, busy, remote, local in ((None, False, 8765, 8765), (None, True, 8765, 9123), (None, True, 8767, 9123), (9123, False, 9123, 9123)):
+            candidates = list(range(8765, 8775)) if port is None else [port]
             args = SimpleNamespace(port=port, session=None, ssh="host", no_open=False, directory=None)
             with self.subTest(port=port, busy=busy), patch.object(launch.socket, "socket") as socket, patch.object(launch.subprocess, "Popen") as popen, patch.object(launch, "open_browser") as opened, contextlib.redirect_stdout(io.StringIO()) as output, contextlib.redirect_stderr(io.StringIO()) as error:
                 probe = socket.return_value.__enter__.return_value
-                probe.bind.side_effect = [OSError(errno.EADDRINUSE, "address in use"), None] if busy else None
+                probe.bind.side_effect = [result for candidate in candidates for result in ([OSError(errno.EADDRINUSE, "address in use"), None] if busy and candidate == remote else [None])]
                 probe.getsockname.return_value = ("127.0.0.1", local)
                 process = popen.return_value
-                urls = ["http://evil.test/#" + "a" * 43]
+                urls = ["http://evil.test/#" + "a" * 43, "http://127.0.0.1:8775/#" + "a" * 43]
                 if busy:
                     urls.append(f"http://127.0.0.1:{local}/#" + "a" * 43)
                 urls.append(f"http://127.0.0.1:{remote}/#" + "b" * 43)
@@ -130,18 +148,19 @@ class LaunchTests(unittest.TestCase):
                 process.poll.return_value = 0
                 self.assertEqual(launch.remote_ui(args), 0)
             command = popen.call_args.args[0]
-            self.assertEqual(command[5], f"127.0.0.1:{local}:127.0.0.1:{remote}")
+            forwards = [command[i + 1] for i, value in enumerate(command) if value == '-L']
+            self.assertEqual(forwards, [f"127.0.0.1:{local if candidate == remote else candidate}:127.0.0.1:{candidate}" for candidate in candidates])
             remote_args = shlex.split(command[-1].split("exec peon-code-web ", 1)[1].split("; else", 1)[0])
-            self.assertEqual(remote_args[remote_args.index("--port") + 1], str(remote))
+            self.assertEqual(remote_args[remote_args.index("--port") + 1], str(candidates[0]))
             url = f"http://127.0.0.1:{local}/#" + "b" * 43
             opened.assert_called_once_with(url)
             self.assertIn("peon-code-web: " + url + "\n", output.getvalue())
-            self.assertEqual(error.getvalue(), f"local port 8765 is busy, using {local}\n" if busy else "")
+            self.assertEqual(error.getvalue(), f"local port {remote} is busy, using {local}\n" if busy else "")
             if port is None:
-                probe.setsockopt.assert_called_once_with(launch.socket.SOL_SOCKET, launch.socket.SO_REUSEADDR, 1)
+                self.assertEqual(probe.setsockopt.call_count, 10)
                 self.assertEqual([call[0] for call in probe.method_calls[:2]], ["setsockopt", "bind"])
-                self.assertEqual([call.args[0] for call in probe.bind.call_args_list], [("127.0.0.1", 8765)] + ([("127.0.0.1", 0)] if busy else []))
-                socket.return_value.__exit__.assert_called_once()
+                self.assertEqual([call.args[0] for call in probe.bind.call_args_list], [address for candidate in candidates for address in ([("127.0.0.1", candidate), ("127.0.0.1", 0)] if busy and candidate == remote else [("127.0.0.1", candidate)])])
+                self.assertEqual(socket.return_value.__exit__.call_count, 10)
             else:
                 socket.assert_not_called()
 

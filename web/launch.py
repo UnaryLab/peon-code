@@ -9,10 +9,12 @@ import signal
 import socket
 import subprocess
 import sys
+from contextlib import ExitStack
 from pathlib import Path
 from urllib.parse import urlsplit
 
 DEFAULT_PORT = 8765
+PORT_RANGE = 10
 REMOTE_CONFIG_DIR = Path(".config/peon-code/uploads")
 
 
@@ -31,6 +33,7 @@ def arguments():
     parser.add_argument("--dir", dest="directory", metavar="PATH", help="create or open this project (resolved on the agent host)")
     parser.add_argument("--config", type=Path, metavar="PATH", help="use this local team config with --dir; upload it with --ssh")
     parser.add_argument("--stdio", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--port-range", type=int, default=1, help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.directory == "":
         parser.error("--dir requires a non-empty project path")
@@ -42,6 +45,8 @@ def arguments():
             parser.error("Config file does not exist: " + str(args.config))
     if args.port is not None and (not 0 <= args.port <= 65535 or (args.ssh and args.port == 0)):
         parser.error("use a port from 1 to 65535 with --ssh; 0 is local-only")
+    if args.port_range < 1 or (args.port if args.port is not None else DEFAULT_PORT) + args.port_range - 1 > 65535 or (args.port == 0 and args.port_range != 1):
+        parser.error("--port-range must name a non-empty range of ports from 1 to 65535")
     if args.ssh and (args.ssh.startswith("-") or not re.fullmatch(r"[A-Za-z0-9_.@:\[\]-]+", args.ssh)):
         parser.error("--ssh requires an SSH host alias or user@host")
     return args
@@ -64,10 +69,13 @@ def remote_config_path(args):
     return REMOTE_CONFIG_DIR / (name + ".conf")
 
 
-def ssh_command(args, local_port=None):
+def ssh_command(args, local_ports=None):
     remote_port = args.port if args.port is not None else DEFAULT_PORT
-    local_port = remote_port if local_port is None else local_port
+    if local_ports is None:
+        local_ports = {port: port for port in range(remote_port, remote_port + (PORT_RANGE if args.port is None else 1))}
     remote_args = ["--stdio", "--no-open", "--port", str(remote_port)]
+    if args.port is None:
+        remote_args.extend(["--port-range", str(PORT_RANGE)])
     if args.directory:
         remote_args.extend(["--dir", args.directory])
     if getattr(args, "config", None):
@@ -75,7 +83,10 @@ def ssh_command(args, local_port=None):
     if args.session:
         remote_args.extend(["--", args.session])
     remote = 'if command -v peon-code-web >/dev/null 2>&1; then exec peon-code-web ' + shlex.join(remote_args) + '; else exec "$HOME/.local/bin/peon-code-web" ' + shlex.join(remote_args) + '; fi'
-    return ["ssh", "-T", "-o", "ExitOnForwardFailure=yes", "-L", f"127.0.0.1:{local_port}:127.0.0.1:{remote_port}", "--", args.ssh, remote]
+    command = ["ssh", "-T", "-o", "ExitOnForwardFailure=yes"]
+    for port, local in local_ports.items():
+        command.extend(["-L", f"127.0.0.1:{local}:127.0.0.1:{port}"])
+    return command + ["--", args.ssh, remote]
 
 
 def remote_ui(args):
@@ -90,19 +101,22 @@ def remote_ui(args):
         if copied.returncode:
             raise RuntimeError(copied.stderr.decode(errors="replace").strip() or "Config copy to SSH host failed")
     remote_port = args.port if args.port is not None else DEFAULT_PORT
-    local_port = remote_port
+    local_ports = {remote_port: remote_port}
     if args.port is None:
-        with socket.socket() as probe:
-            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            try:
-                probe.bind(("127.0.0.1", local_port))
-            except OSError as error:
-                if error.errno != errno.EADDRINUSE:
-                    raise
-                probe.bind(("127.0.0.1", 0))
-                local_port = probe.getsockname()[1]
-                print(f"local port {remote_port} is busy, using {local_port}", file=sys.stderr)
-    process = subprocess.Popen(ssh_command(args, local_port), stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+        with ExitStack() as probes:
+            for port in range(DEFAULT_PORT, DEFAULT_PORT + PORT_RANGE):
+                probe = probes.enter_context(socket.socket())
+                probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                local_ports[port] = port
+                try:
+                    probe.bind(("127.0.0.1", port))
+                except OSError as error:
+                    if error.errno != errno.EADDRINUSE:
+                        raise
+                    probe.bind(("127.0.0.1", 0))
+                    local_ports[port] = probe.getsockname()[1]
+                    print(f"local port {port} is busy, using {local_ports[port]}", file=sys.stderr)
+    process = subprocess.Popen(ssh_command(args, local_ports), stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
     try:
         # Remote startup may include shell greetings; only trust a validated loopback rendezvous.
         for line in process.stdout:
@@ -127,11 +141,11 @@ def remote_ui(args):
                 if not isinstance(url, str):
                     continue
                 parsed = urlsplit(url)
-                if parsed.scheme != "http" or parsed.netloc != f"127.0.0.1:{remote_port}" or parsed.path != "/" or parsed.query or not re.fullmatch(r"[A-Za-z0-9_-]{43}", parsed.fragment):
+                if parsed.scheme != "http" or parsed.netloc not in [f"127.0.0.1:{port}" for port in local_ports] or parsed.path != "/" or parsed.query or not re.fullmatch(r"[A-Za-z0-9_-]{43}", parsed.fragment):
                     continue
             except (ValueError, TypeError, KeyError):
                 continue
-            url = parsed._replace(netloc=f"127.0.0.1:{local_port}").geturl()
+            url = parsed._replace(netloc=f"127.0.0.1:{local_ports[parsed.port]}").geturl()
             print("peon-code-web: " + url + "\nKeep this command running. Press Ctrl-C to stop the SSH connection.", flush=True)
             if not args.no_open:
                 open_browser(url)
