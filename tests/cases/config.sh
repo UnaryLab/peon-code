@@ -124,6 +124,8 @@ test_shipped_roles() {
   assert_contains "$ROOT/roles/protocol.md" "Set the row to done first, then send the done message"
   assert_contains "$ROOT/roles/protocol.md" "Once the reviewer records reviewed pass on a row, delete it"
   assert_contains "$ROOT/roles/protocol.md" "A row that documents or describes another row's change is not independent either"
+  assert_contains "$ROOT/roles/manager.md" "Size each row to one change: about a dozen files, or one output file"
+  assert_contains "$ROOT/roles/protocol.md" "or a row well past a dozen files"
   # The reviewer judges a write-up on its output file, since a new file
   # shows in no diff, and verifies the citations instead of running a check.
   assert_contains "$ROOT/roles/reviewer.md" "a new file shows in no diff, so read it directly"

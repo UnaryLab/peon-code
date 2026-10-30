@@ -25,7 +25,7 @@ Every message starts with the sender prefix the brief gives you, then one line n
 |---|---|---|---|---|
 | dispatch | manager | each owner | rows are on the board | one message per agent listing all its row ids |
 | done | worker | manager and reviewer | own row already set to done | `T3 done` |
-| blocked | worker | manager only | stuck, out of quota, or a conflicting edit | `T3 blocked: <one line>` |
+| blocked | worker | manager only | stuck, out of quota, a conflicting edit, or a row well past a dozen files | `T3 blocked: <one line>` |
 | verdict | reviewer | manager | row set to reviewed pass | `T3 reviewed pass` |
 | findings | reviewer | author and manager | row set to reviewed fail | `T3 reviewed fail` plus a short list, file, line, and what is wrong each |
 
