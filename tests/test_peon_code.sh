@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Test stubs are invoked by name through cli_call and eval.
+# shellcheck disable=SC2329
 set -euo pipefail
 
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
@@ -61,6 +63,7 @@ test_cli_provider_parsers() (
   extra_paste_placeholder() { printf '%s\n' '^\[Extra paste\]$'; }
   CLI_PROVIDERS+=(extra)
   CLI_ALL_PROMPT_MARKERS="$CLI_ALL_PROMPT_MARKERS|$(extra_prompt_marker)"
+  # shellcheck disable=SC2218 # The function is defined above and replaced below.
   CLI_ALL_PASTE_PLACEHOLDERS+=("$(extra_paste_placeholder)")
   # shellcheck disable=SC2317 # A cached parser must not query a provider again.
   extra_prompt_marker() { echo 'FAIL: prompt marker read after load' >&2; return 1; }
