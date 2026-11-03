@@ -157,17 +157,20 @@ class Handler(BaseHTTPRequestHandler):
 
     def respond(self, status, data, content_type="application/json", filename=None):
         body = json.dumps(data).encode() if content_type == "application/json" and filename is None else data
-        self.send_response(status)
-        self.send_header("Content-Type", content_type + ("; charset=utf-8" if filename is None else ""))
-        if filename is not None:
-            self.send_header("Content-Disposition", "attachment; filename*=UTF-8''" + quote(filename, safe=""))
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("Referrer-Policy", "no-referrer")
-        self.send_header("Content-Security-Policy", "default-src 'self'; img-src 'self' blob:; frame-src blob:; frame-ancestors 'none'; base-uri 'none'")
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", content_type + ("; charset=utf-8" if filename is None else ""))
+            if filename is not None:
+                self.send_header("Content-Disposition", "attachment; filename*=UTF-8''" + quote(filename, safe=""))
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Referrer-Policy", "no-referrer")
+            self.send_header("Content-Security-Policy", "default-src 'self'; img-src 'self' blob:; frame-src blob:; frame-ancestors 'none'; base-uri 'none'")
+            self.end_headers()
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            self.close_connection = True
 
     def allowed(self, authenticated=False):
         loopback = r"(?:127\.0\.0\.1|localhost|\[::1\])(?::[0-9]+)?"

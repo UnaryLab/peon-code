@@ -130,6 +130,16 @@ class WebTests(unittest.TestCase):
             return status, body, received_headers
         return status, body
 
+    def test_respond_closes_connection_on_broken_pipe(self):
+        handler = web.Handler.__new__(web.Handler)
+        handler.request_version = "HTTP/1.1"
+        handler.requestline = "GET /api/panes HTTP/1.1"
+        handler.wfile = Mock()
+        handler.wfile.write.side_effect = BrokenPipeError()
+        handler.close_connection = False
+        handler.respond(200, {"panes": []})
+        self.assertTrue(handler.close_connection)
+
     def test_files_lists_root_and_nested_directory(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(web, "panes", return_value=[dict(session="team", projectDir=directory)]):
             root = Path(directory)
