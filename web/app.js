@@ -774,6 +774,15 @@ function inputBox(pane) {
   });
   return parsed.textContent.trimEnd() === screen[pane.cursorY].trimEnd() ? text.trim() : '';
 }
+function workArea(pane) {
+  const rows = (pane.screen || '').split('\n');
+  if (rows[rows.length - 1] === '') rows.pop();
+  if (!Number.isInteger(pane.cursorY) || pane.cursorY < 0 || pane.cursorY >= rows.length) return null;
+  for (let anchor = pane.cursorY; anchor >= 0; anchor--) {
+    if (/[❯›]/.test(rows[anchor])) return rows.slice(0, anchor).join('\n').trimEnd();
+  }
+  return null;
+}
 function updateKeys(card) {
   const pane = card.latest;
   const labels = pane.menu ? [['Up', 'Up'], ['Down', 'Down'], ['Enter', 'Enter'], ['Escape', 'Esc']] : [];
@@ -1115,7 +1124,11 @@ async function refresh() {
       const card = cards.get(paneKey(pane)) || createCard(pane);
       if (card.closed) { card.closed = false; setSelection(card, card.selected); feedback(card, 'Agent reconnected'); }
       // Redraws after 2 seconds may flag unread; raise the window if seen.
-      if (pane.role === 'manager' && card.latest && card.latest.output !== pane.output && card.key !== currentPane() && performance.now() - resizedAt > 2000) card.unread = true;
+      if (pane.role === 'manager' && card.latest && card.key !== currentPane() && performance.now() - resizedAt > 2000) {
+        const previous = workArea(card.latest), current = workArea(pane);
+        const changed = previous === null || current === null ? card.latest.output !== pane.output : previous !== current;
+        if (changed) card.unread = true;
+      }
       card.needsAnswer = pane.menu;
       const boxText = inputBox(pane), now = performance.now();
       if (!boxText) card.boxSince = 0;
