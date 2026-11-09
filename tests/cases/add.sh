@@ -84,7 +84,7 @@ test_add() (
   [ "$(wc -l <"$notices" | tr -d ' ')" = 3 ] || fail 'add did not notify every existing pane exactly once'
   assert_contains "$notices" "[from peon-code] New teammate: pane $pane: helper (sleep 600) - local-worker (worker): Local worker"
   assert_contains "$TEST_DIR/add.err" "could not notify impl ${PANE_IDS[1]} about helper"
-  assert_contains "$log" "-c $project -e PEON_CODE_SESSION=$session -e DISABLE_AUTO_UPDATE=true"
+  assert_contains "$log" "-c $project -e PEON_CODE_SESSION=$session -e DISABLE_AUTO_UPDATE=true -e CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1"
   before=$(wc -l <"$log")
   for name in 'bad name' boss second-manager missing-role bad-type; do
     case $name in

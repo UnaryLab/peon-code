@@ -819,7 +819,7 @@ cmd_add() (
   prepare_launch_settings
   index=${#NAMES[@]}
   new_pane=$(tmux split-window -d -P -F '#{pane_id}' -t "$SESSION":agents -c "$PWD" \
-    -e "PEON_CODE_SESSION=$SESSION" -e DISABLE_AUTO_UPDATE=true) || die "could not add a pane to session $SESSION"
+    -e "PEON_CODE_SESSION=$SESSION" -e DISABLE_AUTO_UPDATE=true -e CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1) || die "could not add a pane to session $SESSION"
   tmux select-layout -t "$SESSION":agents main-vertical >/dev/null || true
   NAMES+=("$name"); CMDS+=("$command"); ROLES+=("$path"); PANE_IDS+=("$new_pane"); RESUME_IDS+=("")
   N=${#NAMES[@]}

@@ -1070,12 +1070,12 @@ test_usage_report() (
   create_agent_session "$session" 4 0
   for pane in "${PANE_IDS[@]}"; do
     # shellcheck disable=SC2016 # The variable must expand in the pane shell.
-    tmux send-keys -t "$pane" 'printf "%s:%s\n" "$PEON_CODE_SESSION" "$DISABLE_AUTO_UPDATE"' Enter
+    tmux send-keys -t "$pane" 'printf "%s:%s:%s\n" "$PEON_CODE_SESSION" "$DISABLE_AUTO_UPDATE" "$CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN"' Enter
     for ((i = 0; i < 100; i++)); do
-      if tmux capture-pane -pt "$pane" | grep -Fxq -- "$session:true"; then break; fi
+      if tmux capture-pane -pt "$pane" | grep -Fxq -- "$session:true:1"; then break; fi
       sleep 0.05
     done
-    [ "$i" -lt 100 ] || fail "pane $pane did not inherit PEON_CODE_SESSION=$session and DISABLE_AUTO_UPDATE=true"
+    [ "$i" -lt 100 ] || fail "pane $pane did not inherit PEON_CODE_SESSION=$session, DISABLE_AUTO_UPDATE=true, and CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1"
     case $pane in
       "${PANE_IDS[0]}") name=boss; bin=claude ;;
       "${PANE_IDS[1]}") name=impl; bin=codex ;;
