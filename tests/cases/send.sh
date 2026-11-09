@@ -166,7 +166,7 @@ test_send_delivers() {
   grep -Eq 'paste-buffer -b peon-code-[0-9]+-2 -dpt %2' "$SEND_LOG" ||
     fail "send did not paste through a unique tmux buffer"
   assert_contains "$SEND_LOG" "send-keys -t %2 Enter"
-  [ "$(send_captures)" = 6 ] || fail "send made $(send_captures) box reads, expected 6"
+  [ "$(send_captures)" = 7 ] || fail "send made $(send_captures) box reads, expected 7"
 
   # A box holding more than the message never matches, so send polls to its
   # cap, leaves the box alone, and says so.

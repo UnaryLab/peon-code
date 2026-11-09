@@ -56,7 +56,7 @@ test_rebrief() {
     fail "rebrief reported a brief its target never showed as sent"
   fi
   assert_contains "$TEST_DIR/rebrief-unseen.err" "no Enter sent to impl %1: the brief is in its box for the user to submit"
-  assert_contains "$TEST_DIR/rebrief-unseen.err" "no brief sent in session owned"
+  assert_contains "$TEST_DIR/rebrief-unseen.err" "no brief confirmed in session owned"
   assert_contains "$log" "paste-buffer"
   assert_not_contains "$log" "send-keys"
 

@@ -152,7 +152,7 @@ test_watch_loop() (
 )
 
 test_watch_pending_rebrief() (
-  local session="peon-watch-rebrief-$$" ticks=0 retry_pending=1 log="$TEST_DIR/watch-rebrief.log"
+  local result=${1:-0} session="peon-watch-rebrief-$$" ticks=0 retry_pending=1 log="$TEST_DIR/watch-rebrief.log"
   : >"$log"
   tmux() {
     case $1 in
@@ -172,12 +172,14 @@ test_watch_pending_rebrief() (
   session_name() { echo "$1"; }
   pane_is_busy() { [ "$ticks" -eq 1 ]; }
   wait_pane_settled() { [ "$2" = 10 ] || fail 'pending brief wait is not short'; echo "settled $ticks" >>"$log"; }
-  rebrief_pane() { echo "brief $ticks $1 $2" >>"$log"; }
+  rebrief_pane() { echo "brief $ticks $1 $2" >>"$log"; return "$result"; }
   watch_note() { echo "$2" >>"$log"; }
   sleep() { :; }
   cmd_watch "$session" 0
-  [ "$retry_pending" = 0 ] || fail 'watch kept the pending brief option after success'
-  [ "$(cat "$log")" = "$(printf 'settled 2\nbrief 2 %%0 lead\ncleared\nlead brief re-sent after compaction\n')" ] ||
+  [ "$retry_pending" = 0 ] || fail 'watch kept the pending brief option after Enter'
+  local note='lead brief re-sent after compaction'
+  if [ "$result" -eq 5 ]; then note='lead brief submission not confirmed after Enter; automatic retry stopped'; fi
+  [ "$(cat "$log")" = "$(printf 'settled 2\nbrief 2 %%0 lead\ncleared\n%s\n' "$note")" ] ||
     fail "watch sent a busy or repeated brief: $(cat "$log")"
 )
 
@@ -797,6 +799,7 @@ fake_bin=$(make_fake_commands)
 test_context_tokens
 test_watch_loop
 test_watch_pending_rebrief
+test_watch_pending_rebrief 5
 test_claude_compact_count
 test_watch_auto_compact auto
 test_watch_auto_compact own

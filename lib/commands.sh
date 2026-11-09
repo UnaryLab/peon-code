@@ -20,8 +20,8 @@ cmd_statusline() {
 # held back until that pane's box shows the message. A pane in copy mode, on a
 # dialog or a menu, or whose box holds typed text is skipped before the paste,
 # so the typed text stays its own. A pane that is skipped, refuses the paste,
-# or never shows it is reported and the rest still get theirs; the count is of panes that took an Enter. A run where any pane
-# took no message ends nonzero.
+# or never confirms submission is reported and the rest still get theirs;
+# the count is of confirmed submissions. Any failure ends nonzero.
 cmd_msg() {
   local target=${1:-} text=${2:-} session panes id name pair sent=0 unsent=0
   # shellcheck disable=SC2015 # Both required arguments must be present.
@@ -66,14 +66,16 @@ cmd_msg() {
          unsent=$((unsent + 1)); continue ;;
       3|75) echo "peon-code: no message sent to $name $id: input or another delivery is busy" >&2
          unsent=$((unsent + 1)); continue ;;
+      4) echo "peon-code: Enter sent to $name $id but submission not confirmed" >&2
+         unsent=$((unsent + 1)); continue ;;
       *) echo "peon-code: no message sent to $name $id: unexpected status from the paste" >&2
          unsent=$((unsent + 1)); continue ;;
     esac
     sent=$((sent + 1))
   done
   echo "peon-code: sent to $sent pane(s) in session $session"
-  [ "$sent" -gt 0 ] || die "no message sent in session $session"
-  [ "$unsent" -eq 0 ] || die "$unsent message(s) were not delivered in session $session"
+  [ "$sent" -gt 0 ] || die "no message confirmed in session $session"
+  [ "$unsent" -eq 0 ] || die "$unsent message(s) were not confirmed in session $session"
 }
 
 # Send a context slash command (/compact, /clear) to agent panes, then paste
@@ -155,6 +157,7 @@ slash_then_rebrief() {
       2) echo "peon-code: no brief sent to $name $id: tmux refused the paste" >&2 ;;
       3) echo "peon-code: no brief sent to $name $id: its input box holds typed text, or it is on a dialog or a menu" >&2 ;;
       4) echo "peon-code: no Enter sent to $name $id: the brief is in its box for the user to submit" >&2 ;;
+      5) echo "peon-code: Enter sent to $name $id but brief submission not confirmed" >&2 ;;
     esac
   done
 }
@@ -317,9 +320,16 @@ send_locked() {
       pane_takes_keys "$pane" ||
         die "no Enter sent: pane $pane went into copy mode, and the message is in its box for the user to submit"
       pane_identity_matches "$pane" || die "no Enter sent: agent changed"
-      tmux send-keys -t "$pane" Enter || die "no Enter sent: tmux refused submission to $pane"
-      echo "peon-code: sent to $pane"
-      return 0
+      rc=0
+      submit_paste "$pane" "$want" "$login" || rc=$?
+      case $rc in
+        0) echo "peon-code: sent to $pane"; return 0 ;;
+        2) die "Enter sent to $pane but submission not confirmed: pane went into copy mode" ;;
+        3) die "Enter sent to $pane but submission not confirmed: agent changed" ;;
+        4) die "no Enter sent: tmux refused submission to $pane" ;;
+        5) die "Enter sent to $pane but submission not confirmed: tmux refused a retry" ;;
+        *) die "Enter sent to $pane but submission not confirmed: input box did not read empty" ;;
+      esac
     fi
   done
   die "no Enter sent: pane $pane holds something other than the message, which is still in its box for the user to sort out"
@@ -331,7 +341,8 @@ send_locked() {
 # paste tmux refused returns 2. A pane whose input box holds typed text, or
 # that sits on a dialog or a menu, takes nothing and returns 3, so the box
 # keeps what the user typed and no Enter answers the dialog. A brief the box
-# never showed, so no Enter followed it, returns 4.
+# never showed, so no Enter followed it, returns 4. An Enter whose submission
+# cannot be confirmed returns 5.
 rebrief_pane() {
   with_pane_delivery "$1" rebrief_locked "$@"
 }
@@ -352,6 +363,7 @@ rebrief_locked() {
   paste_to_pane "$id" <"$brief" || case $? in
     2) return 4 ;;
     3|75) return 3 ;;
+    4) return 5 ;;
     *) return 2 ;;
   esac
   return 0
@@ -377,14 +389,16 @@ cmd_rebrief() {
          continue ;;
       4) echo "peon-code: no Enter sent to $name $id: the brief is in its box for the user to submit" >&2
          unsent=$((unsent + 1)); continue ;;
+      5) echo "peon-code: Enter sent to $name $id but brief submission not confirmed" >&2
+         unsent=$((unsent + 1)); continue ;;
       *) continue ;;
     esac
     sent=$((sent + 1))
   done <<<"$panes"
   [ "$found" -eq 1 ] || die "no pane named $target in session $session"
-  [ "$sent" -gt 0 ] || die "no brief sent in session $session"
+  [ "$sent" -gt 0 ] || die "no brief confirmed in session $session"
   echo "peon-code: rebriefed $sent pane(s) in session $session"
-  [ "$unsent" -eq 0 ] || die "$unsent brief(s) were not delivered in session $session"
+  [ "$unsent" -eq 0 ] || die "$unsent brief(s) were not confirmed in session $session"
 }
 
 swap_check() (

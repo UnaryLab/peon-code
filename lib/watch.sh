@@ -159,7 +159,7 @@ cmd_watch() {
   local last_beat=0 beat_time
   local created stamp ref exit_trap cleanup restart current state count launch capture hash last_hash pending
   local unwatched="" disarmed="" files="" reads="" lookups=""
-  local compacts="" compact_size compact_count new_count
+  local compacts="" compact_size compact_count new_count rebrief_rc
   local states="" restarts="" capped=""
   session=$(session_name "${1:-}")
   threshold=${2:-250000}
@@ -258,9 +258,15 @@ cmd_watch() {
         [ "$state" -eq 0 ] || continue
       fi
       if [ "$(tmux show-options -pqv -t "$id" @peon_rebrief_pending 2>/dev/null)" = 1 ] &&
-        ! pane_is_busy "$id" && wait_pane_settled "$id" 10 && ! pane_is_busy "$id" &&
-        rebrief_pane "$id" "$name" && tmux set -pu -t "$id" @peon_rebrief_pending; then
-        watch_note "$session" "$name brief re-sent after compaction"
+        ! pane_is_busy "$id" && wait_pane_settled "$id" 10 && ! pane_is_busy "$id"; then
+        rebrief_rc=0
+        rebrief_pane "$id" "$name" || rebrief_rc=$?
+        case $rebrief_rc in
+          0) tmux set -pu -t "$id" @peon_rebrief_pending &&
+             watch_note "$session" "$name brief re-sent after compaction" ;;
+          5) tmux set -pu -t "$id" @peon_rebrief_pending &&
+             watch_note "$session" "$name brief submission not confirmed after Enter; automatic retry stopped" ;;
+        esac
       fi
       [ "$threshold" -gt 0 ] || continue
       if ! declare -F -- "${bin}_context_tokens" >/dev/null ||

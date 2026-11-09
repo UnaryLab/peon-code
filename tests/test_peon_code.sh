@@ -102,7 +102,7 @@ source "$ROOT/tests/helpers.sh"
 
 # shellcheck disable=SC2034,SC2317 # paste_checked invokes these mocks in its pipeline.
 test_paste_checked_settled() (
-  local paste_tick=0 paste_mode paste_rc paste_log="$TEST_DIR/paste-settled.log"
+  local paste_tick=0 paste_mode paste_rc paste_submitted=0 paste_log="$TEST_DIR/paste-settled.log"
   # shellcheck source=lib/input.sh
   source "$ROOT/lib/input.sh"
   sleep() { paste_tick=$((paste_tick + 1)); printf 'poll:%s\n' "$paste_tick" >>"$paste_log"; }
@@ -110,6 +110,7 @@ test_paste_checked_settled() (
   pane_takes_keys() { :; }
   pane_identity_matches() { :; }
   pane_box_text() {
+    [ "$paste_submitted" -eq 0 ] || return 0
     [ "$paste_tick" -gt 0 ] || return 0
     case $paste_mode in
       chunks)
@@ -123,19 +124,97 @@ test_paste_checked_settled() (
     esac
     return 0
   }
-  tmux() { printf 'enter:%s\n' "$paste_tick" >>"$paste_log"; }
+  tmux() { paste_submitted=1; printf 'enter:%s\n' "$paste_tick" >>"$paste_log"; }
   for paste_mode in chunks late changing; do
     : >"$paste_log"
     paste_rc=0
     printf 'message short tail' | paste_checked %9 || paste_rc=$?
     case $paste_mode in
-      chunks) [ "$paste_rc" -eq 0 ] && [ "$(tail -1 "$paste_log")" = enter:4 ] || fail 'paste submitted before its chunks settled' ;;
-      late) [ "$paste_rc" -eq 0 ] && [ "$(tail -1 "$paste_log")" = enter:25 ] || fail 'paste did not wait for the extended retry cap' ;;
+      chunks)
+        if [ "$paste_rc" -ne 0 ] || ! grep -Fxq enter:4 "$paste_log"; then fail 'paste submitted before its chunks settled'; fi ;;
+      late)
+        if [ "$paste_rc" -ne 0 ] || ! grep -Fxq enter:25 "$paste_log"; then fail 'paste did not wait for the extended retry cap'; fi ;;
       changing) [ "$paste_rc" -eq 2 ] && [ "$(tail -1 "$paste_log")" = poll:25 ] || fail 'paste submitted a box that kept changing' ;;
     esac
   done
 )
 test_paste_checked_settled
+
+# shellcheck disable=SC2034,SC2317 # The paste paths invoke these mocks in their pipelines.
+test_paste_submission_retry() (
+  local submit_tick=0 submit_enters=0 submit_path submit_mode submit_rc submit_failure
+  local submit_log="$TEST_DIR/submit-retry.log"
+  # shellcheck source=lib/input.sh
+  source "$ROOT/lib/input.sh"
+  eval "$(sed -n '/^send_locked() {/,/^}/p' "$ROOT/lib/commands.sh")"
+  die() { printf '%s\n' "$*" >&2; exit 1; }
+  sleep() { submit_tick=$((submit_tick + 1)); }
+  paste_only() { cat >/dev/null; }
+  pane_box_ready() { :; }
+  pane_takes_keys() { :; }
+  pane_identity_matches() { [ "$submit_mode" != agent_changed ] || [ "$submit_enters" -eq 0 ]; }
+  pane_box_text() {
+    [ "$submit_tick" -gt 0 ] || return 0
+    if [ "$submit_enters" -gt 0 ]; then
+      case $submit_mode in
+        retry) [ "$submit_enters" -lt 2 ] || return 0 ;;
+        changed) printf 'different draft'; return 0 ;;
+        invalid) return 1 ;;
+      esac
+    fi
+    printf 'message short tail'
+  }
+  tmux() {
+    case $1 in
+      display) printf 'codex\n' ;;
+      show-options) printf 'worker\n' ;;
+      send-keys)
+        [ "$submit_mode" != refused ] || return 1
+        if [ "$submit_mode" = retry_refused ] && [ "$submit_enters" -gt 0 ]; then return 1; fi
+        submit_enters=$((submit_enters + 1)); printf 'enter:%s\n' "$submit_tick" >>"$submit_log" ;;
+    esac
+  }
+  for submit_path in paste_checked send_locked; do
+    submit_failure=4
+    [ "$submit_path" != send_locked ] || submit_failure=1
+    for submit_mode in retry held changed invalid agent_changed retry_refused refused; do
+      : >"$submit_log"
+      submit_rc=0
+      printf 'message short tail' | "$submit_path" %9 - >"$TEST_DIR/submit.out" 2>"$TEST_DIR/submit.err" || submit_rc=$?
+      if [ "$submit_mode" = retry ]; then
+        [ "$submit_rc" -eq 0 ] && [ "$(wc -l <"$submit_log")" -eq 2 ] && [ "$(tail -1 "$submit_log")" = enter:4 ] ||
+          fail "$submit_path did not retry a settled paste before reporting success"
+      elif [ "$submit_mode" = refused ]; then
+        if [ "$submit_path" = paste_checked ]; then
+          [ "$submit_rc" -eq 2 ] || fail "$submit_path changed the pre-Enter failure status"
+        else
+          [ "$submit_rc" -eq 1 ] || fail "$submit_path accepted a refused Enter"
+          assert_contains "$TEST_DIR/submit.err" "no Enter sent: tmux refused submission to %9"
+        fi
+        [ ! -s "$submit_log" ] || fail "$submit_path recorded a refused Enter"
+      else
+        [ "$submit_rc" -eq "$submit_failure" ] || fail "$submit_path changed the unconfirmed submission status"
+        if [ "$submit_path" = send_locked ]; then
+          assert_contains "$TEST_DIR/submit.err" "Enter sent to %9 but submission not confirmed:"
+          assert_not_contains "$TEST_DIR/submit.err" "no Enter sent"
+        fi
+        if [ "$submit_mode" = held ]; then
+          [ "$(wc -l <"$submit_log")" -eq 3 ] || fail "$submit_path did not cap the extra Enters at two"
+        else
+          [ "$(wc -l <"$submit_log")" -eq 1 ] || fail "$submit_path retried a changed or unreadable box"
+        fi
+      fi
+    done
+  done
+  eval "$(sed -n '/^rebrief_locked() {/,/^}/p' "$ROOT/lib/commands.sh")"
+  tmux() { printf '%s\n' "$submit_log"; }
+  pane_box_text() { :; }
+  paste_to_pane() { return 4; }
+  submit_rc=0
+  rebrief_locked %9 impl || submit_rc=$?
+  [ "$submit_rc" -eq 5 ] || fail "rebrief lost the post-Enter unconfirmed status"
+)
+test_paste_submission_retry
 
 test_interrupted_launch() (
   local launch_phase=$1 launch_socket="peon-launch-interrupt-$$-$1" launch_session="launch-interrupt-$$-$1"
@@ -469,7 +548,7 @@ test_claude_login_send() (
         esac ;;
       capture-pane)
         capture=$fixture
-        [ ! -s "$pasted" ] || capture=${fixture/' >'/" > $masked"}
+        if [ -s "$pasted" ] && [ ! -s "$log" ]; then capture=${fixture/' >'/" > $masked"}; fi
         if [ "$2" = -ept ]; then printf '%s' "$capture"; else printf '%s' "$capture" | strip_styles 0; fi ;;
       send-keys) printf '%s\n' "$*" >>"$log" ;;
     esac

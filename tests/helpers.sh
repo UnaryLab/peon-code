@@ -82,8 +82,10 @@ case ${1:-} in
     ;;
   capture-pane)
     cap=${FAKE_TMUX_CAPTURE:-}
-    # What the pane shows once a paste has reached it, when the test sets one.
-    grep -Fq paste-buffer "$FAKE_TMUX_LOG" && cap=${FAKE_TMUX_CAPTURE_AFTER:-$cap}
+    # Submitted text clears from the input box.
+    pastes=$(grep -c '^paste-buffer ' "$FAKE_TMUX_LOG")
+    enters=$(grep -c '^send-keys .* Enter$' "$FAKE_TMUX_LOG")
+    [ "$pastes" -le "$enters" ] || cap=${FAKE_TMUX_CAPTURE_AFTER:-$cap}
     printf '%s\n' "$cap"
     ;;
   load-buffer)
@@ -130,6 +132,10 @@ if [ "$state" = after ]; then
     box=$FAKE_BOX_AFTER
     cursor=$FAKE_CURSOR_AFTER
   fi
+fi
+if grep -Fxq -- "send-keys -t $pane Enter" "$FAKE_TMUX_LOG"; then
+  box='❯'
+  cursor='2 0'
 fi
 case ${1:-} in
   display)

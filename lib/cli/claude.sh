@@ -188,6 +188,7 @@ claude_brief_after_start() {
       1) echo "peon-code: tmux refused the brief for ${NAMES[$i]} ${PANE_IDS[$i]}. Send it with: peon-code rebrief ${NAMES[$i]}" >&2 ;;
       3|75) echo "peon-code: no brief sent: input or another delivery is busy for ${NAMES[$i]} ${PANE_IDS[$i]}" >&2 ;;
       2) echo "peon-code: no Enter sent to ${NAMES[$i]} ${PANE_IDS[$i]}: the brief is in its box for you to submit" >&2 ;;
+      4) echo "peon-code: Enter sent to ${NAMES[$i]} ${PANE_IDS[$i]} but brief submission not confirmed" >&2 ;;
     esac
   else
     PASTE_RC=3

@@ -30,15 +30,15 @@ paste_only() {
 # tries run out there rather than pressing one; the user leaves copy mode and
 # submits the text.
 # A failed paste returns 1 and presses no Enter, so a pane that took no text
-# keeps whatever the user had typed in its box. A paste the box never showed
-# returns 2, with the text left in the box for the user to submit.
+# keeps whatever the user had typed in its box. A paste that gets no Enter
+# returns 2. An Enter whose submission cannot be confirmed returns 4.
 # A box that became busy before the guarded paste returns 3 without pasting.
 paste_to_pane() {
   with_pane_delivery "$1" paste_checked "$@"
 }
 
 paste_checked() {
-  local pane=$1 text want box i previous=""
+  local pane=$1 text want box i rc previous=""
   text=$(cat)
   box=$(pane_box_text "$pane") || return 3
   [ -z "$box" ] || return 3
@@ -51,10 +51,37 @@ paste_checked() {
     box_holds_message "$box" "$want" || continue
     pane_takes_keys "$pane" || continue
     pane_identity_matches "$pane" || return 2
-    tmux send-keys -t "$pane" Enter || return 2
-    return 0
+    rc=0
+    submit_paste "$pane" "$want" || rc=$?
+    case $rc in
+      0) return 0 ;;
+      4) return 2 ;;
+      *) return 4 ;;
+    esac
   done
   return 2
+}
+
+# A paste can absorb Enter while it is still arriving.
+submit_paste() {
+  local pane=$1 want=$2 login=${3:-0} box previous="" i extra=0
+  tmux send-keys -t "$pane" Enter || return 4
+  for ((i = 0; i < 10; i++)); do
+    sleep 0.2
+    pane_identity_matches "$pane" || return 3
+    box=$(pane_box_text "$pane") || { previous=""; continue; }
+    [ -n "$box" ] || return 0
+    if [ "$box" = "$previous" ] && [ "$extra" -lt 2 ] && box_holds_message "$box" "$want" "$login"; then
+      pane_takes_keys "$pane" || return 2
+      pane_identity_matches "$pane" || return 3
+      tmux send-keys -t "$pane" Enter || return 5
+      extra=$((extra + 1))
+      previous=""
+    else
+      previous=$box
+    fi
+  done
+  return 1
 }
 
 # Whether a box read after a paste shows the message: the box equals it, holds

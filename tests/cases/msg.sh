@@ -29,7 +29,8 @@ box="output line
 case " ${FAKE_BLIND:-} " in
   *" $pane "*) ;;
   *)
-    if grep -Fq -- "-dpt $pane" "$FAKE_TMUX_LOG"; then
+    if grep -Fq -- "-dpt $pane" "$FAKE_TMUX_LOG" &&
+      { [ "${FAKE_HELD:-0}" = 1 ] || ! grep -Fxq -- "send-keys -t $pane Enter" "$FAKE_TMUX_LOG"; }; then
       box="output line
 ❯ $(grep -F 'buffer-content:' "$FAKE_TMUX_LOG" | tail -1 | cut -d: -f2-)
 ────"
@@ -83,7 +84,7 @@ FAKE_TMUX
   assert_contains "$TEST_DIR/msg-blind.out" "sent to 1 pane(s) in session owned"
   assert_contains "$TEST_DIR/msg-blind.err" \
     "no Enter sent to boss %2: the message is in its box for you to submit"
-  assert_contains "$TEST_DIR/msg-blind.err" "1 message(s) were not delivered in session owned"
+  assert_contains "$TEST_DIR/msg-blind.err" "1 message(s) were not confirmed in session owned"
   assert_contains "$log" "send-keys -t %1 Enter"
   assert_not_contains "$log" "send-keys -t %2"
 
@@ -113,9 +114,20 @@ FAKE_TMUX
   fi
   assert_contains "$TEST_DIR/msg-copy.out" "sent to 0 pane(s) in session owned"
   assert_contains "$TEST_DIR/msg-copy.err" "no message sent to impl %1: it is in copy mode"
-  assert_contains "$TEST_DIR/msg-copy.err" "no message sent in session owned"
+  assert_contains "$TEST_DIR/msg-copy.err" "no message confirmed in session owned"
   assert_not_contains "$log" "paste-buffer"
   assert_not_contains "$log" "send-keys"
+
+  # Enter can be sent while the message remains visible without confirmation.
+  : >"$log"
+  if PATH="$bin_dir:$PATH" FAKE_TMUX_LOG="$log" FAKE_HELD=1 \
+    "$ROOT/peon-code.sh" msg all hello owned \
+    >"$TEST_DIR/msg-held.out" 2>"$TEST_DIR/msg-held.err"; then
+    fail "msg reported an unconfirmed submission as delivered"
+  fi
+  assert_contains "$TEST_DIR/msg-held.err" "Enter sent to impl %1 but submission not confirmed"
+  assert_not_contains "$TEST_DIR/msg-held.err" "no Enter sent"
+  assert_contains "$TEST_DIR/msg-held.err" "no message confirmed in session owned"
 
   # A pane whose box holds typed text is skipped before any paste, so a long
   # message cannot scroll the typed text out of view and submit it along with
