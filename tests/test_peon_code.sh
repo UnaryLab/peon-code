@@ -93,6 +93,68 @@ test_cli_provider_parsers
 # shellcheck source=tests/helpers.sh
 source "$ROOT/tests/helpers.sh"
 
+test_interrupted_launch() (
+  local launch_phase=$1 launch_socket="peon-launch-interrupt-$$-$1" launch_session="launch-interrupt-$$-$1"
+  local bin_dir="$TEST_DIR/interrupt-bin" work_dir="$TEST_DIR/interrupt-work" real_tmux
+  real_tmux=$(command -v tmux)
+  mkdir -p "$bin_dir" "$work_dir"
+  trap '"$real_tmux" -L "$launch_socket" kill-session -t "=$launch_session" 2>/dev/null || true' EXIT
+  cat >"$bin_dir/tmux" <<'TMUX'
+#!/bin/sh
+if [ "$1" = split-window ] && [ "$PEON_TEST_PHASE" = splits ]; then
+  touch "$PEON_TEST_SPLIT_READY"
+  sleep 1
+fi
+exec "$PEON_TEST_TMUX" -L "$PEON_TEST_SOCKET" -f /dev/null "$@"
+TMUX
+  printf '#!/bin/sh\nexec sleep 60\n' >"$bin_dir/launch-blocker"
+  printf '#!/bin/sh\nexit 1\n' >"$bin_dir/git"
+  chmod +x "$bin_dir/tmux" "$bin_dir/launch-blocker" "$bin_dir/git"
+  printf 'compact-at 0\nrestart-dead no\nboss launch-blocker -\nhelper launch-blocker -\n' >"$work_dir/peon-code.conf"
+  PATH="$bin_dir:$PATH" PEON_TEST_TMUX="$real_tmux" PEON_TEST_SOCKET="$launch_socket" \
+    PEON_TEST_PHASE="$launch_phase" PEON_TEST_SPLIT_READY="$work_dir/split-ready" \
+    python3 - "$ROOT/peon-code.sh" "$work_dir" "$launch_session" "$launch_phase" <<'PYTHON'
+import os
+from pathlib import Path
+import signal
+import subprocess
+import sys
+import time
+
+script, work, session, phase = sys.argv[1:]
+with open(Path(work) / "launch.log", "w") as log:
+    process = subprocess.Popen([script, "-c", str(Path(work) / "peon-code.conf"), session],
+                               cwd=work, stdin=subprocess.DEVNULL, stdout=log,
+                               stderr=subprocess.STDOUT, start_new_session=True)
+    try:
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and process.poll() is None:
+            exists = subprocess.run(["tmux", "has-session", "-t", "=" + session],
+                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            configured = subprocess.run(["tmux", "show-options", "-qv", "-t", session, "@peon_conf"],
+                                        capture_output=True, text=True)
+            ready = (Path(work) / "split-ready").exists() if phase == "splits" else bool(configured.stdout.strip())
+            if exists.returncode == 0 and ready:
+                break
+            time.sleep(0.01)
+        else:
+            raise AssertionError("Launcher did not create the test session")
+        process.send_signal(signal.SIGINT)
+        status = process.wait(timeout=10)
+        result = subprocess.run(["tmux", "has-session", "-t", "=" + session],
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        assert result.returncode != 0, "Interrupted launch left its session running"
+        assert status == 130, "Interrupted launcher did not exit 130"
+    finally:
+        if process.poll() is None:
+            os.killpg(process.pid, signal.SIGTERM)
+            process.wait(timeout=10)
+print("launch interrupt " + phase + ": PASS")
+PYTHON
+)
+test_interrupted_launch splits
+test_interrupted_launch configured
+
 # shellcheck disable=SC2034,SC2317 # Variables and mocks are used by the evaluated launch functions.
 test_launch_scope() (
   local bin_dir="$TEST_DIR/scope-bin" bare_dir="$TEST_DIR/scope-bare-bin" mode pane

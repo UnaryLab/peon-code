@@ -220,6 +220,9 @@ if [ "$MAIN" -lt 0 ]; then
   done
 fi
 
+# An interrupted launch must not leave bare shells for the next launch or browser to attach to.
+trap 'tmux kill-session -t "=$SESSION" 2>/dev/null; exit 130' INT
+trap 'tmux kill-session -t "=$SESSION" 2>/dev/null; exit 143' TERM HUP
 create_agent_session "$SESSION" "$N" "$MAIN"
 tmux set-option -t "$SESSION" @peon_conf "$CONF"
 if [ "$RESTART_DEAD" = yes ]; then
@@ -254,6 +257,7 @@ for i in "${!NAMES[@]}"; do
 done
 
 if [ -t 0 ]; then
+  trap - INT TERM HUP
   # The session goes on screen first and the agents start while it is up, so
   # a pane opening on a dialog is in front of you to answer. Launch notes go
   # to the status line, and a pane whose agent never started stays up. The
@@ -283,6 +287,7 @@ else
     tmux kill-session -t "=$SESSION"
     die "agents failed to start; killed session $SESSION: ${FAILED_AGENTS[*]}"
   fi
+  trap - INT TERM HUP
 fi
 # The context watcher outlives this launch: it runs until the session is
 # gone, compacting full contexts or restarting dead agent panes.

@@ -50,6 +50,8 @@ peon-code-web [--ssh <host>]                 # the same team in a browser, see B
 
 Run `peon-code -h` for every subcommand, or see [Command reference](#command-reference) below.
 
+An interrupted launch removes the session it was building.
+
 Every `[<session>]` argument defaults to the current directory's base name, with `.` and `:` replaced by `_`, since tmux rewrites those characters in session names. peon-code marks each session it creates; attaching and every session-scoped subcommand (`dismiss`, `detach`, `msg`, `rebrief`, `compact`, `clear`) refuse a same-named session peon-code did not create.
 
 ### Supported providers
