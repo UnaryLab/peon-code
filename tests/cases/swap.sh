@@ -605,7 +605,14 @@ second=$!
 first_rc=0 second_rc=0
 wait "$first" || first_rc=$?
 wait "$second" || second_rc=$?
-[ "$((first_rc + second_rc))" = 1 ] || fail 'concurrent reservations did not select exactly one job'
+if [ "$((first_rc + second_rc))" != 1 ]; then
+  printf 'first_rc=%s second_rc=%s\n' "$first_rc" "$second_rc" >&2
+  printf 'reserve1.out:\n' >&2
+  cat "$TEST_DIR/reserve1.out" >&2
+  printf 'reserve2.out:\n' >&2
+  cat "$TEST_DIR/reserve2.out" >&2
+  fail 'concurrent reservations did not select exactly one job'
+fi
 assert_unchanged
 
 setup_swap detached-interrupted claude
