@@ -80,6 +80,13 @@ test_cli_provider_parsers() (
   cli_select_pane %9
   box_is_paste_placeholder '[Extra paste]' || exit 1
   box_holds_message '[Extra paste]' 'draft text' || exit 1
+  box_holds_message '[Extra paste][Extra paste]' 'draft text' || exit 1
+  box_holds_message '[Pasted Content 1024 chars] [Pasted Content 1024 chars]' 'draft text' || exit 1
+  box_holds_message '[Pasted Content 1024 chars][Pasted Content 1024 chars] short tail' 'draft text short tail' || exit 1
+  box_holds_message '[Pasted Content 1024 chars] short t ail [x]*?' 'draft text short tail [x]*?' || exit 1
+  if box_holds_message '[Pasted Content 1024 chars] wrong tail' 'draft text short tail'; then exit 1; fi
+  if box_holds_message 'draft [Pasted Content 1024 chars]' 'draft text'; then exit 1; fi
+  if box_holds_message 'short tail' 'draft text short tail'; then exit 1; fi
   pane_has_menu '» 1. Yes' 0 || exit 1
   [ "$(pane_free_text_number '» 2. Type something.')" = 2 ] || exit 1
   [ "$(printf '\033[2m» hint\033[0m typed\n' | strip_styles 1)" = '»      typed' ] || exit 1
@@ -92,6 +99,43 @@ test_cli_provider_parsers
 
 # shellcheck source=tests/helpers.sh
 source "$ROOT/tests/helpers.sh"
+
+# shellcheck disable=SC2034,SC2317 # paste_checked invokes these mocks in its pipeline.
+test_paste_checked_settled() (
+  local paste_tick=0 paste_mode paste_rc paste_log="$TEST_DIR/paste-settled.log"
+  # shellcheck source=lib/input.sh
+  source "$ROOT/lib/input.sh"
+  sleep() { paste_tick=$((paste_tick + 1)); printf 'poll:%s\n' "$paste_tick" >>"$paste_log"; }
+  paste_only() { cat >/dev/null; }
+  pane_takes_keys() { :; }
+  pane_identity_matches() { :; }
+  pane_box_text() {
+    [ "$paste_tick" -gt 0 ] || return 0
+    case $paste_mode in
+      chunks)
+        case $paste_tick in
+          1) printf '[Pasted Content 1024 chars]' ;;
+          2) printf '[Pasted Content 1024 chars][Pasted Content 1024 chars]' ;;
+          *) printf '[Pasted Content 1024 chars][Pasted Content 1024 chars] short tail' ;;
+        esac ;;
+      late) [ "$paste_tick" -lt 24 ] || printf 'message short tail' ;;
+      changing) printf '[Pasted Content %s chars]' "$paste_tick" ;;
+    esac
+    return 0
+  }
+  tmux() { printf 'enter:%s\n' "$paste_tick" >>"$paste_log"; }
+  for paste_mode in chunks late changing; do
+    : >"$paste_log"
+    paste_rc=0
+    printf 'message short tail' | paste_checked %9 || paste_rc=$?
+    case $paste_mode in
+      chunks) [ "$paste_rc" -eq 0 ] && [ "$(tail -1 "$paste_log")" = enter:4 ] || fail 'paste submitted before its chunks settled' ;;
+      late) [ "$paste_rc" -eq 0 ] && [ "$(tail -1 "$paste_log")" = enter:25 ] || fail 'paste did not wait for the extended retry cap' ;;
+      changing) [ "$paste_rc" -eq 2 ] && [ "$(tail -1 "$paste_log")" = poll:25 ] || fail 'paste submitted a box that kept changing' ;;
+    esac
+  done
+)
+test_paste_checked_settled
 
 test_interrupted_launch() (
   local launch_phase=$1 launch_socket="peon-launch-interrupt-$$-$1" launch_session="launch-interrupt-$$-$1"

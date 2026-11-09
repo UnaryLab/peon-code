@@ -166,7 +166,7 @@ test_send_delivers() {
   grep -Eq 'paste-buffer -b peon-code-[0-9]+-2 -dpt %2' "$SEND_LOG" ||
     fail "send did not paste through a unique tmux buffer"
   assert_contains "$SEND_LOG" "send-keys -t %2 Enter"
-  [ "$(send_captures)" = 5 ] || fail "send made $(send_captures) box reads, expected 5"
+  [ "$(send_captures)" = 6 ] || fail "send made $(send_captures) box reads, expected 6"
 
   # A box holding more than the message never matches, so send polls to its
   # cap, leaves the box alone, and says so.
@@ -180,7 +180,7 @@ test_send_delivers() {
   assert_contains "$TEST_DIR/send-extra.err" "no Enter sent"
   assert_contains "$SEND_LOG" "paste-buffer"
   assert_not_contains "$SEND_LOG" "send-keys"
-  [ "$(send_captures)" = 11 ] || fail "send made $(send_captures) box reads, expected 11"
+  [ "$(send_captures)" = 26 ] || fail "send made $(send_captures) box reads, expected 26"
 
   # A paste tmux refused leaves the pane untouched, so the run says nothing
   # was sent instead of stopping without a word.
@@ -195,10 +195,11 @@ test_send_delivers() {
   assert_not_contains "$SEND_LOG" "send-keys"
 
   # A CLI that collapses a multi-line paste into a placeholder row still gets
-  # the Enter: the box was empty before the paste, so one placeholder is the
-  # message. One form per supported CLI.
+  # the Enter: leading placeholders hold the paste, with any remaining text
+  # checked against the message's suffix. One form per supported CLI.
   local placeholder
-  for placeholder in '[Pasted text #2 +15 lines]' '[Pasted Content 1234 chars]' '[Paste #2 - 15 lines]' '[Pasted: 5 lines]'; do
+  for placeholder in '[Pasted text #2 +15 lines]' '[Pasted Content 1234 chars]' '[Paste #2 - 15 lines]' '[Pasted: 5 lines]' \
+    '[Pasted Content 1024 chars][Pasted Content 1024 chars]' '[Pasted Content 1024 chars] [Pasted Content 1024 chars] two'; do
     reset_send_log
     PATH="$SEND_BIN:$PATH" FAKE_TMUX_LOG="$SEND_LOG" \
       FAKE_BOX="$empty_box" FAKE_CURSOR='2 1' \

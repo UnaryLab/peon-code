@@ -21,7 +21,7 @@ paste_only() {
 
 # Paste stdin into a pane, then press Enter once the pane shows the paste: its
 # input box shows the pasted text, as box_holds_message decides, and it
-# takes keys. The box is read again on each of 15 tries,
+# takes keys. Two consecutive box reads must match, with up to 25 tries,
 # 0.2s apart, so a box still redrawing or an autocomplete list the paste
 # opened gets time to show the text. Only a box that reads back non-empty is
 # matched, so a pane on a dialog or a menu, one drawing no prompt marker
@@ -38,15 +38,16 @@ paste_to_pane() {
 }
 
 paste_checked() {
-  local pane=$1 text want box i
+  local pane=$1 text want box i previous=""
   text=$(cat)
   box=$(pane_box_text "$pane") || return 3
   [ -z "$box" ] || return 3
   want=$(printf '%s' "$text" | plain_text)
   printf '%s' "$text" | paste_only "$pane" || return 1
-  for ((i = 0; i < 15; i++)); do
+  for ((i = 0; i < 25; i++)); do
     sleep 0.2
     box=$(pane_box_text "$pane") || box=""
+    if [ "$box" != "$previous" ]; then previous=$box; continue; fi
     box_holds_message "$box" "$want" || continue
     pane_takes_keys "$pane" || continue
     pane_identity_matches "$pane" || return 2
@@ -57,11 +58,11 @@ paste_checked() {
 }
 
 # Whether a box read after a paste shows the message: the box equals it, holds
-# its paste placeholder, or holds a tail of it. A box shows only its last
+# leading paste placeholders, or holds a tail of it. A box shows only its last
 # rows (claude about 7), so a long message keeps only its end on screen.
-# A tail counts only from 100 characters up, so a leftover hint or one stray
-# character cannot pass as the message; a long message whose visible tail is
-# shorter than that gets no Enter.
+# A tail without a placeholder counts only from 100 characters up, so a
+# leftover hint or one stray character cannot pass as the message; a shorter
+# tail gets no Enter.
 # Spaces are left out of the comparison, since a composer that wraps a long row can break inside a token, so the joined rows hold a space the message does not.
 box_holds_message() {
   local box=$1 want=$2
@@ -73,10 +74,24 @@ box_holds_message() {
     [ "$box" = "$want" ]
     return
   fi
-  ! box_is_paste_placeholder "$box" || return 0
+  local pattern prefix stripped=0
+  while :; do
+    prefix=""
+    for pattern in ${CLI_PASTE_PLACEHOLDERS[@]+"${CLI_PASTE_PLACEHOLDERS[@]}"}; do
+      pattern=${pattern#^}
+      pattern=${pattern%$}
+      [[ $box =~ ^($pattern)[[:space:]]* ]] || continue
+      prefix=${BASH_REMATCH[0]}
+      break
+    done
+    [ -n "$prefix" ] || break
+    box=${box#"$prefix"}
+    stripped=1
+  done
+  [ -n "$box" ] || return 0
   local b=${box// /} w=${want// /}
   [ "$b" != "$w" ] || return 0
-  [ "${#b}" -ge 100 ] || return 1
+  [ "$stripped" -eq 1 ] || [ "${#b}" -ge 100 ] || return 1
   case $w in
     *"$b") return 0 ;;
   esac
