@@ -611,6 +611,12 @@ if [ "$((first_rc + second_rc))" != 1 ]; then
   cat "$TEST_DIR/reserve1.out" >&2
   printf 'reserve2.out:\n' >&2
   cat "$TEST_DIR/reserve2.out" >&2
+  printf 'tmux calls:\n' >&2
+  cat "$SWAP_STATE/log" >&2
+  for reserve_file in peon_swap peon_swap_owner peon_swap_started peon_swap_pid; do
+    printf '%s:\n' "$reserve_file" >&2
+    cat "$SWAP_STATE/$reserve_file" >&2 || true
+  done
   fail 'concurrent reservations did not select exactly one job'
 fi
 assert_unchanged
