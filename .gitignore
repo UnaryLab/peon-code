@@ -3,3 +3,6 @@ peon-code.conf
 innovation_summary/
 __pycache__/
 .gstack/
+.peon-code-plan.md
+.peon-code-task.*.md
+peon-code.*.conf
