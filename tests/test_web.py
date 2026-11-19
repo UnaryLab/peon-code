@@ -880,126 +880,66 @@ refresh().then(parameters => {document.querySelector('#result').textContent = JS
                 run.assert_not_called()
                 popen.assert_not_called()
 
-    def test_available_roles_require_auth_and_match_shipped_files(self):
-        self.assertEqual(self.request("GET", "/api/roles", headers={"X-Peon-Token": ""})[0], 403)
-        status, body = self.request("GET", "/api/roles")
-        roles = json.loads(body)
-        self.assertEqual(status, 200)
-        self.assertEqual([role["name"] for role in roles], ["implementer", "manager", "reviewer", "writer"])
-        self.assertEqual({role["name"]: role["type"] for role in roles},
-                         dict(manager="manager", implementer="worker", reviewer="reviewer", writer="worker"))
-        self.assertTrue(all(isinstance(role["description"], str) and role["description"] for role in roles))
-        with tempfile.TemporaryDirectory() as directory, patch.object(web, "ROOT", Path(directory)):
-            folder = Path(directory) / "roles"
-            folder.mkdir()
-            for name in ("protocol", "Custom"):
-                (folder / (name + ".md")).write_text("---\ndescription: Custom role\ntype: worker\n---\nBody\n")
-            (folder / "No-type.md").write_text("---\ndescription: No type\n---\ntype: worker\n")
-            self.assertEqual(json.loads(self.request("GET", "/api/roles")[1]),
-                             [dict(name="Custom", type="worker", description="Custom role")])
-
-    def test_add_delivers_shipped_role_and_provider_flags_without_lock(self):
+    def test_team_launch_keeps_uploaded_config_alive_and_cleans_it(self):
+        captured = []
         def deliver(args, text, identity, timeout):
-            self.assertFalse(self.server.send_lock.locked())
+            config = Path(args[args.index("-c") + 1])
+            captured.append(config)
+            self.assertEqual(config.read_text(), "*boss claude manager\n")
+            self.assertEqual(args[3:], ["add-team", "--session", "team", "--team", "research", "--save"])
             self.assertEqual((text, identity, timeout), ("", "", 300))
-            return subprocess.CompletedProcess(args, 0, "peon-code: sent to %2\nAgent added\n", "")
-        cases = [
-            (dict(cli="codex", model="gpt-test", effort="high", args="--sandbox danger-full-access", role="implementer"),
-             "codex --sandbox danger-full-access --model gpt-test -c model_reasoning_effort=high"),
-            (dict(cli="claude", model="claude-test", effort="low", args="--verbose", role="reviewer"),
-             "claude --verbose --model claude-test --effort low"),
-            (dict(cli="codex", role="-", save=False), "codex"),
-            (dict(cli="codex", role="implementer", save=True), "codex")
-        ]
-        with patch.object(web, "run_delivery", side_effect=deliver) as run:
-            for fields, command in cases:
-                with self.subTest(fields=fields):
-                    status, body = self.request("POST", "/api/add", dict(session="team", name="helper", **fields))
-                    self.assertEqual((status, json.loads(body)), (200, {"message": "Agent added"}))
-                    args = [str(ROOT / "peon-code.sh"), "add", "helper", fields["role"], command, "--session", "team"]
-                    run.assert_called_with(args + (["--save"] if fields.get("save") else []), "", "", timeout=300)
+            return subprocess.CompletedProcess(args, 0, "Team added\n", "")
+        with tempfile.TemporaryDirectory() as directory, patch.object(web.Path, "home", return_value=Path(directory)), patch.object(web, "open_project") as opened, patch.object(web, "run_delivery", side_effect=deliver):
+            status, body = self.request("POST", "/api/team", dict(session="team", team="research", save=True,
+                                       config_name="team.conf", config_text="*boss claude manager\n"))
+        self.assertEqual((status, json.loads(body)), (200, {"session": "team", "message": "Team added"}))
+        self.assertFalse(captured[0].parent.exists())
+        opened.assert_not_called()
+        self.assertEqual(self.server.session, "team")
 
-    def test_keys_complete_while_add_is_running(self):
-        started, release, key_done = threading.Event(), threading.Event(), threading.Event()
-        added, keys = [], []
-        def deliver(args, text, identity, timeout=20):
-            if args[1] == "add":
-                started.set()
-                release.wait(10)
-            return subprocess.CompletedProcess(args, 0, "Done", "")
-        def send_key():
-            keys.append(self.request("POST", "/api/keys", dict(pane="%2", identity="server:session:pane", key="C-c")))
-            key_done.set()
-        with patch.object(web, "run_delivery", side_effect=deliver):
-            add = threading.Thread(target=lambda: added.append(self.request("POST", "/api/add", dict(session="team", name="helper", cli="codex", role="implementer"))))
-            key = threading.Thread(target=send_key)
-            add.start()
-            try:
-                self.assertTrue(started.wait(2))
-                key.start()
-                completed_during_add = key_done.wait(1)
-                self.assertTrue(add.is_alive())
-            finally:
-                release.set()
-                add.join(5)
-                if key.ident is not None:
-                    key.join(5)
-            self.assertTrue(completed_during_add, "Ctrl+C waited for the add request to finish")
-            self.assertEqual((added[0][0], keys[0][0]), (200, 200))
+    def test_team_without_upload_uses_session_config_and_handles_launch_failure(self):
+        with patch.object(web, "run_delivery", return_value=subprocess.CompletedProcess([], 0, "", "")) as run:
+            self.assertEqual(self.request("POST", "/api/team", dict(session="team"))[0], 200)
+            run.assert_called_once_with([str(ROOT / "peon-code.sh"), "add-team", "--session", "team"], "", "", timeout=300)
+            self.assertEqual(self.request("POST", "/api/team", dict(session="team", save=True))[0], 200)
+            run.assert_called_with([str(ROOT / "peon-code.sh"), "add-team", "--session", "team", "--save"], "", "", timeout=300)
+        with patch.object(web, "run_delivery", return_value=subprocess.CompletedProcess([], 1, "", "Team already exists")):
+            status, body = self.request("POST", "/api/team", dict(session="team", team="research"))
+            self.assertEqual((status, json.loads(body)), (409, {"error": "Team already exists"}))
 
-    def test_add_new_role_is_temporary_on_success_failure_and_timeout(self):
-        role = dict(name="Custom-helper", type="worker", description="Build the task", body="Read the code.\n日本語")
-        data = dict(session="team", name="helper", cli="codex", role=role["name"], newRole=role, save=True)
-        for outcome in ("success", "failure", "timeout"):
-            paths = []
-            def deliver(args, text, identity, timeout):
-                self.assertFalse(self.server.send_lock.locked())
-                self.assertEqual((args[:3], args[4:], text, identity, timeout),
-                                 ([str(ROOT / "peon-code.sh"), "add", "helper"], ["codex", "--session", "team", "--save"], "", "", 300))
-                path = Path(args[3])
-                self.assertEqual(path.name, role["name"] + ".md")
-                self.assertEqual(path.parent.name, "roles")
-                self.assertEqual(path.parent.parent.parent, Path(directory) / launch.REMOTE_CONFIG_DIR)
-                self.assertEqual(path.parent.parent.stat().st_mode & 0o777, 0o700)
-                self.assertEqual(path.read_text(), "---\ntype: worker\ndescription: Build the task\n---\n" + role["body"] + "\n")
-                paths.append(path.parent.parent)
-                if outcome == "timeout":
-                    raise subprocess.TimeoutExpired(args, timeout)
-                return subprocess.CompletedProcess(args, 1 if outcome == "failure" else 0, "Agent added", "Cannot start helper\n")
-            with self.subTest(outcome=outcome), tempfile.TemporaryDirectory() as directory, patch.object(web.Path, "home", return_value=Path(directory)), patch.object(web, "run_delivery", side_effect=deliver):
-                status, body = self.request("POST", "/api/add", data)
-                self.assertEqual(status, {"success": 200, "failure": 409, "timeout": 503}[outcome])
-                if outcome == "failure":
-                    self.assertEqual(json.loads(body), {"error": "Cannot start helper"})
-                self.assertEqual(len(paths), 1)
-                self.assertFalse(paths[0].exists())
-                self.assertEqual(list((Path(directory) / launch.REMOTE_CONFIG_DIR).iterdir()), [])
+    def test_team_timeout_hides_launcher_arguments_and_cleans_upload(self):
+        captured = []
+        def timeout(args, text, identity, timeout):
+            config = Path(args[args.index("-c") + 1])
+            captured.append(config)
+            self.assertTrue(config.exists())
+            raise subprocess.TimeoutExpired(args, timeout, stderr="private launcher output")
+        with tempfile.TemporaryDirectory() as directory, patch.object(web.Path, "home", return_value=Path(directory)), patch.object(web, "run_delivery", side_effect=timeout):
+            status, body = self.request("POST", "/api/team", dict(session="team", config_name="team.conf", config_text="private config"))
+        self.assertEqual((status, json.loads(body)), (503, {"error": "Team did not start within 5 minutes; check the tmux session for half-built panes"}))
+        self.assertFalse(captured[0].parent.exists())
 
-    def test_add_validation_and_authentication(self):
-        valid = dict(session="team", name="helper", cli="codex", model="", effort="", args="", role="implementer")
-        new_role = dict(name="Custom-helper", type="worker", description="Build", body="Keep changes small.")
-        invalid = [{"name": value} for value in ("bad name", "*main", "../escape", "", None, 1)]
-        invalid += [{"cli": value} for value in ("missing", "-", "codex --flag", None, 1)]
-        invalid += [{field: value} for field in ("model", "effort") for value in ("two tokens", "-flag", None, [])]
-        invalid += [{"args": value} for value in ("two\nlines", "line\rbreak", "a\0b", "x" * 200001, None, [], "\ud800")]
-        invalid += [{"role": value} for value in ("missing", "protocol", "../manager", "", None, 1)]
-        invalid += [{"session": value} for value in ("missing", "", None, 1)]
-        invalid += [{"save": value} for value in (None, 1, "true", [])]
-        invalid += [{"newRole": value} for value in (None, [], {}, dict(new_role, name="manager"), new_role)]
-        with tempfile.TemporaryDirectory() as directory, patch.object(web.Path, "home", return_value=Path(directory)), patch.object(web, "run_delivery") as run:
-            for headers in ({"X-Peon-Token": ""}, {"Host": "evil.test"}, {"Origin": "https://evil.test"}):
-                self.assertEqual(self.request("POST", "/api/add", valid, headers)[0], 403)
+    def test_team_refuses_invalid_fields_without_launching(self):
+        invalid = [dict(session=value) for value in ("missing", "", None, 1)]
+        invalid += [dict(team=value) for value in ("director", "two teams", "../team", "a.b", 1, None)]
+        invalid += [dict(save="yes"), dict(config_text="missing name"), dict(config_name="../team.conf", config_text="x"),
+                    dict(config_name="team.conf", config_text="x" * (200 * 1024 + 1))]
+        with patch.object(web, "open_project") as opened, patch.object(web, "run_delivery") as run:
             for fields in invalid:
-                with self.subTest(fields=fields):
-                    self.assertEqual(self.request("POST", "/api/add", dict(valid, **fields))[0], 400)
-            for field in ("session", "name", "cli", "role"):
-                data = dict(valid)
-                del data[field]
-                self.assertEqual(self.request("POST", "/api/add", data)[0], 400)
-            for data in (None, [], "text", 1):
-                self.assertEqual(self.request("POST", "/api/add", data)[0], 400)
-            run.assert_not_called()
-            self.assertEqual(list(Path(directory).iterdir()), [])
+                with self.subTest(fields=list(fields)):
+                    self.assertEqual(self.request("POST", "/api/team", dict(dict(session="team"), **fields))[0], 400)
+            self.assertEqual(self.request("POST", "/api/team", b"", headers={"Content-Length": str(2 * 1024 * 1024 + 1)})[0], 400)
+            self.assertEqual(self.request("POST", "/api/team", dict(session="team"), headers={"X-Peon-Token": "wrong"})[0], 403)
+        run.assert_not_called()
+        opened.assert_not_called()
+
+    def test_api_panes_accepts_director_and_team_metadata(self):
+        fields = ['team', '%1', 'director', '1', 'claude', 'director', '', '100:$1:201', '', '', 'claude', '']
+        with patch.object(bridge, "tmux", return_value="\t".join(fields) + "\n"), patch.object(web, "panes", side_effect=bridge.panes), patch.object(web, "snapshot", side_effect=lambda pane, *args: pane):
+            status, body = self.request("GET", "/api/panes")
+        self.assertEqual(status, 200)
+        pane = json.loads(body)["panes"][0]
+        self.assertEqual((pane["role"], pane["team"]), ("director", ""))
 
     def test_swap_delivers_fields_to_current_agent_under_lock(self):
         target = dict(id="%2", identity="server:session:pane", name="worker 'quoted'", session="team 'quoted'")
@@ -1118,6 +1058,7 @@ refresh().then(parameters => {document.querySelector('#result').textContent = JS
             self.skipTest("Node is required to test browser confirmation")
         source = (ROOT / "web/app.js").read_text()
         api = source[source.index("async function api("):source.index("const newSession =")]
+        upload = source[source.index("async function configFields("):source.index("function closeNewSession()")]
         submit = source[source.index("newSessionForm.onsubmit ="):source.index("document.querySelector('#dismiss')")]
         script = '''const assert = require('node:assert/strict');
 async function check(approved, retryFails = false) {
@@ -1125,7 +1066,6 @@ async function check(approved, retryFails = false) {
   const message = 'Project folder does not exist: /resolved/new.team';
   let prompts = 0, openedSession, closed = false;
   const newSessionStatus = {classList: {remove() {}, add() {}}};
-  const sessionRoles = {children: []}, sessionAgents = {children: []};
   const newSessionForm = {elements: {directory: {value: '~/new.team'}, session: {value: ''}, config: {files: []}},
     querySelector: () => button, reset() {}};
   async function fetch(path, options) {
@@ -1141,7 +1081,7 @@ async function check(approved, retryFails = false) {
   }
   function closeNewSession() {closed = true;}
   async function refresh() {}
-''' + api + submit + '''
+''' + api + upload + submit + '''
   await newSessionForm.onsubmit({preventDefault() {}});
   assert.equal(prompts, 1);
   assert.equal(calls.length, approved ? 2 : 1);
@@ -1199,31 +1139,8 @@ async function check(approved, retryFails = false) {
             self.assertEqual(existing.read_text(), "Keep this file")
             self.assertFalse((Path(self.config.name) / "peon-code" / "uploads").exists())
 
-    def test_open_session_roles_are_temporary_and_next_to_config(self):
-        roles = [dict(name="Custom-" + kind, type=kind, description="Custom " + kind, body="Read the code.\n日本語")
-                 for kind in ("manager", "worker", "reviewer")]
-        for error in (None, RuntimeError("Cannot launch")):
-            paths = []
-            def launch_uploaded(args, root, timeout, create=False):
-                paths.append(args.config.parent)
-                self.assertEqual(args.config.name, "team.conf")
-                self.assertEqual(args.config.read_text(), "team")
-                for role in roles:
-                    self.assertEqual((args.config.parent / "roles" / (role["name"] + ".md")).read_text(),
-                                     "---\ntype: " + role["type"] + "\ndescription: " + role["description"] + "\n---\n" + role["body"] + "\n")
-                if error:
-                    raise error
-                return "new_team"
-            with self.subTest(error=error), tempfile.TemporaryDirectory() as directory, patch.object(web.Path, "home", return_value=Path(directory)), patch.object(web, "open_project", side_effect=launch_uploaded):
-                status, _ = self.request("POST", "/api/open", dict(directory="~/project", config_name="team.conf", config_text="team", roles=roles, save=False))
-                self.assertEqual(status, 400 if error else 200)
-                self.assertEqual(len(paths), 1)
-                self.assertFalse(paths[0].exists())
-                self.assertEqual(list((Path(directory) / launch.REMOTE_CONFIG_DIR).iterdir()), [])
-
-    def test_open_saved_team_and_roles_use_project_files(self):
-        role = dict(name="Custom", type="worker", description="Build", body="Read the code.\n日本語")
-        text = '*boss claude manager\nworker codex Custom\ncheck codex reviewer\n'
+    def test_open_saved_team_uses_project_config(self):
+        text = '*boss claude manager\nworker codex implementer\ncheck codex reviewer\n'
         with tempfile.TemporaryDirectory() as directory, patch.object(web.Path, "home", return_value=Path(directory)), patch.object(web.subprocess, "run", return_value=subprocess.CompletedProcess([], 1)):
             project = Path(directory) / "project"
             project.mkdir()
@@ -1231,32 +1148,27 @@ async function check(approved, retryFails = false) {
                 self.assertEqual((args.directory, args.session, args.config, root, timeout, create),
                                  (str(project), "saved", project / "peon-code.conf", ROOT, 300, False))
                 self.assertEqual(args.config.read_text(), text)
-                self.assertEqual((project / "roles/Custom.md").read_text(),
-                                 "---\ntype: worker\ndescription: Build\n---\n" + role["body"] + "\n")
                 return "saved"
             with patch.object(web, "open_project", side_effect=launch_saved) as start:
-                status, _ = self.request("POST", "/api/open", dict(directory=str(project), session="saved", config_name="team.conf", config_text=text, roles=[role], save=True))
+                status, _ = self.request("POST", "/api/open", dict(directory=str(project), session="saved", config_name="team.conf", config_text=text, save=True))
             self.assertEqual(status, 200)
             self.assertEqual(start.call_count, 1)
             self.assertEqual((project / "peon-code.conf").read_text(), text)
-            self.assertTrue((project / "roles/Custom.md").is_file())
             self.assertFalse((Path(directory) / launch.REMOTE_CONFIG_DIR).exists())
 
     def test_open_saved_team_conflicts_write_nothing(self):
-        roles = [dict(name=name, type="worker", description="Build", body="Read the code.") for name in ("First", "Last")]
-        for conflict in ("peon-code.conf", "roles/First.md", "roles/Last.md"):
-            with self.subTest(conflict=conflict), tempfile.TemporaryDirectory() as directory, patch.object(web, "open_project") as start, patch.object(web.subprocess, "run", return_value=subprocess.CompletedProcess([], 1)):
-                project = Path(directory)
-                path = project / conflict
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text("Keep existing content")
-                before = sorted(str(path.relative_to(project)) for path in project.rglob("*"))
-                status, body = self.request("POST", "/api/open", dict(directory=directory, config_name="team.conf", config_text="team", roles=roles, save=True))
-                self.assertEqual(status, 409)
-                self.assertIn(str(path), json.loads(body)["error"])
-                self.assertEqual(path.read_text(), "Keep existing content")
-                self.assertEqual(sorted(str(path.relative_to(project)) for path in project.rglob("*")), before)
-                start.assert_not_called()
+        with tempfile.TemporaryDirectory() as directory, patch.object(web, "open_project") as start, patch.object(web.subprocess, "run", return_value=subprocess.CompletedProcess([], 1)):
+            project = Path(directory)
+            path = project / "peon-code.conf"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("Keep existing content")
+            before = sorted(str(path.relative_to(project)) for path in project.rglob("*"))
+            status, body = self.request("POST", "/api/open", dict(directory=directory, config_name="team.conf", config_text="team", save=True))
+            self.assertEqual(status, 409)
+            self.assertIn(str(path), json.loads(body)["error"])
+            self.assertEqual(path.read_text(), "Keep existing content")
+            self.assertEqual(sorted(str(path.relative_to(project)) for path in project.rglob("*")), before)
+            start.assert_not_called()
 
     def test_open_saved_team_confirms_folder_creation(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(web, "open_project", return_value="new") as start, patch.object(web.subprocess, "run", return_value=subprocess.CompletedProcess([], 1)):
@@ -1271,41 +1183,22 @@ async function check(approved, retryFails = false) {
             self.assertEqual(start.call_args.args[0].config, project / "peon-code.conf")
             self.assertTrue(start.call_args.kwargs["create"])
 
-    def test_open_saved_team_write_failure_removes_new_files(self):
-        open_file = Path.open
-        def fail_last(path, *args, **kwargs):
-            if path.name == "Last.md":
-                raise OSError("Cannot write role")
-            return open_file(path, *args, **kwargs)
-        with tempfile.TemporaryDirectory() as directory, patch.object(web, "open_project") as start, patch.object(web.subprocess, "run", return_value=subprocess.CompletedProcess([], 1)):
-            roles = [dict(name=name, type="worker", description="", body="Build.") for name in ("First", "Last")]
-            with patch.object(web.Path, "open", fail_last):
-                status, _ = self.request("POST", "/api/open", dict(directory=directory, config_name="team.conf", config_text="team", roles=roles, save=True))
-            self.assertEqual(status, 503)
-            self.assertFalse((Path(directory) / "peon-code.conf").exists())
-            self.assertEqual(list((Path(directory) / "roles").iterdir()), [])
-            start.assert_not_called()
-
     def test_open_saved_launch_failure_removes_only_new_files_and_allows_retry(self):
-        role = dict(name="Custom", type="worker", description="Build", body="Read the code.")
         errors = [(RuntimeError("Cannot launch"), 400), (subprocess.TimeoutExpired("launch", 300), 503), (OSError("Cannot start"), 503)]
         for error, expected in errors:
             with self.subTest(error=error), tempfile.TemporaryDirectory() as directory:
                 project = Path(directory)
-                (project / "roles").mkdir()
-                keep = project / "roles/Keep.md"
-                keep.write_text("Keep this role")
+                keep = project / "keep.txt"
+                keep.write_text("Keep this file")
                 def fail_launch(args, *args_unused, **kwargs):
                     self.assertTrue(args.config.is_file())
-                    self.assertTrue((project / "roles/Custom.md").is_file())
                     raise error
-                data = dict(directory=directory, config_name="team.conf", config_text="team", roles=[role], save=True)
+                data = dict(directory=directory, config_name="team.conf", config_text="team", save=True)
                 with patch.object(web.subprocess, "run", return_value=subprocess.CompletedProcess([], 1)), patch.object(web, "open_project", side_effect=fail_launch) as start:
                     status, _ = self.request("POST", "/api/open", data)
                     self.assertEqual(status, expected)
                     self.assertFalse((project / "peon-code.conf").exists())
-                    self.assertFalse((project / "roles/Custom.md").exists())
-                    self.assertEqual(keep.read_text(), "Keep this role")
+                    self.assertEqual(keep.read_text(), "Keep this file")
                     start.side_effect = None
                     start.return_value = "new_team"
                     self.assertEqual(self.request("POST", "/api/open", data)[0], 200)
@@ -1316,8 +1209,7 @@ async function check(approved, retryFails = false) {
             with self.subTest(session=session), tempfile.TemporaryDirectory() as directory:
                 project = Path(directory) / "auto.team"
                 project.mkdir()
-                data = dict(directory=str(project), session=session, config_name="team.conf", config_text="team", save=True,
-                            roles=[dict(name="Custom", type="worker", description="", body="Build.")])
+                data = dict(directory=str(project), session=session, config_name="team.conf", config_text="team", save=True)
                 with patch.object(web.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)) as run, patch.object(web, "open_project") as start:
                     status, body = self.request("POST", "/api/open", data)
                     self.assertEqual(status, 409)
@@ -1325,36 +1217,6 @@ async function check(approved, retryFails = false) {
                     run.assert_called_once_with(["tmux", "has-session", "-t", "=" + (session or project.name).replace(".", "_").replace(":", "_")], capture_output=True, timeout=5)
                     start.assert_not_called()
                     self.assertEqual(list(project.iterdir()), [])
-
-    def test_open_roles_validation(self):
-        valid = dict(name="Custom", type="worker", description="Custom role", body="Read the code.")
-        request = dict(directory="/project", config_name="team.conf", config_text="team")
-        invalid = [{"name": value} for value in ("../escape", "a/b", "a\\b", "a.md", "a b", "é", "", "x" * 41, None, 1)]
-        invalid += [{"type": value} for value in ("unknown", "Worker", "", None, [])]
-        invalid += [{"description": value} for value in ("two\nlines", "line\rbreak", "x" * 201, None, 1, "\ud800")]
-        invalid += [{"body": value} for value in ("", " \n", "x" * 200001, None, [], "\ud800")]
-        invalid_roles = [[dict(valid, **fields)] for fields in invalid]
-        invalid_roles += [None, "text", {}, 1, [None], [[]], [{}], [valid, valid], [dict(valid, name="Role" + str(i)) for i in range(21)]]
-        with tempfile.TemporaryDirectory() as directory, patch.object(web.Path, "home", return_value=Path(directory)), patch.object(web, "open_project") as start:
-            for roles in invalid_roles:
-                with self.subTest(roles=roles):
-                    self.assertEqual(self.request("POST", "/api/open", dict(request, roles=roles))[0], 400)
-            for path in (ROOT / "roles").glob("*.md"):
-                with self.subTest(shipped=path.stem):
-                    status, body = self.request("POST", "/api/open", dict(request, roles=[dict(valid, name=path.stem)]))
-                    self.assertEqual((status, json.loads(body)), (400, {"error": "Role name " + path.stem + " is shipped; choose a different name"}))
-            for name in ("roles", "Roles"):
-                status, body = self.request("POST", "/api/open", dict(request, config_name=name, roles=[valid]))
-                self.assertEqual((status, json.loads(body)), (400, {"error": "Config filename cannot be roles when adding session roles"}))
-            status, body = self.request("POST", "/api/open", dict(directory="/project", roles=[valid]))
-            self.assertEqual((status, json.loads(body)), (400, {"error": "Roles need a team config that names them"}))
-            start.assert_not_called()
-            self.assertEqual(list(Path(directory).iterdir()), [])
-            start.return_value = "team"
-            maximum = [dict(valid, name="Role" + str(i)) for i in range(20)]
-            maximum[0] = dict(valid, name="x" * 40, description="x" * 200, body="x" * 200000)
-            self.assertEqual(self.request("POST", "/api/open", dict(request, roles=maximum))[0], 200)
-            self.assertEqual(self.request("POST", "/api/open", dict(directory="/project", roles=[]))[0], 200)
 
     def test_open_validation_and_authentication(self):
         valid = dict(directory="/project")
@@ -1428,22 +1290,6 @@ async function check(approved, retryFails = false) {
         self.assertEqual(len(paths), 1)
         self.assertFalse(paths[0].exists())
         start.assert_not_called()
-
-    def test_open_role_write_failure_removes_upload_directory(self):
-        paths = []
-        open_file = Path.open
-        def fail_write(path, mode, **kwargs):
-            if mode == "xb":
-                return open_file(path, mode, **kwargs)
-            paths.append(path.parent.parent)
-            raise OSError("Cannot write role")
-        with tempfile.TemporaryDirectory() as directory, patch.object(web.Path, "open", fail_write), patch.object(web.Path, "home", return_value=Path(directory)), patch.object(web, "open_project") as start:
-            role = dict(name="Custom", type="worker", description="", body="Read the code.")
-            status, body = self.request("POST", "/api/open", dict(directory="/project", config_name="team.conf", config_text="team", roles=[role]))
-            self.assertEqual((status, json.loads(body)), (503, {"error": "Cannot write role"}))
-            self.assertEqual(len(paths), 1)
-            self.assertFalse(paths[0].exists())
-            start.assert_not_called()
 
     def test_open_existing_session_removes_upload(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(web.Path, "home", return_value=Path(directory)):
@@ -1546,18 +1392,18 @@ async function check(approved, retryFails = false) {
                 ("101 1700000000", None), ("true 1700000000", None),
                 ("25 true", None), ("25 1700000000.5", None),
                 ("25 -1", None), ('"25" 1700000000', None)):
-            rows = "team\t%2\tworker\t1\tcodex\tworker\t\t100:$1:202\t" + text + "\t\t\n"
+            rows = "team\t%2\tworker\t1\tcodex\tworker\t\t100:$1:202\t" + text + "\t\t\t\n"
             with self.subTest(text=text), patch.object(bridge.time, "time", return_value=1699999999), patch.object(bridge, "tmux", side_effect=[rows, "/work/project\n", "\n", "\n"]) as tmux:
                 pane = bridge.panes()[0]
             self.assertEqual(pane["weekly"], expected)
-            self.assertTrue(tmux.call_args_list[0].args[-1].endswith("\t#{@peon_weekly}\t#{@peon_usage}\t#{@peon_bin}"))
+            self.assertTrue(tmux.call_args_list[0].args[-1].endswith("\t#{@peon_weekly}\t#{@peon_usage}\t#{@peon_bin}\t#{@peon_team}"))
             if expected:
                 self.assertIsInstance(pane["weekly"]["usedPercent"], float)
                 self.assertIsInstance(pane["weekly"]["resetsAt"], int)
 
     def test_panes_weekly_reset_time(self):
         for resets, expected_used in ((1699999999, 0.0), (1700000000, 25.5), (1700000001, 25.5)):
-            rows = "team\t%2\tworker\t1\tcodex\tworker\t\t100:$1:202\t25.5 " + str(resets) + "\t\t\n"
+            rows = "team\t%2\tworker\t1\tcodex\tworker\t\t100:$1:202\t25.5 " + str(resets) + "\t\t\t\n"
             with self.subTest(resets=resets), patch.object(bridge.time, "time", return_value=1700000000), patch.object(bridge, "tmux", side_effect=[rows, "/work/project\n", "\n", "\n"]):
                 pane = bridge.panes()[0]
             self.assertEqual(pane["weekly"], {"usedPercent": expected_used, "resetsAt": resets})

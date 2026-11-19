@@ -23,7 +23,8 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 6
 #dismiss { background: #fff0ed; color: #9c241b; border-color: #b96c65; }
 #agents { display: flex; flex: 1 1 auto; flex-direction: column; gap: 4px; min-width: 0; min-height: 0; overflow-y: auto; }
 #agents details { flex-shrink: 0; }
-#agents summary { cursor: pointer; margin-bottom: 4px; }
+#team-groups { display: flex; flex-direction: column; gap: 4px; }
+#agents summary { cursor: pointer; margin-bottom: 4px; overflow: hidden; text-overflow: ellipsis; }
 .agent-tabs { display: flex; flex-direction: column; gap: 4px; }
 .tab { background: #fff; border: 1px solid var(--line); border-radius: 4px; color: var(--muted); text-align: left; position: relative; white-space: nowrap; font-size: 15px; padding: 4px 10px; }
 #agents button.tab { display: flex; min-width: 0; max-width: 100%; }
@@ -52,9 +53,6 @@ h2 { font-size: 16px; margin: 0; }
 .state { font-size: 12px; color: var(--muted); }
 #files { margin-top: 12px; }
 #upload-status { flex-basis: 100%; white-space: pre-line; }
-#add-agent-form { max-height: 60vh; max-height: 60dvh; overflow-y: auto; }
-#add-agent-role, #add-agent-status { flex-basis: 100%; }
-#add-agent-status { white-space: pre-line; }
 dialog { width: min(800px, calc(100% - 24px)); max-height: calc(100dvh - 24px); padding: 12px; color: var(--text); border: 1px solid var(--line); border-radius: 6px; }
 dialog::backdrop { background: #0006; }
 .file-heading { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
@@ -85,13 +83,9 @@ dialog footer { padding-top: 12px; }
 .button-form label:last-of-type { flex-basis: 100%; }
 .swap-form { padding: 0; }
 .button-form input, .swap-form input, .swap-form select { width: 100%; min-width: 0; font: inherit; border: 1px solid var(--line); border-radius: 4px; padding: 4px; }
-#new-session-form { flex-wrap: wrap; padding: 8px 0; max-height: 60vh; max-height: 60dvh; overflow-y: auto; }
+#new-session-form { flex-wrap: wrap; padding: 8px 0; }
 #new-session-form label { display: flex; flex: 1 1 240px; flex-direction: column; gap: 4px; min-width: 0; font-size: 13px; }
-#new-session-form input, #new-session-form select { width: 100%; min-width: 0; font: inherit; border: 1px solid var(--line); border-radius: 4px; padding: 4px; }
-#new-session-roles, #new-session-agents, .session-role label:last-of-type, .form-line { flex-basis: 100%; }
-#new-session-roles, #new-session-agents { width: 100%; }
-.session-role, .session-agent { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
-#new-session-form input[type="radio"] { width: auto; align-self: flex-start; }
+#new-session-form input { width: 100%; min-width: 0; font: inherit; border: 1px solid var(--line); border-radius: 4px; padding: 4px; }
 #config-help { color: var(--muted); }
 .keys, .key-buttons, .key-shortcuts { display: flex; align-items: center; justify-content: flex-start; gap: 4px; flex-wrap: wrap; }
 .keys { flex-shrink: 0; padding: 0 12px 4px; }
@@ -103,6 +97,7 @@ dialog footer { padding-top: 12px; }
 .keys-toggle[aria-expanded="true"] { background: #eef0ec; }
 .selection-note { color: var(--muted); font-size: 12px; margin-left: auto; }
 .swap-state { margin-left: auto; min-width: 0; max-width: 100%; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; text-align: right; }
+#team-config-name, #add-team-status { flex-basis: 100%; margin-left: 0; text-align: left; white-space: pre-line; }
 button { font: inherit; font-size: 14px; border: 1px solid var(--accent-border); border-radius: 4px; padding: 5px 10px; background: var(--accent); color: #1a1a1a; cursor: pointer; }
 button, summary { transition: opacity 0s; }
 button:disabled { opacity: .45; cursor: default; transition: opacity 0s .3s; }

@@ -16,6 +16,12 @@
 # agent gets no deny file.
 # compact-at <tokens>: the context size at which the watcher compacts a
 # claude or codex pane (default 250000; 0 turns the watcher off).
+# The agents of this file are team 1 and keep bare names.
+# team <name> <file> adds a team from a file relative to this config file.
+# That file supplies agent lines only; its agents become <name>-<agent>.
+# Two or more teams add a director pane for task intake and git.
+# The director copies team 1's manager command, or the first command if roleless.
+# team research research.conf
 
 compact-at 250000
 

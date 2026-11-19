@@ -90,47 +90,6 @@ def read_buttons():
     return sorted(result, key=lambda button: (button.get("order", 0), button["name"]))
 
 
-def available_roles():
-    result = []
-    for path in (ROOT / "roles").glob("*.md"):
-        if path.name == "protocol.md":
-            continue
-        try:
-            lines = path.read_text(encoding="utf-8").splitlines()
-        except (OSError, UnicodeError):
-            continue
-        if not lines or lines[0] != "---":
-            continue
-        fields = {}
-        for line in lines[1:]:
-            if line == "---":
-                break
-            for key in ("type", "description"):
-                if key not in fields and line.startswith(key + ":"):
-                    fields[key] = line[len(key) + 1:].lstrip()
-        if fields.get("type"):
-            result.append(dict(name=path.stem, type=fields["type"], description=fields.get("description", "")))
-    return sorted(result, key=lambda role: role["name"])
-
-
-def validate_role(data):
-    name, kind = data.get("name"), data.get("type")
-    description, body = data.get("description"), data.get("body")
-    if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,40}", name):
-        raise ValueError("Name must use 1 to 40 letters, digits, hyphens, or underscores")
-    if (ROOT / "roles" / (name + ".md")).exists():
-        raise ValueError("Role name " + name + " is shipped; choose a different name")
-    if kind not in ("manager", "worker", "reviewer"):
-        raise ValueError("Type must be manager, worker, or reviewer")
-    if not isinstance(description, str) or len(description) > 200 or "\n" in description or "\r" in description:
-        raise ValueError("Description must be a single line of at most 200 characters")
-    if not isinstance(body, str) or not body.strip() or len(body) > 200000:
-        raise ValueError("Body must contain text and be at most 200000 characters")
-    description.encode("utf-8")
-    body.encode("utf-8")
-    return dict(name=name, type=kind, description=description, body=body)
-
-
 def run_delivery(args, text, identity, timeout=20):
     environment = dict(os.environ, PEON_EXPECTED_IDENTITY=identity)
     if len(args) > 1 and args[1] == "swap":
@@ -201,15 +160,13 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         parsed = urlsplit(self.path)
-        if not self.allowed(parsed.path in ("/api/panes", "/api/buttons", "/api/clis", "/api/roles", "/api/files", "/api/file")):
+        if not self.allowed(parsed.path in ("/api/panes", "/api/buttons", "/api/clis", "/api/files", "/api/file")):
             return
         if self.path in ASSETS:
             filename, mime = ASSETS[self.path]
             self.respond(200, (ROOT / "web" / filename).read_bytes(), mime)
         elif parsed.path == "/api/clis":
             self.respond(200, available_clis())
-        elif parsed.path == "/api/roles":
-            self.respond(200, available_roles())
         elif parsed.path == "/api/buttons":
             try:
                 self.respond(200, read_buttons())
@@ -362,7 +319,7 @@ class Handler(BaseHTTPRequestHandler):
         if not self.allowed(True):
             return
         parsed = urlsplit(self.path)
-        if parsed.path not in ("/api/explain", "/api/send", "/api/swap", "/api/add", "/api/dismiss", "/api/keys", "/api/buttons", "/api/open", "/api/upload"):
+        if parsed.path not in ("/api/explain", "/api/send", "/api/swap", "/api/team", "/api/dismiss", "/api/keys", "/api/buttons", "/api/open", "/api/upload"):
             self.respond(404, {"error": "Not found"})
             return
         try:
@@ -400,74 +357,28 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 self.respond(200, {"message": "Saved " + folder + "/" + name})
                 return
-            limit = 2 * 1024 * 1024 if parsed.path in ("/api/open", "/api/add") else 262144
+            limit = 2 * 1024 * 1024 if parsed.path in ("/api/open", "/api/team") else 262144
             if not 0 < size <= limit or self.headers.get_content_type() != "application/json":
-                raise ValueError("Expected JSON, at most " + ("2 MiB" if parsed.path in ("/api/open", "/api/add") else "256 KiB"))
+                raise ValueError("Expected JSON, at most " + ("2 MiB" if parsed.path in ("/api/open", "/api/team") else "256 KiB"))
             data = json.loads(self.rfile.read(size))
-            if parsed.path == "/api/add":
-                session, name = data.get("session"), data.get("name")
-                save = data.get("save", False)
-                if not isinstance(save, bool):
-                    raise ValueError("Save must be true or false")
-                cli, model, effort = data.get("cli"), data.get("model", ""), data.get("effort", "")
-                extra, role = data.get("args", ""), data.get("role")
-                if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", name):
-                    raise ValueError("Agent name must use letters, digits, hyphens, or underscores")
-                if not isinstance(cli, str) or cli not in available_clis():
-                    raise ValueError("Unknown CLI")
-                for field, value in (("Model", model), ("Effort", effort)):
-                    if not isinstance(value, str) or (value and not re.fullmatch(r"(-|[A-Za-z0-9._=/][A-Za-z0-9._=/-]*)", value)):
-                        raise ValueError(field + " must be one token")
-                if not isinstance(extra, str) or len(extra) > 200000 or any(char in extra for char in "\r\n\0"):
-                    raise ValueError("Extra args must be one line of at most 200000 characters without NUL")
-                extra.encode("utf-8")
-                new_role = validate_role(data["newRole"]) if "newRole" in data else None
-                allowed_roles = {new_role["name"]} if new_role else {"-"} | {entry["name"] for entry in available_roles()}
-                if not isinstance(role, str) or role not in allowed_roles:
-                    raise ValueError("Choose a shipped role or the new role")
-                command = cli + (" " + extra.strip() if extra.strip() else "")
-                if model and model != "-":
-                    command += " --model " + model
-                if effort and effort != "-":
-                    command += (" --effort " if cli == "claude" else " -c model_reasoning_effort=") + effort
-                with self.server.send_lock:
-                    if not isinstance(session, str) or not session or not any(pane["session"] == session for pane in panes(self.server.session)):
-                        raise ValueError("Session changed or closed; refresh before adding an agent")
-                upload_dir = None
-                try:
-                    if new_role:
-                        uploads = Path.home() / REMOTE_CONFIG_DIR
-                        uploads.mkdir(mode=0o700, parents=True, exist_ok=True)
-                        upload_dir = Path(tempfile.mkdtemp(dir=uploads, prefix="add-"))
-                        role_dir = upload_dir / "roles"
-                        role_dir.mkdir()
-                        path = role_dir / (new_role["name"] + ".md")
-                        path.write_text("---\ntype: " + new_role["type"] + "\ndescription: " + new_role["description"] + "\n---\n" + new_role["body"] + "\n", encoding="utf-8", newline="\n")
-                        role = str(path)
-                    args = [str(ROOT / "peon-code.sh"), "add", name, role, command, "--session", session]
-                    if save:
-                        args.append("--save")
-                    result = run_delivery(args, "", "", timeout=300)
-                finally:
-                    if upload_dir is not None:
-                        shutil.rmtree(upload_dir, ignore_errors=True)
-                if result.returncode:
-                    self.respond(409, {"error": result.stderr.strip() or "Agent could not start"})
-                else:
-                    lines = result.stdout.splitlines()
-                    self.respond(200, {"message": lines[-1] if lines else "Agent added"})
-                return
-            if parsed.path == "/api/open":
+            if parsed.path in ("/api/open", "/api/team"):
+                adding_team = parsed.path == "/api/team"
                 directory, session = data.get("directory"), data.get("session", "")
-                create = data.get("create", False)
+                create = False if adding_team else data.get("create", False)
                 save = data.get("save", False)
                 if not isinstance(create, bool):
                     raise ValueError("Create must be true or false")
                 if not isinstance(save, bool):
                     raise ValueError("Save must be true or false")
-                if not isinstance(directory, str) or not directory.strip() or len(directory) > 4096 or "\0" in directory:
+                if adding_team:
+                    if not isinstance(session, str) or not session or not any(pane["session"] == session for pane in panes(self.server.session)):
+                        raise ValueError("Session changed or closed; refresh before adding a team")
+                    team = data.get("team", "")
+                    if not isinstance(team, str) or (team and (not re.fullmatch(r"[A-Za-z0-9_-]+", team) or team == "director")):
+                        raise ValueError("Team name must use letters, digits, hyphens, or underscores and cannot be director")
+                elif not isinstance(directory, str) or not directory.strip() or len(directory) > 4096 or "\0" in directory:
                     raise ValueError("Project directory must contain 1 to 4096 characters without NUL")
-                if not Path(directory).is_absolute() and not directory.startswith("~"):
+                if not adding_team and not Path(directory).is_absolute() and not directory.startswith("~"):
                     raise ValueError("Project directory must be absolute or start with ~")
                 if not isinstance(session, str):
                     raise ValueError("Session name must be text")
@@ -488,23 +399,13 @@ class Handler(BaseHTTPRequestHandler):
                     content = text.encode("utf-8")
                     if len(content) > 200 * 1024:
                         raise ValueError("Config text must be UTF-8 and at most 200 KiB")
-                roles = data.get("roles", [])
-                if not isinstance(roles, list) or len(roles) > 20:
-                    raise ValueError("Roles must be a list of at most 20 roles")
-                if roles and content is None:
-                    raise ValueError("Roles need a team config that names them")
-                if roles and name.casefold() == "roles":
-                    raise ValueError("Config filename cannot be roles when adding session roles")
-                roles = [validate_role(role) for role in roles]
-                if len({role["name"] for role in roles}) != len(roles):
-                    raise ValueError("Role names must be unique")
-                if save and content is None:
+                if save and content is None and not adding_team:
                     raise ValueError("Saving a team needs a team config")
                 written = []
                 launched = False
                 try:
                     if content is not None:
-                        if save:
+                        if save and not adding_team:
                             project = Path(directory).expanduser().resolve()
                             team = (session or project.name).replace(".", "_").replace(":", "_")
                             if not team or team.startswith("-") or any(ord(char) < 32 or ord(char) == 127 for char in team):
@@ -519,30 +420,33 @@ class Handler(BaseHTTPRequestHandler):
                                     raise MissingProjectFolder(project)
                                 project.mkdir(parents=True, exist_ok=True)
                             config = project / "peon-code.conf"
-                            role_dir = project / "roles"
-                            paths = [config] + [role_dir / (role["name"] + ".md") for role in roles]
-                            for path in paths:
-                                if path.exists() or path.is_symlink():
-                                    raise FileExistsError("Already exists; choose another project or turn off keeping the team: " + str(path))
-                            if roles and (role_dir.is_symlink() or (role_dir.exists() and not role_dir.is_dir())):
-                                raise FileExistsError("Roles must be a directory in the project: " + str(role_dir))
+                            if config.exists() or config.is_symlink():
+                                raise FileExistsError("Already exists; choose another project or turn off keeping the team: " + str(config))
                         else:
                             uploads = Path.home() / REMOTE_CONFIG_DIR
                             uploads.mkdir(mode=0o700, parents=True, exist_ok=True)
                             upload_dir = Path(tempfile.mkdtemp(dir=uploads, prefix="team-"))
                             config = upload_dir / name
-                            role_dir = upload_dir / "roles"
                         with config.open("xb") as file:
                             written.append(config)
                             config.chmod(0o600)
                             file.write(content)
-                        if roles:
-                            role_dir.mkdir(exist_ok=save)
-                            for role in roles:
-                                path = role_dir / (role["name"] + ".md")
-                                with path.open("x", encoding="utf-8", newline="\n") as file:
-                                    written.append(path)
-                                    file.write("---\ntype: " + role["type"] + "\ndescription: " + role["description"] + "\n---\n" + role["body"] + "\n")
+                    if adding_team:
+                        args = [str(ROOT / "peon-code.sh")]
+                        if config is not None:
+                            args.extend(["-c", str(config)])
+                        args.extend(["add-team", "--session", session])
+                        if team:
+                            args.extend(["--team", team])
+                        if save:
+                            args.append("--save")
+                        result = run_delivery(args, "", "", timeout=300)
+                        if result.returncode:
+                            self.respond(409, {"error": result.stderr.strip() or "Team could not start"})
+                        else:
+                            lines = result.stdout.splitlines()
+                            self.respond(200, {"session": session, "message": lines[-1] if lines else "Team added"})
+                        return
                     opened = open_project(SimpleNamespace(directory=directory, session=session, config=config), ROOT, timeout=300, create=create)
                     launched = True
                 except FileExistsError as error:
@@ -636,7 +540,10 @@ class Handler(BaseHTTPRequestHandler):
         except (ValueError, TypeError, AttributeError, RecursionError) as error:
             self.respond(400, {"error": str(error)})
         except (OSError, subprocess.TimeoutExpired) as error:
-            message = error.stderr if parsed.path == "/api/open" and isinstance(error, subprocess.TimeoutExpired) and isinstance(error.stderr, str) and error.stderr else str(error)
+            if parsed.path == "/api/team" and isinstance(error, subprocess.TimeoutExpired):
+                message = "Team did not start within 5 minutes; check the tmux session for half-built panes"
+            else:
+                message = error.stderr if parsed.path == "/api/open" and isinstance(error, subprocess.TimeoutExpired) and isinstance(error.stderr, str) and error.stderr else str(error)
             self.respond(503, {"error": message})
 
 

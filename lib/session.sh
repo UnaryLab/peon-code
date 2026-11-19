@@ -55,7 +55,7 @@ cmd_usage() {
 }
 
 cmd_dismiss() {
-  local session
+  local session brief_dir
   session=$(session_name "${1:-}")
   if ! tmux has-session -t "=$session" 2>/dev/null; then
     echo "peon-code: no session $session"
@@ -64,7 +64,11 @@ cmd_dismiss() {
   is_peon_session "$session" || die "session $session was not created by peon-code"
   print_usage "$session"
   echo "peon-code: killing session $session"
-  tmux kill-session -t "=$session"
+  brief_dir=$(tmux show-options -qv -t "$session" @peon_brief_dir) || brief_dir=""
+  tmux kill-session -t "=$session" || return 1
+  case $brief_dir in
+    */peon-code/"$session") rm -rf -- "$brief_dir" ;;
+  esac
 }
 
 cmd_detach() {
@@ -136,12 +140,29 @@ goto_session() {
   exec tmux attach -t "=$session"
 }
 
+agent_window_height() {
+  # Allow 12 rows per stacked pane plus the main pane; 60 keeps small teams readable.
+  # A client resize replaces this headless size.
+  local height=$((12 * ($1 - 1) + 1))
+  [ "$height" -ge 60 ] || height=60
+  printf '%s\n' "$height"
+}
+
+resize_headless_agents() {
+  local session=$1 count=$2
+  [ -z "$(tmux list-clients -t "=$session" -F '#{client_name}')" ] || return 0
+  tmux resize-window -t "$session":agents -y "$(agent_window_height "$count")" || die "could not resize agents window in session $session"
+  # resize-window sets manual sizing; let the next client set the size.
+  tmux set -w -t "$session":agents window-size latest
+}
+
 create_agent_session() {
-  local session=$1 count=$2 main=$3 i pane_id
+  local session=$1 count=$2 main=$3 i pane_id height
+  height=$(agent_window_height "$count")
   # First agent is the new-session window; the rest are split off it.
   # Retile after each split so large teams do not hit "pane too small".
   # The alternate screen has no tmux history, so capture-pane and the browser lose the transcript.
-  tmux new-session -d -s "$session" -n agents -c "$PWD" -e "PEON_CODE_SESSION=$session" -e DISABLE_AUTO_UPDATE=true -e CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1
+  tmux new-session -d -x 220 -y "$height" -s "$session" -n agents -c "$PWD" -e "PEON_CODE_SESSION=$session" -e DISABLE_AUTO_UPDATE=true -e CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1
   tmux set-option -t "$session" @peon_code 1
   tmux set-option -t "$session" @peon_project_dir "$PWD"
   # Session-scoped, so the terminal tab caption is set only here.
@@ -149,7 +170,7 @@ create_agent_session() {
   tmux set -t "$session" set-titles-string '#S : #{b:pane_current_path}'
   # Agent CLIs rewrite the pane title, so the border reads the @peon_name option.
   tmux set -w -t "$session":agents pane-border-status top
-  tmux set -w -t "$session":agents pane-border-format ' #{pane_index}: #{?#{@peon_name},#{@peon_name},#{pane_title}} '
+  tmux set -w -t "$session":agents pane-border-format ' #{pane_index}: #{?#{@peon_team},#{@peon_team}/,}#{?#{@peon_name},#{@peon_name},#{pane_title}} '
   for ((i = 1; i < count; i++)); do
     if ! tmux split-window -t "$session":agents -c "$PWD" -e "PEON_CODE_SESSION=$session" -e DISABLE_AUTO_UPDATE=true -e CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1; then
       tmux kill-session -t "=$session"

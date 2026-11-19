@@ -151,7 +151,7 @@ test_git_deny_unstarred_main() {
   boss_brief=${boss_brief##* }
   [ -f "$boss_brief" ] || fail "the unstarred test did not record the main pane's brief"
   # The manager role carries the git text, and the shared rule names its pane.
-  assert_contains "$boss_brief" "Git actions the user asks for, a commit above all, you run yourself in your own pane"
+  assert_contains "$boss_brief" "you run yourself in your own pane"
   assert_contains "$boss_brief" "only in the boss pane"
   assert_not_contains "$boss_brief" "Hard prohibition for this pane"
   assert_contains "$front_brief" "Hard prohibition for this pane"

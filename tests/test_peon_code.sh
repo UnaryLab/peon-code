@@ -208,6 +208,7 @@ test_paste_submission_retry() (
   done
   eval "$(sed -n '/^rebrief_locked() {/,/^}/p' "$ROOT/lib/commands.sh")"
   tmux() { printf '%s\n' "$submit_log"; }
+  pane_is_busy() { return 1; }
   pane_box_text() { :; }
   paste_to_pane() { return 4; }
   submit_rc=0

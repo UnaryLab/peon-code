@@ -12,40 +12,54 @@ import bridge
 
 
 class BridgeTests(unittest.TestCase):
+    def test_director_and_team_metadata(self):
+        with tempfile.TemporaryDirectory() as directory:
+            brief = Path(directory) / 'director.md'
+            brief.write_text('Your role: director, type director: coordinate teams\n')
+            for role, path in (('director', ''), ('', str(brief))):
+                rows = '\n'.join('\t'.join(fields) for fields in [
+                    ['session', '%4', 'research-worker', '1', 'codex', 'worker', '', '100:$1:204', '', '', 'codex', 'research'],
+                    ['session', '%1', 'director', '1', 'claude', role, path, '100:$1:201', '', '', 'claude', ''],
+                ]) + '\n'
+                with self.subTest(role=role), patch.object(bridge, 'tmux', return_value=rows):
+                    panes = bridge.panes('session')
+                self.assertEqual([(pane['name'], pane['role'], pane['team']) for pane in panes],
+                                 [('director', 'director', ''), ('research-worker', 'worker', 'research')])
+
     def test_scopes_order_and_existing_brief(self):
         with tempfile.TemporaryDirectory() as directory:
             brief = Path(directory) / 'brief.md'
             brief.write_text('Your role: archie, type reviewer: check the work\n')
-            rows = f'team\t%5\timpl\t1\tcodex\tworker\t\t100:$1:205\t\t\t\nteam\t%2\tarchie\t1\tclaude\t\t{brief}\t100:$1:202\t\t\t\nteam\t%3\tboss\t1\tclaude\tmanager\t\t100:$1:203\t\t\t\nother\t%4\tone\t1\tcodex\t\t\t100:$2:204\t\t\t\nforeign\t%9\tx\t\tcodex\t\t\t100:$3:209\t\t\t\n'
+            rows = f'team\t%5\timpl\t1\tcodex\tworker\t\t100:$1:205\t\t\t\t\nteam\t%2\tarchie\t1\tclaude\t\t{brief}\t100:$1:202\t\t\t\t\nteam\t%3\tboss\t1\tclaude\tmanager\t\t100:$1:203\t\t\t\t\nother\t%4\tone\t1\tcodex\t\t\t100:$2:204\t\t\t\t\nforeign\t%9\tx\t\tcodex\t\t\t100:$3:209\t\t\t\t\n'
             with patch.object(bridge, 'tmux', return_value=rows):
                 panes = bridge.panes('team')
-                self.assertEqual([p['id'] for p in panes], ['%3', '%2', '%5'])
-                self.assertEqual([p['role'] for p in panes], ['manager', 'reviewer', 'worker'])
+                self.assertEqual([p['id'] for p in panes], ['%3', '%5', '%2'])
+                self.assertEqual([p['role'] for p in panes], ['manager', 'worker', 'reviewer'])
                 self.assertEqual(len(bridge.panes()), 4)
 
     def test_roleless_default_order(self):
-        rows = 'team\t%3\tthree\t1\tcodex\t\t\t100:$1:203\t\t\t\nteam\t%1\tone\t1\tcodex\t\t\t100:$1:201\t\t\t\nteam\t%2\ttwo\t1\tcodex\t\t\t100:$1:202\t\t\t\n'
+        rows = 'team\t%3\tthree\t1\tcodex\t\t\t100:$1:203\t\t\t\t\nteam\t%1\tone\t1\tcodex\t\t\t100:$1:201\t\t\t\t\nteam\t%2\ttwo\t1\tcodex\t\t\t100:$1:202\t\t\t\t\n'
         with patch.object(bridge, 'tmux', return_value=rows):
-            self.assertEqual([(p['id'], p['role']) for p in bridge.panes()], [('%1', 'manager'), ('%2', 'reviewer'), ('%3', 'worker')])
+            self.assertEqual([(p['id'], p['role']) for p in bridge.panes()], [('%1', 'manager'), ('%3', 'worker'), ('%2', 'reviewer')])
 
     def test_project_directory_preserves_whitespace(self):
         project = '/work/project with spaces\tand\nnewlines '
-        rows = 'team\t%1\tone\t1\tcodex\tmanager\t\t100:$1:201\t\t\t\n'
+        rows = 'team\t%1\tone\t1\tcodex\tmanager\t\t100:$1:201\t\t\t\t\n'
         with patch.object(bridge, 'tmux', side_effect=[rows, project + '\n', '\n', '\n']):
             self.assertEqual(bridge.panes()[0]['projectDir'], project)
 
     def test_agent_command_preserves_full_command_or_uses_process_fallback(self):
-        rows = 'team\t%2\tworker\t1\tnode\tworker\t\t100:$1:202\t\t\tclaude\n'
+        rows = 'team\t%2\tworker\t1\tnode\tworker\t\t100:$1:202\t\t\tclaude\t\n'
         for command in ('claude --model opus', '', 'claude\t--model\topus'):
             with self.subTest(command=command), patch.object(bridge, 'tmux', side_effect=[rows, '/work/project\n', command + '\n', '\n']) as tmux:
                 pane = bridge.panes()[0]
             self.assertEqual(pane['command'], 'node')
             self.assertEqual(pane['agent_command'], command or 'node')
             self.assertEqual(tmux.call_args_list[-2].args, ('display-message', '-p', '-t', '%2', '#{@peon_cmd}'))
-            self.assertEqual(len(tmux.call_args_list[0].args[-1].split('\t')), 11)
+            self.assertEqual(len(tmux.call_args_list[0].args[-1].split('\t')), 12)
 
     def test_closed_pane_during_discovery_is_skipped(self):
-        rows = 'team\t%1\tone\t1\tcodex\tmanager\t\t100:$1:201\t\t\t\nteam\t%2\ttwo\t1\tcodex\tworker\t\t100:$1:202\t\t\t\n'
+        rows = 'team\t%1\tone\t1\tcodex\tmanager\t\t100:$1:201\t\t\t\t\nteam\t%2\ttwo\t1\tcodex\tworker\t\t100:$1:202\t\t\t\t\n'
         with patch.object(bridge, 'tmux', side_effect=[rows, subprocess.CalledProcessError(1, 'tmux'), '/work/project\n', '\n', '\n']):
             self.assertEqual([pane['id'] for pane in bridge.panes()], ['%2'])
 
@@ -57,25 +71,25 @@ class BridgeTests(unittest.TestCase):
                 ('', None), ('malformed', None), ('1 2 3', None), ('1 2 3 4 5', None),
                 ('-1 2 3 4', None), ('+1 2 3 4', None), ('1.5 2 3 4', None),
                 ('1 2 true 4', None), ('1 2 3 ٤', None), ('1 2 3 4x', None)):
-            rows = 'team\t%2\tworker\t1\tcodex\tworker\t\t100:$1:202\t\t' + text + '\t\n'
+            rows = 'team\t%2\tworker\t1\tcodex\tworker\t\t100:$1:202\t\t' + text + '\t\t\n'
             with self.subTest(text=text), patch.object(bridge, 'tmux', side_effect=[rows, '/work/project\n', '\n', '\n']) as tmux:
                 pane = bridge.panes()[0]
             self.assertEqual(pane['usage'], expected)
             self.assertEqual(tmux.call_count, 4)
-            self.assertTrue(tmux.call_args_list[0].args[-1].endswith('\t#{@peon_weekly}\t#{@peon_usage}\t#{@peon_bin}'))
+            self.assertTrue(tmux.call_args_list[0].args[-1].endswith('\t#{@peon_weekly}\t#{@peon_usage}\t#{@peon_bin}\t#{@peon_team}'))
             if expected is not None:
                 self.assertTrue(all(isinstance(count, int) for count in pane['usage'].values()))
 
     def test_pane_cli_is_populated_or_empty(self):
         for cli in ('codex', ''):
-            rows = 'team\t%2\tworker\t1\tbash\tworker\t\t100:$1:202\t\t\t' + cli + '\n'
+            rows = 'team\t%2\tworker\t1\tbash\tworker\t\t100:$1:202\t\t\t' + cli + '\t\n'
             with self.subTest(cli=cli), patch.object(bridge, 'tmux', side_effect=[rows, '/work/project\n', '\n', '\n']) as tmux:
                 self.assertEqual(bridge.panes()[0]['cli'], cli)
             self.assertEqual(tmux.call_count, 4)
-            self.assertEqual(len(tmux.call_args_list[0].args[-1].split('\t')), 11)
+            self.assertEqual(len(tmux.call_args_list[0].args[-1].split('\t')), 12)
 
     def test_pane_swap_status_is_empty_or_keeps_the_stored_value(self):
-        rows = 'team\t%2\tworker\t1\tnode\tworker\t\t100:$1:202\t\t\tclaude\n'
+        rows = 'team\t%2\tworker\t1\tnode\tworker\t\t100:$1:202\t\t\tclaude\t\n'
         for status in ('', 'checking claude --model opus', 'failed invalid model', 'done'):
             with self.subTest(status=status), patch.object(bridge, 'tmux', side_effect=[rows, '/work/project\n', 'claude --model opus\n', status + '\n']) as tmux:
                 pane = bridge.panes()[0]

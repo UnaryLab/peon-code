@@ -20,7 +20,7 @@ source "$ROOT/lib/tmux.sh"
 die() { printf 'peon-code: %s\n' "$*" >&2; exit 1; }
 
 # Use real panes on a private server; replace CLI startup and delivery only.
-# shellcheck disable=SC2034,SC2317 # Shared launch functions call these test providers.
+# shellcheck disable=SC2034,SC2317,SC2329 # Shared launch functions call these test providers.
 test_add() (
   local socket="peon-add-test-$$" session="add-test-$$" project="$TEST_DIR/add-project" caller="$TEST_DIR/add-caller"
   local log="$TEST_DIR/add-splits" notices="$TEST_DIR/add-notices" pane brief before index i
@@ -154,7 +154,7 @@ test_add() (
 )
 test_add
 
-# shellcheck disable=SC2034,SC2317 # Shared launch functions call these test providers.
+# shellcheck disable=SC2034,SC2317,SC2329 # Shared launch functions call these test providers.
 test_add_save() (
   local socket="peon-add-save-$$" session="add-save-$$" project="$TEST_DIR/save-project" caller="$TEST_DIR/save-caller"
   local BRIEF_DIR="$TEST_DIR/save-briefs" MAIN=0 N=3 i pane conf user_conf
@@ -247,4 +247,244 @@ test_add_save() (
   cmp "$TEST_DIR/save-existing.expected" "$conf" || fail 'add without --save changed an existing config'
 )
 test_add_save
+
+# shellcheck disable=SC2034,SC2317,SC2329,SC2119 # Launch mocks read these globals; load_team reads a config, not CLI arguments.
+test_add_team() (
+  local mode=${1:-config}
+  local socket="peon-add-team-$mode-$$" session="add-team-$mode-$$" project="$TEST_DIR/team project-$mode" caller="$TEST_DIR/team-caller-$mode"
+  local SESSION=$session BRIEF_DIR="$TEST_DIR/team-briefs" MAIN=0 N=3 CONF="$caller/team.conf" CONF_GIVEN=1 DEFAULT_CONF=""
+  # A pane named all must not turn a rebrief into a broadcast.
+  local NAMES=(boss impl all) CMDS=('sleep 600' 'sleep 600' 'sleep 600')
+  local ROLES=("$ROOT/roles/manager.md" "$ROOT/roles/implementer.md" "$ROOT/roles/reviewer.md") PANE_IDS=()
+  local TEAM_NAMES=("$session") TEAMS=("$session" "$session" "$session") MAIN_INDEX COMPACT_AT RESTART_DEAD
+  local i director pane old_main manager_pane root_conf="$project/peon-code.conf" old_order before width height expected_command='sleep 600' dead_holder
+  tmux() {
+    [ "$1" != split-window ] || printf '%s\n' "$*" >>"$TEST_DIR/team-splits"
+    command tmux -L "$socket" -f /dev/null "$@"
+  }
+  trap 'tmux kill-session -t "=$session" 2>/dev/null || true' EXIT
+  systemd-run() { return 1; }
+  sleep_launch_command() {
+    if [ "$mode" = restart-failure ] && [ "${5:-}" = 0 ]; then return 1; fi
+    if [ "${5:-}" = 0 ]; then printf 'sleep 600 # restart index 0 main %s\n' "$MAIN"; return; fi
+    printf 'sleep 600\n'
+  }
+  with_pane_delivery() { shift; "$@"; }
+  launch_command_locked() { tmux send-keys -t "$1" -l "$2"; tmux send-keys -t "$1" Enter; }
+  cmd_send() { :; }
+  nohup() { printf '%s\n' "$*" >>"$TEST_DIR/team-watchers-$mode"; }
+  rebrief_pane() {
+    local restart
+    restart=$(tmux show-options -pqv -t "$manager_pane" @peon_launch)
+    if [ "$mode" = restart-failure ]; then
+      [ -z "$restart" ] || fail 'rebrief kept the unsafe manager restart command after rebuild failure'
+    else
+      [ "$restart" = 'sleep 600 # restart index 0 main 6' ] || fail 'rebrief ran before the manager restart command was rebuilt'
+    fi
+    printf '%s %s\n' "$1" "$2" >>"$TEST_DIR/team-rebriefs"
+    [ "$2" != impl ] || return 3
+  }
+  mkdir -p "$project" "$caller" "$BRIEF_DIR"
+  : >"$TEST_DIR/team-rebriefs"
+  cp "$ROOT/roles/implementer.md" "$caller/editor.md"
+  printf '*boss sleep 600 manager\nimpl sleep 600 ./editor.md\ncheck sleep 600 reviewer\n' >"$CONF"
+  if [ "$mode" = config ]; then
+    mkdir -p "$project/config dir"
+    root_conf="$project/config dir/session.conf"
+    printf '# Keep this comment\n*boss sleep 600 manager\nimpl sleep 600 implementer\nall sleep 600 reviewer' >"$root_conf"
+  fi
+  cd "$project"
+  create_agent_session "$session" 3 0
+  read -r width height < <(tmux display -p -t "$session":agents '#{window_width} #{window_height}')
+  [ "$width" -ge 220 ] && [ "$height" -ge 60 ] || fail "headless session window is only $width by $height"
+  if [ "$mode" = config ]; then tmux set-option -t "$session" @peon_conf "$root_conf"; fi
+  tmux set-option -t "$session" @peon_restart 0
+  tmux set-option -t "$session" @peon_compact_at 0
+  for i in "${!NAMES[@]}"; do
+    initialize_agent_pane "$i"
+    printf 'original brief %s\n' "$i" >"$BRIEF_DIR/$i.md"
+    tmux set -pt "${PANE_IDS[$i]}" @peon_brief "$BRIEF_DIR/$i.md"
+    tmux respawn-pane -k -t "${PANE_IDS[$i]}" 'exec sleep 600'
+    wait_agent_ready "${PANE_IDS[$i]}"
+  done
+  old_main=${PANE_IDS[0]}; old_order="${PANE_IDS[*]}"
+  manager_pane=$old_main
+  tmux set -pt "$old_main" @peon_launch unsafe-manager-launch
+  tmux set-option -t "$session" @peon_pane_order "$old_order"
+  cd "$caller"
+  if cmd_add_team --director 'sleep 700' --session "$session" >"$TEST_DIR/team-director.out" 2>"$TEST_DIR/team-director.err"; then fail 'add-team accepted --director'; fi
+  assert_contains "$TEST_DIR/team-director.err" 'unknown add-team argument: --director'
+  # Both commands must leave another operation's lock and panes alone.
+  mkdir "$BRIEF_DIR/add.lock"
+  printf '%s\n' "$$" >"$BRIEF_DIR/add.lock/owner"
+  if cmd_add_team --team locked --session "$session" >"$TEST_DIR/team-lock.out" 2>"$TEST_DIR/team-lock.err"; then fail 'add-team ignored its session lock'; fi
+  assert_contains "$TEST_DIR/team-lock.err" "another add or add-team is running in session $session; retry after it finishes"
+  if cmd_add locked implementer 'sleep 600' --session "$session" >"$TEST_DIR/team-lock.out" 2>"$TEST_DIR/team-lock.err"; then fail 'add ignored the add-team lock'; fi
+  assert_contains "$TEST_DIR/team-lock.err" "another add or add-team is running in session $session; retry after it finishes"
+  assert_contains "$TEST_DIR/team-lock.err" "Lock: $BRIEF_DIR/add.lock; remove it only when no add or add-team is running"
+  [ -d "$BRIEF_DIR/add.lock" ] || fail 'refused operation removed another operation lock'
+  [ "$(cat "$BRIEF_DIR/add.lock/owner")" = "$$" ] || fail 'refused operation changed the live lock owner'
+  rm "$BRIEF_DIR/add.lock/owner"
+  rmdir "$BRIEF_DIR/add.lock"
+  # A finished holder can be reclaimed; its replacement records the actual subshell.
+  dead_holder=$(sh -c 'echo "$$"')
+  kill -0 "$dead_holder" 2>/dev/null && fail 'test lock owner is still running'
+  mkdir "$BRIEF_DIR/add.lock"
+  printf '%s\n' "$dead_holder" >"$BRIEF_DIR/add.lock/owner"
+  (
+    local add_holder actual committed=1
+    add_lock
+    actual=$(exec sh -c 'echo "$PPID"')
+    [ "$(cat "$BRIEF_DIR/add.lock/owner")" = "$actual" ] || fail 'add lock recorded the invoking shell instead of its subshell holder'
+    [ "$actual" != "$$" ] || fail 'add lock holder must differ from the invoking shell'
+  )
+  [ ! -d "$BRIEF_DIR/add.lock" ] || fail 'reclaimed add lock was not removed by its new holder'
+  tmux set-option -t "$session" @peon_conf "$caller/missing.conf"
+  if CONF="" cmd_add_team --session "$session" >"$TEST_DIR/team-missing.out" 2>"$TEST_DIR/team-missing.err"; then fail 'add-team accepted a missing session config'; fi
+  assert_contains "$TEST_DIR/team-missing.err" "config file not found: $caller/missing.conf"
+  if [ "$mode" = config ]; then tmux set-option -t "$session" @peon_conf "$root_conf"; else tmux set-option -t "$session" @peon_conf ''; fi
+  printf 'Keep this config\n' >"$project/peon-code.existing.conf"
+  if cmd_add_team --team existing --save --session "$session" >"$TEST_DIR/team-existing.out" 2>"$TEST_DIR/team-existing.err"; then fail 'add-team overwrote an existing team config'; fi
+  assert_contains "$TEST_DIR/team-existing.err" "team config already exists: $project/peon-code.existing.conf"
+  [ "$(cat "$project/peon-code.existing.conf")" = 'Keep this config' ] || fail 'add-team changed the existing team config'
+  tmux set -pt "$old_main" @peon_role_type worker
+  if cmd_add_team --team no-manager --session "$session" >"$TEST_DIR/team-manager.out" 2>"$TEST_DIR/team-manager.err"; then fail 'add-team used a non-manager main for the director'; fi
+  assert_contains "$TEST_DIR/team-manager.err" 'main pane boss is not a manager; launch a session with its manager as main before add-team'
+  tmux set -pt "$old_main" @peon_role_type manager
+  [ "$(tmux list-panes -s -t "=$session" -F '#{pane_id}' | wc -l | tr -d ' ')" = 3 ] || fail 'refused add-team created panes'
+  if [ "$mode" = rebuild ]; then
+    if (wait_agent_ready() { return 1; }; cmd_add_team --team failed --session "$session") >"$TEST_DIR/team-failed.out" 2>"$TEST_DIR/team-failed.err"; then fail 'failed director startup succeeded'; fi
+    [ "$(tmux list-panes -s -t "=$session" -F '#{pane_id}' | wc -l | tr -d ' ')" = 3 ] || fail 'failed conversion kept new panes'
+    [ "$(tmux show-options -pqv -t "$old_main" @peon_main)" = 1 ] || fail 'failed conversion changed the main pane'
+    [ -z "$(tmux show-options -pqv -t "$old_main" @peon_team)" ] || fail 'failed conversion changed team options'
+    [ ! -e "$project/.peon-code-task.failed.md" ] || fail 'failed conversion kept the team board'
+    [ ! -e "$project/.peon-code-plan.md" ] || fail 'failed conversion kept the plan board'
+    [ ! -d "$BRIEF_DIR/add.lock" ] || fail 'failed conversion kept the add lock'
+  fi
+  if [ "$mode" = restart-failure ]; then
+    cmd_add_team --team research --save --session "$session" >"$TEST_DIR/team-restart.out" 2>"$TEST_DIR/team-restart.err"
+    assert_contains "$TEST_DIR/team-restart.err" 'cannot update the manager restart command'
+    assert_contains "$TEST_DIR/team-restart.err" 'automatic restart disabled for that pane'
+    [ -z "$(tmux show-options -pqv -t "$old_main" @peon_launch)" ] || fail 'rebuild failure kept the unsafe manager restart command'
+    [ "$(wc -l <"$TEST_DIR/team-rebriefs" | tr -d ' ')" = 3 ] || fail 'restart command failure skipped the old panes rebrief'
+    assert_contains "$BRIEF_DIR/0.md" 'D<n> done, never to the user'
+    [ "$(tmux list-panes -s -t "=$session" -F '#{pane_id}' | wc -l | tr -d ' ')" = 7 ] || fail 'post-commit failure removed running panes'
+    [ -f "$project/.peon-code-task.research.md" ] && [ -f "$project/.peon-code-plan.md" ] || fail 'post-commit failure removed live boards'
+    [ -f "$project/peon-code.research.conf" ] || fail 'manager restart warning stopped the config save'
+    [ ! -d "$BRIEF_DIR/add.lock" ] || fail 'post-commit failure kept the add lock'
+    return
+  fi
+  tmux set-option -t "$session" @peon_restart 1
+  cmd_add_team --team research --save --session "$session" >"$TEST_DIR/team-add.out" 2>"$TEST_DIR/team-add.err"
+  for i in 1 2 3 4 5; do
+    [ ! -s "$TEST_DIR/team-watchers-$mode" ] || break
+    sleep 0.05
+  done
+  assert_contains "$TEST_DIR/team-watchers-$mode" "$ROOT/peon-code.sh watch $session 0"
+  tmux set-option -t "$session" @peon_restart 0
+  read -r width height < <(tmux display -p -t "$session":agents '#{window_width} #{window_height}')
+  [ "$width" -ge 220 ] && [ "$height" -ge 73 ] || fail "add-team left the seven-pane headless window at $width by $height"
+  [ "$(tmux show-options -wv -t "$session":agents window-size)" = latest ] || fail 'add-team left manual sizing on'
+  while read -r width height; do
+    [ "$width" -ge 80 ] && [ "$height" -ge 8 ] || fail "add-team left a small pane: $width by $height"
+  done < <(tmux list-panes -t "$session":agents -F '#{pane_width} #{pane_height}')
+  director=$(tmux list-panes -s -t "=$session" -F '#{pane_id} #{@peon_name}' | awk '$2 == "director" { print $1 }')
+  [ -n "$director" ] || fail 'second team did not create a director'
+  [ "$(tmux list-panes -t "$session":agents -F '#{pane_id}' | head -1)" = "$director" ] || fail 'director did not take position 0'
+  [ "$(tmux show-options -pqv -t "$old_main" @peon_main)" = 0 ] || fail 'old main kept its main flag'
+  [ -n "$(tmux show-options -pqv -t "$old_main" @peon_launch)" ] || fail 'old main has no updated restart command'
+  [ "$(tmux show-options -pqv -t "$director" @peon_main)" = 1 ] || fail 'director is not main'
+  [ "$(tmux show-options -pqv -t "$director" @peon_cmd)" = "$expected_command" ] || fail 'director command was lost'
+  [ "$(tmux show-options -qv -t "$session" @peon_pane_order)" = "$director $old_order" ] || fail 'saved pane order lost the director'
+  assert_contains "$TEST_DIR/team-add.out" 'manager boss keeps git until it is swapped or restarted'
+  assert_contains "$TEST_DIR/team-add.err" 'no brief sent to impl'
+  assert_contains "$TEST_DIR/team-add.err" "run peon-code.sh rebrief impl $session when it is free"
+  [ "$(wc -l <"$TEST_DIR/team-rebriefs" | tr -d ' ')" = 3 ] || fail 'add-team did not rebrief only the old panes'
+  while read -r pane; do
+    case " $old_order " in *" $pane "*) continue ;; esac
+    assert_not_contains "$TEST_DIR/team-rebriefs" "$pane "
+  done < <(tmux list-panes -s -t "=$session" -F '#{pane_id}')
+  for i in 0 1 2; do
+    [ "$(tmux show-options -pqv -t "${PANE_IDS[$i]}" @peon_team)" = "$session" ] || fail 'existing pane has no team'
+    assert_contains "$BRIEF_DIR/$i.md" "original brief $i"
+    assert_contains "$BRIEF_DIR/$i.md" "This replaces rules 1 and 2 above: a director now runs intake and git in pane $director (director)."
+    assert_contains "$BRIEF_DIR/$i.md" "Your team is $session: the roster lines above without a [team] tag."
+    assert_contains "$BRIEF_DIR/$i.md" 'Message only your own team and the director.'
+    assert_contains "$BRIEF_DIR/$i.md" 'Where rules 3, 4, and 5 say tell the user, tell the director instead.'
+    assert_contains "$BRIEF_DIR/$i.md" 'D<n> done, never to the user'
+    assert_contains "$BRIEF_DIR/$i.md" 'the director posts the final summary.'
+    assert_contains "$BRIEF_DIR/$i.md" 'The session now has a director: never run git commit, git stash, or any history-rewriting git command; request commits from the director by message.'
+    assert_contains "$BRIEF_DIR/$i.md" "The commit pane is now $director."
+    assert_contains "$BRIEF_DIR/$i.md" ' [team research]'
+  done
+  assert_contains "$project/.peon-code-task.research.md" 'Every task cell starts with the plan row id it serves, like D2: rename parser.'
+  [ "$(cat "$project/.peon-code-plan.md")" = "$PLAN_HEADER" ] || fail 'add-team did not seed the plan header'
+  if [ "$mode" = config ]; then assert_contains "$root_conf" '# Keep this comment'; fi
+  if [ "$mode" = config ]; then
+    assert_contains "$root_conf" 'team research ../peon-code.research.conf'
+  else assert_contains "$root_conf" 'team research peon-code.research.conf'; fi
+  assert_not_contains "$root_conf" "director "
+  printf 'boss sleep 600 manager\nimpl sleep 600 editor\ncheck sleep 600 reviewer\n' >"$TEST_DIR/team-save.expected"
+  cmp "$TEST_DIR/team-save.expected" "$project/peon-code.research.conf" || fail 'saved team config has prefixes or wrong roles'
+  cmp "$caller/editor.md" "$project/roles/editor.md" || fail 'custom role was not copied'
+  pane=$(tmux list-panes -s -t "=$session" -F '#{pane_id} #{@peon_name}' | awk '$2 == "research-impl" { print $1 }')
+  assert_contains "$(tmux show-options -pqv -t "$pane" @peon_brief)" "only in the director pane ($director)"
+  assert_contains "$(tmux show-options -pqv -t "$pane" @peon_brief)" " [team $session]"
+  TMUX_PANE=$pane cmd_add helper implementer 'sleep 600' --save --session "$session" >"$TEST_DIR/team-helper.out"
+  read -r width height < <(tmux display -p -t "$session":agents '#{window_width} #{window_height}')
+  [ "$width" -ge 220 ] && [ "$height" -ge 85 ] || fail "add left the eight-pane headless window at $width by $height"
+  [ "$(tmux show-options -wv -t "$session":agents window-size)" = latest ] || fail 'add left manual sizing on'
+  assert_contains "$project/peon-code.research.conf" 'helper sleep 600 implementer'
+  assert_not_contains "$project/peon-code.research.conf" 'research-helper'
+  [ "$(tmux show-options -qv -t "$session" @peon_conf)" = "$root_conf" ] || fail 'add changed the root config path to the team file'
+  cmd_add local implementer 'sleep 600' --session "$session" >"$TEST_DIR/team-local.out"
+  cmd_add explicit implementer 'sleep 600' --team research --session "$session" >"$TEST_DIR/team-explicit.out"
+  before=$(tmux list-panes -s -t "=$session" -F '#{pane_id}' | wc -l)
+  for i in reserved director-role second-manager unknown-team; do
+    case $i in
+      reserved) set -- director implementer 'sleep 600' ;;
+      director-role) set -- extra director 'sleep 600' ;;
+      second-manager) set -- second manager 'sleep 600' --team research ;;
+      unknown-team) set -- extra implementer 'sleep 600' --team absent ;;
+    esac
+    if cmd_add "$@" --session "$session" >"$TEST_DIR/team-invalid.out" 2>"$TEST_DIR/team-invalid.err"; then fail "add accepted $i"; fi
+  done
+  if cmd_add_team --team director --session "$session" >"$TEST_DIR/team-invalid.out" 2>"$TEST_DIR/team-invalid.err"; then fail 'add-team accepted the reserved director name'; fi
+  if (wait_agent_ready() { return 1; }; cmd_add_team --team failed --session "$session") >"$TEST_DIR/team-failed.out" 2>"$TEST_DIR/team-failed.err"; then fail 'failed team startup succeeded'; fi
+  [ "$(tmux list-panes -s -t "=$session" -F '#{pane_id}' | wc -l)" = "$before" ] || fail 'failed team startup kept new panes or removed prior panes'
+  assert_not_contains "$BRIEF_DIR/0.md" 'failed-boss'
+  [ ! -e "$project/.peon-code-task.failed.md" ] || fail 'failed launch kept the team board'
+  [ "$(cat "$project/.peon-code-plan.md")" = "$PLAN_HEADER" ] || fail 'failed launch changed the existing plan board'
+  [ ! -d "$BRIEF_DIR/add.lock" ] || fail 'failed launch kept the add lock'
+  CONF="" cmd_add_team --session "$session" >"$TEST_DIR/team-third.out" 2>"$TEST_DIR/team-third.err"
+  [ "$(tmux list-panes -s -t "=$session" -F '#{@peon_name}' | grep -cx director)" = 1 ] || fail 'third team or plain add created another director'
+  assert_contains "$TEST_DIR/team-third.out" "added team team2 to session $session"
+  assert_contains "$project/.peon-code-task.team2.md" '| id | who | task | files | status |'
+  [ "$(tmux list-panes -s -t "=$session" -F '#{@peon_name}' | grep -c '^team2-')" -eq 3 ] || fail 'session config fallback did not read only direct agent lines'
+  pane=$(tmux list-panes -s -t "=$session" -F '#{pane_id} #{@peon_name}' | awk '$2 == "research-boss" { print $1 }')
+  tmux kill-pane -t "$pane"
+  cmd_add replacement manager 'sleep 600' --team research --session "$session" >"$TEST_DIR/team-replacement.out"
+  assert_contains "$TEST_DIR/team-replacement.out" 'added research-replacement'
+  if [ "$mode" = rebuild ]; then
+    mv "$root_conf" "$root_conf.kept"
+    mv "$project/peon-code.research.conf" "$project/peon-code.research.conf.kept"
+    tmux set-option -t "$session" @peon_conf ''
+    cmd_add_team --team later --save --session "$session" >"$TEST_DIR/team-later.out" 2>"$TEST_DIR/team-later.err"
+    assert_contains "$root_conf" 'team research peon-code.research.conf'
+    assert_contains "$root_conf" 'team team2 peon-code.team2.conf'
+    assert_contains "$root_conf" 'team later peon-code.later.conf'
+    assert_not_contains "$root_conf" 'research-'
+    assert_contains "$project/peon-code.research.conf" 'replacement sleep 600 manager'
+    before=$(tmux list-panes -s -t "=$session" -F '#{pane_id}' | wc -l | tr -d ' ')
+    # shellcheck disable=SC2030 # Reload only in the child, preserving the source config for dispatch below.
+    (CONF=$root_conf; load_team; [ "${#NAMES[@]}" = "$before" ]) || fail 'rebuild lost an existing team or agent'
+  fi
+  # Exercise dispatch without starting real CLIs: reserved team fails before splitting.
+  # shellcheck disable=SC2031 # The child's config reload leaves this source config unchanged.
+  if TMUX="$(tmux display-message -p '#{socket_path}'),0,0" "$ROOT/peon-code.sh" -c "$CONF" add-team --team director --session "$session" >"$TEST_DIR/team-dispatch.out" 2>"$TEST_DIR/team-dispatch.err"; then fail 'add-team dispatch accepted director as a team name'; fi
+  assert_contains "$TEST_DIR/team-dispatch.err" 'team name director is reserved'
+)
+test_add_team
+test_add_team rebuild
+test_add_team restart-failure
 echo 'add: PASS'

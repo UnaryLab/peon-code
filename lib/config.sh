@@ -28,7 +28,7 @@ role_label() {
 # A role file opens with a frontmatter block (--- lines) holding type: and
 # description:. role_field prints one key's
 # value, empty when the file or key is missing; role_body prints the file
-# without the block. The type (manager, worker, reviewer) picks the agent's
+# without the block. The type (director, manager, worker, reviewer) picks the agent's
 # duties in roles/protocol.md; the body holds only the domain rules.
 role_field() {
   local path=$1 key=$2
@@ -51,7 +51,8 @@ protocol_for() {
 }
 
 read_conf() {
-  local conf=$1 conf_dir line lineno=0 n name cmd role path known
+  local conf=$1 nested=$2 team=$3 conf_dir line lineno=0 n name cmd role path known i raw_name
+  [ -f "$conf" ] || die "config file not found: $conf"
   conf_dir=$(cd -- "$(dirname -- "$conf")" && pwd)
   while IFS= read -r line || [ -n "$line" ]; do
     lineno=$((lineno + 1))
@@ -59,6 +60,14 @@ read_conf() {
     local tokens=()
     read -ra tokens <<<"$line"
     n=${#tokens[@]}
+    if [ "$nested" -ne 0 ]; then
+      case ${tokens[0]} in
+        team|compact-at|restart-dead)
+          printf 'peon-code: %s line %s: %s line ignored when reading one team\n' "$conf" "$lineno" "${tokens[0]}" >&2
+          continue ;;
+      esac
+    fi
+    [ "${tokens[0]}" != director ] || die "$conf line $lineno: name director is reserved"
     # "compact-at <tokens>" is the context size at which the watcher
     # compacts a pane; 0 turns compaction off.
     if [ "${tokens[0]}" = compact-at ]; then
@@ -73,19 +82,40 @@ read_conf() {
       RESTART_DEAD=${tokens[1]}
       continue
     fi
+    if [ "${tokens[0]}" = team ]; then
+      [ "$n" -eq 3 ] || die "$conf line $lineno: team takes a name and config file"
+      name=${tokens[1]}
+      [[ $name =~ ^[A-Za-z0-9_-]+$ ]] || die "$conf line $lineno: team name \"$name\" must be letters, digits, _ or -"
+      [ "$name" != "${TEAM_NAMES[0]}" ] || die "$conf line $lineno: team name $name is the session name, which the agents of this file use"
+      case " ${TEAM_NAMES[*]} " in
+        *" $name "*) die "$conf line $lineno: team name \"$name\" is used twice" ;;
+      esac
+      TEAM_NAMES+=("$name")
+      path=${tokens[2]}
+      case $path in /*) ;; *) path="$conf_dir/$path" ;; esac
+      [ -f "$path" ] || die "$conf line $lineno: team $name: config file not found: $path"
+      read_conf "$path" 1 "$name"
+      continue
+    fi
     [ "$n" -ge 3 ] || die "$conf line $lineno: need name, command, and role (got $n): $line"
     name=${tokens[0]}
     # A leading * marks the main agent: its pane gets the big left slot.
     if [[ $name == \** ]]; then
       name=${name#\*}
-      [ "$MAIN_INDEX" -lt 0 ] || die "$conf line $lineno: a second agent is marked main with *"
-      MAIN_INDEX=${#NAMES[@]}
+      if [ "$nested" -eq 0 ]; then
+        [ "$MAIN_INDEX" -lt 0 ] || die "$conf line $lineno: a second agent is marked main with *"
+        MAIN_INDEX=${#NAMES[@]}
+      fi
     fi
     role=${tokens[$((n - 1))]}
     cmd="${tokens[*]:1:$((n - 2))}"
     [[ $name =~ ^[A-Za-z0-9_-]+$ ]] || die "$conf line $lineno: name \"$name\" must be letters, digits, _ or -"
+    [ "$name" != director ] || die "$conf line $lineno: name director is reserved"
+    raw_name=$name
+    [ "$nested" -eq 0 ] || name="$team-$name"
     for known in ${NAMES[@]+"${NAMES[@]}"}; do
       if [ "$known" = "$name" ]; then
+        [ "$nested" -eq 0 ] || die "$conf line $lineno: name $raw_name becomes $name after the team prefix and is used twice"
         die "$conf line $lineno: name \"$name\" is used twice"
       fi
     done
@@ -93,6 +123,7 @@ read_conf() {
     [ -z "$path" ] || [ -f "$path" ] || die "$conf line $lineno: role file not found: $path"
     if [ -n "$path" ]; then
       case $(role_field "$path" type) in
+        director) die "$conf line $lineno: type director is reserved for the launcher; a team names a manager, workers, and a reviewer" ;;
         manager|worker|reviewer) ;;
         *) die "$conf line $lineno: role file $path needs a frontmatter type: manager, worker, or reviewer" ;;
       esac
@@ -100,14 +131,17 @@ read_conf() {
     NAMES+=("$name")
     CMDS+=("$cmd")
     ROLES+=("$path")
+    TEAMS+=("$team")
   done <"$conf"
-  [ ${#NAMES[@]} -gt 0 ] || die "$conf has no agents"
   # A team that uses roles needs a manager, a worker, and a reviewer: the
   # protocol routes every task through the manager, every completion to the
   # reviewer, and every row to a worker. A roleless CLI team coordinates
   # nothing and skips the check.
-  local has_role=0 has_manager=0 has_worker=0 has_reviewer=0
-  for path in ${ROLES[@]+"${ROLES[@]}"}; do
+  local has_agent=0 has_role=0 has_manager=0 has_worker=0 has_reviewer=0
+  for i in ${NAMES[@]+"${!NAMES[@]}"}; do
+    [ "${TEAMS[$i]}" = "$team" ] || continue
+    has_agent=1
+    path=${ROLES[$i]}
     [ -n "$path" ] || continue
     has_role=1
     case $(role_field "$path" type) in
@@ -116,10 +150,29 @@ read_conf() {
       reviewer) has_reviewer=1 ;;
     esac
   done
+  [ "$has_agent" -eq 1 ] || die "$conf has no agents"
   if [ "$has_role" -eq 1 ]; then
-    [ "$has_manager" -eq 1 ] || die "$conf: a team with roles needs a manager-type role"
+    [ "$has_manager" -eq 1 ] || die "$conf: a team with roles needs a manager-type role among this file's own agents"
     [ "$has_worker" -eq 1 ] || die "$conf: a team with roles needs a worker-type role"
     [ "$has_reviewer" -eq 1 ] || die "$conf: a team with roles needs a reviewer-type role"
+  fi
+  if [ "$nested" -eq 0 ] && [ "${#TEAM_NAMES[@]}" -gt 1 ]; then
+    cmd=""
+    for i in "${!NAMES[@]}"; do
+      if [ "${TEAMS[$i]}" = "$team" ] && [ "$(role_field "${ROLES[$i]}" type)" = manager ]; then
+        cmd=${CMDS[$i]}
+        break
+      fi
+    done
+    [ -n "$cmd" ] || [ "$has_role" -ne 0 ] || cmd=${CMDS[0]}
+    path="$SCRIPT_DIR/roles/director.md"
+    [ -f "$path" ] || die "$conf: role file not found: $path"
+    [ "$(role_field "$path" type)" = director ] || die "$conf: role file $path needs a frontmatter type: director"
+    MAIN_INDEX=${#NAMES[@]}
+    NAMES+=(director)
+    CMDS+=("$cmd")
+    ROLES+=("$path")
+    TEAMS+=("")
   fi
 }
 
@@ -128,6 +181,8 @@ load_team() {
   NAMES=()
   CMDS=()
   ROLES=()
+  TEAMS=()
+  TEAM_NAMES=("${SESSION:-team}")
   MAIN_INDEX=-1
   COMPACT_AT=250000
   RESTART_DEAD=yes
@@ -140,6 +195,7 @@ load_team() {
       NAMES+=("$arg")
       CMDS+=("$arg")
       ROLES+=("")
+      TEAMS+=("${TEAM_NAMES[0]}")
     done
     return
   fi
@@ -150,7 +206,7 @@ load_team() {
     [ -f "$CONF" ] || CONF="$HOME/.config/peon-code/peon-code.conf"
   fi
   if [ -f "$CONF" ]; then
-    read_conf "$CONF"
+    read_conf "$CONF" 0 "${TEAM_NAMES[0]}"
   elif [ "$CONF_GIVEN" -eq 1 ]; then
     die "config file not found: $CONF"
   else
@@ -158,6 +214,7 @@ load_team() {
       NAMES+=("$arg")
       CMDS+=("$arg")
       ROLES+=("")
+      TEAMS+=("${TEAM_NAMES[0]}")
     done
   fi
 }

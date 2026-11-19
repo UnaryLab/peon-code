@@ -354,6 +354,8 @@ rebrief_locked() {
     echo "peon-code: no stored brief for $name $id: pane from an older launch, or its brief file is gone" >&2
     return 1
   fi
+  pane_identity_matches "$id" || return 1
+  ! pane_is_busy "$id" || return 3
   box=$(pane_box_text "$id") || case $? in
     2) echo "peon-code: no brief sent to $name $id: it draws no prompt marker peon-code knows" >&2; return 1 ;;
     5) echo "peon-code: skipped $id: it is in shell mode" >&2; return 1 ;;
@@ -366,26 +368,40 @@ rebrief_locked() {
     4) return 5 ;;
     *) return 2 ;;
   esac
+  tmux set -pu -t "$id" @peon_rebrief_pending
   return 0
 }
 
 # Paste the launch brief again into every named pane, so an agent that
 # compacted its conversation gets its standing instructions back.
+# The internal pane list skips new agents, which already have a brief.
 cmd_rebrief() {
-  local target=${1:-} session panes id name found=0 sent=0 unsent=0
+  rebrief_agents "${1:-}" "${2:-}"
+}
+
+rebrief_agents() {
+  local target=${1:-} only=${3:-} session panes id name found=0 sent=0 unsent=0
   [ -n "$target" ] || die "usage: peon-code.sh rebrief <name|all> [<session>]"
   session=$(session_name "${2:-}")
   tmux has-session -t "=$session" 2>/dev/null || die "no session $session"
   is_peon_session "$session" || die "session $session was not created by peon-code"
   panes=$(list_agent_panes "$session") || true
-  [ -n "$panes" ] || die "no agent panes in session $session"
   while read -r id name; do
+    [ -n "$id" ] || continue
     [ "$target" = all ] || [ "$target" = "$name" ] || continue
+    if [ -n "$only" ]; then
+      case " $only " in *" $id "*) ;; *) continue ;; esac
+    fi
     found=1
+    if [ "$id" = "${TMUX_PANE:-}" ]; then
+      echo "peon-code: run peon-code.sh rebrief $name $session when it is free" >&2
+      continue
+    fi
     rebrief_pane "$id" "$name" || case $? in
       2) echo "peon-code: no brief sent to $name $id: tmux refused the paste" >&2
          unsent=$((unsent + 1)); continue ;;
-      3) echo "peon-code: no brief sent to $name $id: its input box holds typed text, or it is on a dialog or a menu" >&2
+      3) echo "peon-code: no brief sent to $name $id: its input box holds typed text, or it is on a dialog or a menu, or it is busy with a turn" >&2
+         echo "peon-code: run peon-code.sh rebrief $name $session when it is free" >&2
          continue ;;
       4) echo "peon-code: no Enter sent to $name $id: the brief is in its box for the user to submit" >&2
          unsent=$((unsent + 1)); continue ;;
@@ -395,7 +411,12 @@ cmd_rebrief() {
     esac
     sent=$((sent + 1))
   done <<<"$panes"
-  [ "$found" -eq 1 ] || die "no pane named $target in session $session"
+  if [ "$found" -ne 1 ]; then
+    if tmux list-panes -s -t "=$session" -F '#{@peon_name}' | grep -Fxq -- "$target"; then
+      die "agent $target is at a shell; its brief is pasted when it restarts"
+    fi
+    die "no pane named $target in session $session"
+  fi
   [ "$sent" -gt 0 ] || die "no brief confirmed in session $session"
   echo "peon-code: rebriefed $sent pane(s) in session $session"
   [ "$unsent" -eq 0 ] || die "$unsent brief(s) were not confirmed in session $session"
@@ -731,158 +752,183 @@ swap_handoff_locked() {
   tmux set -pt "$1" @peon_swap_pending "waiting $pid:$(date +%s) ${pending#* * }"
 }
 
-cmd_add() (
-  local session=${PEON_CODE_SESSION:-} name role command argument path type panes id known index
-  local label description line new_line new_pane project_dir brief_file temporary watcher watcher_args="" restart threshold has_roles=0
-  local save=0 rebuild=0 conf conf_dir saved_role role_target="" marker
-  local fields=() briefs=() saved_roles=()
-  while [ $# -gt 0 ]; do
-    case $1 in
-      --save) save=1; shift ;;
-      --session)
-        [ $# -ge 2 ] && [ -n "$2" ] || die "--session needs a session name"
-        session=$2; shift 2 ;;
-      *) fields+=("$1"); shift ;;
-    esac
-  done
-  [ ${#fields[@]} -ge 3 ] || die "usage: peon-code.sh add <name> <role> <command...> [--session <name>] [--save]"
-  name=${fields[0]}; role=${fields[1]}; command=${fields[2]}
-  [ ${#fields[@]} -le 3 ] || for argument in "${fields[@]:3}"; do command+=" $(printf %q "$argument")"; done
-  [[ $name =~ ^[A-Za-z0-9_-]+$ ]] || die "name \"$name\" must be letters, digits, _ or -"
-  [ -n "${command//[[:space:]]/}" ] || die "add needs an agent command"
-  SESSION=$(session_name "$session")
-  tmux has-session -t "=$SESSION" 2>/dev/null || die "no session $SESSION"
-  is_peon_session "$SESSION" || die "session $SESSION was not created by peon-code"
-  path=$(resolve_role "$role" "$PWD")
-  [ -z "$path" ] || [ -f "$path" ] || die "role file not found: $path"
-  type=$(role_field "$path" type)
-  if [ -n "$path" ]; then
-    case $type in
-      manager|worker|reviewer) ;;
-      *) die "role file $path needs a frontmatter type: manager, worker, or reviewer" ;;
-    esac
-  fi
+# Read stored metadata, since a custom role file may no longer exist.
+add_roster_line() {
+  local index=$1 id=${PANE_IDS[$1]} type line
+  type=$(tmux show-options -pqv -t "$id" @peon_role_type)
+  line="pane $id: ${NAMES[$index]} (${CMDS[$index]}) - $(tmux show-options -pqv -t "$id" @peon_role_label)"
+  [ -z "$type" ] || line+=" ($type): $(tmux show-options -pqv -t "$id" @peon_role_desc)"
+  if [ "${#TEAM_NAMES[@]}" -gt 1 ] && [ -n "${TEAMS[$index]}" ]; then line+=" [team ${TEAMS[$index]}]"; fi
+  printf '%s\n' "$line"
+}
+
+load_session_agents() {
+  local panes id name team index brief_file
   panes=$(tmux list-panes -s -t "=$SESSION" -F '#{pane_id} #{@peon_name}') || die "cannot list panes in session $SESSION"
-  NAMES=(); CMDS=(); ROLES=(); PANE_IDS=(); RESUME_IDS=()
-  ROSTER=""; MAIN=0; BRIEF_DIR=""
-  while read -r id known; do
-    [ -n "$known" ] || continue
-    [ "$known" != "$name" ] || die "name \"$name\" is used twice"
+  NAMES=(); CMDS=(); ROLES=(); PANE_IDS=(); RESUME_IDS=(); TEAMS=(); TEAM_NAMES=("$SESSION"); briefs=()
+  MAIN=0; BRIEF_DIR=""; ROSTER=""
+  while read -r id name; do
+    [ -n "$name" ] || continue
     index=${#NAMES[@]}
-    NAMES+=("$known"); PANE_IDS+=("$id"); RESUME_IDS+=("")
+    NAMES+=("$name"); PANE_IDS+=("$id"); RESUME_IDS+=("")
     CMDS+=("$(tmux show-options -pqv -t "$id" @peon_cmd)")
     ROLES+=("$(tmux show-options -pqv -t "$id" @peon_role)")
-    label=$(tmux show-options -pqv -t "$id" @peon_role_label)
-    description=$(tmux show-options -pqv -t "$id" @peon_role_desc)
-    role=$(tmux show-options -pqv -t "$id" @peon_role_type)
-    [ -z "$role" ] || has_roles=1
-    [ "$type:$role" != manager:manager ] || die "session $SESSION already has a manager"
+    team=$(tmux show-options -pqv -t "$id" @peon_team)
+    if [ "$name" != director ]; then
+      team=${team:-$SESSION}
+      case " ${TEAM_NAMES[*]} " in *" $team "*) ;; *) TEAM_NAMES+=("$team") ;; esac
+    fi
+    TEAMS+=("$team")
     [ "$(tmux show-options -pqv -t "$id" @peon_main)" != 1 ] || MAIN=$index
     [ -n "$BRIEF_DIR" ] || BRIEF_DIR=$(tmux show-options -pqv -t "$id" @peon_brief_dir)
     brief_file=$(tmux show-options -pqv -t "$id" @peon_brief)
-    [ -f "$brief_file" ] || die "$known has no stored brief; launch it again"
+    [ -f "$brief_file" ] || die "${NAMES[$index]} has no stored brief; launch it again"
     briefs+=("$brief_file")
-    line="pane $id: $known (${CMDS[$index]}) - $label"
-    [ -z "$role" ] || line+=" ($role): $description"
-    ROSTER+="$line"$'\n'
   done <<<"$panes"
   [ ${#NAMES[@]} -gt 0 ] || die "no agent panes in session $SESSION"
-  [ -z "$type" ] || [ "$has_roles" -eq 1 ] || die "session $SESSION has no roles; add a roleless agent (-) or launch a role team"
   [ -d "$BRIEF_DIR" ] || die "session $SESSION has no stored brief directory; launch it again"
-  project_dir=$(tmux show-options -qv -t "$SESSION" @peon_project_dir)
-  if [ "$save" -eq 1 ]; then
-    conf=$(tmux show-options -qv -t "$SESSION" @peon_conf)
+  for index in "${!NAMES[@]}"; do ROSTER+="$(add_roster_line "$index")"$'\n'; done
+}
+
+team_config_path() {
+  local conf=$1 team=$2 dir kind name path
+  dir=$(cd -- "$(dirname -- "$conf")" && pwd) || return 1
+  while read -r kind name path || [ -n "$kind" ]; do
+    [ "$kind" = team ] || continue
+    case $path in /*) ;; *) path="$dir/$path" ;; esac
+    if [ "$name" = "$team" ]; then printf '%s\n' "$path"; return; fi
+  done <"$conf"
+  return 1
+}
+
+add_saved_role() {
+  local path=$1 conf_dir=$2
+  saved_role=-; role_target=""
+  [ -n "$path" ] || return 0
+  saved_role=$(role_label "$path")
+  [[ $saved_role =~ ^[A-Za-z0-9_-]+$ ]] || die "cannot save role name: $saved_role"
+  if [ "$path" != "$SCRIPT_DIR/roles/$saved_role.md" ]; then
+    [ ! -f "$SCRIPT_DIR/roles/$saved_role.md" ] || die "cannot save custom role named $saved_role; a shipped role has that name"
+    role_target="$conf_dir/roles/$saved_role.md"
+    if [ -e "$role_target" ] || [ -L "$role_target" ]; then
+      cmp -s "$path" "$role_target" || die "role file already exists with different content: $role_target"
+    fi
+  fi
+}
+
+session_config_path() {
+  local mode=$1 conf
+  conf=$(tmux show-options -qv -t "$SESSION" @peon_conf)
+  if [ "$mode" = source ]; then
+    conf=${CONF:-$conf}
+    [ -n "$conf" ] || die "add-team needs -c <file> or a saved session config"
+    [ -f "$conf" ] || die "config file not found: $conf"
+    printf '%s/%s\n' "$(cd -- "$(dirname -- "$conf")" && pwd)" "$(basename -- "$conf")"
+  else
     case $conf in
       "$HOME/.config/peon-code/peon-code.conf") conf="" ;;
       "$project_dir"/*) [ -f "$conf" ] || conf="" ;;
       *) conf="" ;;
     esac
-    if [ -z "$conf" ]; then
-      rebuild=1
-      conf="$project_dir/peon-code.conf"
-      [ ! -e "$conf" ] && [ ! -L "$conf" ] || die "config already exists but was not used by this session: $conf"
-    fi
-    conf_dir=$(cd -- "$(dirname -- "$conf")" && pwd)
-    if [ ! -f "$conf" ]; then
-      for index in "${!NAMES[@]}"; do
-        label=$(tmux show-options -pqv -t "${PANE_IDS[$index]}" @peon_role_label)
-        role=$(tmux show-options -pqv -t "${PANE_IDS[$index]}" @peon_role_type)
-        if [ -n "$role" ]; then
-          [ -f "$SCRIPT_DIR/roles/$label.md" ] || [ -f "$conf_dir/roles/$label.md" ] ||
-            die "cannot save agent ${NAMES[$index]}: missing role $label; write roles/$label.md next to the config first"
-          saved_roles+=("$label")
-        else
-          saved_roles+=(-)
-        fi
-      done
-    fi
-    saved_role=-
-    if [ -n "$path" ]; then
-      saved_role=$(role_label "$path")
-      [[ $saved_role =~ ^[A-Za-z0-9_-]+$ ]] || die "cannot save role name: $saved_role"
-      if [ "$path" != "$SCRIPT_DIR/roles/$saved_role.md" ]; then
-        [ ! -f "$SCRIPT_DIR/roles/$saved_role.md" ] || die "cannot save custom role named $saved_role; a shipped role has that name"
-        role_target="$conf_dir/roles/$saved_role.md"
-        if [ -e "$role_target" ] || [ -L "$role_target" ]; then
-          cmp -s "$path" "$role_target" || die "role file already exists with different content: $role_target"
-        fi
-      fi
-    fi
+    printf '%s\n' "$conf"
   fi
-  cd -- "$project_dir" || die "cannot enter session project directory: $project_dir"
-  prepare_launch_settings
-  index=${#NAMES[@]}
-  new_pane=$(tmux split-window -d -P -F '#{pane_id}' -t "$SESSION":agents -c "$PWD" \
-    -e "PEON_CODE_SESSION=$SESSION" -e DISABLE_AUTO_UPDATE=true -e CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1) || die "could not add a pane to session $SESSION"
-  tmux select-layout -t "$SESSION":agents main-vertical >/dev/null || true
-  NAMES+=("$name"); CMDS+=("$command"); ROLES+=("$path"); PANE_IDS+=("$new_pane"); RESUME_IDS+=("")
-  N=${#NAMES[@]}
-  initialize_agent_pane "$index"
-  wait_shell_ready "$new_pane"
-  new_line="pane $new_pane: $name ($command) - $(role_label "$path")"
-  [ -z "$type" ] || new_line+=" ($type): $(role_field "$path" description)"
-  ROSTER+="$new_line"$'\n'
-  FAILED_AGENTS=()
-  if ! launch_agents "$index" "pane-${new_pane#%}" || [ ${#FAILED_AGENTS[@]} -gt 0 ]; then
-    tmux kill-pane -t "$new_pane"
-    die "agent $name failed to start; killed new pane $new_pane"
-  fi
-  for brief_file in "${briefs[@]}"; do
-    temporary=$(mktemp "$brief_file.XXXXXX") || die "could not update brief: $brief_file"
-    { cat "$brief_file" && printf '\nNew teammate, add to the roster above: %s\n' "$new_line"; } >"$temporary" &&
-      mv "$temporary" "$brief_file" || die "could not update brief: $brief_file"
-  done
-  for ((index = 0; index < N - 1; index++)); do
-    if ! cmd_send "${PANE_IDS[$index]}" "[from peon-code] New teammate: $new_line"; then
-      echo "peon-code: could not notify ${NAMES[$index]} ${PANE_IDS[$index]} about $name" >&2
-    fi
-  done
-  if [ "$save" -eq 1 ]; then
-    if [ "$rebuild" -eq 1 ] && { [ -e "$conf" ] || [ -L "$conf" ]; }; then
-      die "config already exists but was not used by this session: $conf"
-    fi
-    if [ -n "$role_target" ]; then
-      if [ -e "$role_target" ] || [ -L "$role_target" ]; then
-        cmp -s "$path" "$role_target" || die "role file already exists with different content: $role_target"
+}
+
+add_lock() {
+  local panes id lock owner stale
+  panes=$(tmux list-panes -s -t "=$SESSION" -F '#{pane_id} #{@peon_brief_dir}') || die "cannot list panes in session $SESSION"
+  BRIEF_DIR=""
+  while read -r id BRIEF_DIR; do
+    [ ! -d "$BRIEF_DIR" ] || break
+  done <<<"$panes"
+  [ -d "$BRIEF_DIR" ] || die "session $SESSION has no stored brief directory; launch it again"
+  lock="$BRIEF_DIR/add.lock"
+  # $$ names the parent shell in a subshell function; the child reports this holder.
+  add_holder=$(exec sh -c 'echo "$PPID"')
+  if ! mkdir "$lock" 2>/dev/null; then
+    owner=$(cat "$lock/owner" 2>/dev/null) || owner=""
+    if [[ $owner =~ ^[1-9][0-9]*$ ]] && ! kill -0 "$owner" 2>/dev/null && mkdir "$lock/reclaim" 2>/dev/null; then
+      # Recheck under the reclaim guard before moving the stale directory aside.
+      if [ "$(cat "$lock/owner" 2>/dev/null)" = "$owner" ] && ! kill -0 "$owner" 2>/dev/null; then
+        stale=$(mktemp -d "$BRIEF_DIR/add-stale.XXXXXX") || die "cannot reclaim add lock: $lock"
+        mv "$lock" "$stale/lock" || die "cannot reclaim add lock: $lock"
+        rm -f "$stale/lock/owner"
+        rmdir "$stale/lock/reclaim" "$stale/lock" "$stale" || die "cannot remove stale add lock: $stale/lock"
       else
-        mkdir -p "$conf_dir/roles" && cp "$path" "$role_target" || die "cannot save role: $role_target"
+        rmdir "$lock/reclaim" 2>/dev/null || true
       fi
     fi
-    temporary=$(mktemp "$conf.XXXXXX") || die "cannot save config: $conf"
-    if [ -f "$conf" ]; then
-      cat "$conf" >"$temporary" || die "cannot read config: $conf"
-      [ ! -s "$conf" ] || [ -z "$(tail -c1 "$conf")" ] || printf '\n' >>"$temporary"
-    else
-      for ((index = 0; index < N - 1; index++)); do
-        marker=""
-        [ "$index" -ne "$MAIN" ] || marker='*'
-        printf '%s%s %s %s\n' "$marker" "${NAMES[$index]}" "${CMDS[$index]}" "${saved_roles[$index]}" >>"$temporary" || die "cannot write config: $conf"
-      done
-    fi
-    printf '%s %s %s\n' "$name" "$command" "$saved_role" >>"$temporary" &&
-      mv "$temporary" "$conf" || die "cannot save config: $conf"
-    tmux set-option -t "$SESSION" @peon_conf "$conf"
+    mkdir "$lock" 2>/dev/null || die "another add or add-team is running in session $SESSION; retry after it finishes. Lock: $lock; remove it only when no add or add-team is running"
   fi
+  printf '%s\n' "$add_holder" >"$lock/owner" || { rmdir "$lock" 2>/dev/null || true; die "cannot write add lock owner: $lock"; }
+  trap add_cleanup EXIT
+}
+
+add_cleanup() {
+  local pane board
+  if [ "$committed" -eq 0 ]; then
+    for pane in ${created_panes[@]+"${created_panes[@]}"}; do tmux kill-pane -t "$pane" 2>/dev/null || true; done
+    for board in ${created_boards[@]+"${created_boards[@]}"}; do rm -f "$board"; done
+    tmux select-layout -t "$SESSION":agents main-vertical >/dev/null 2>&1 || true
+  fi
+  if [ "$(cat "$BRIEF_DIR/add.lock/owner" 2>/dev/null)" = "$add_holder" ]; then
+    rm -f "$BRIEF_DIR/add.lock/owner"
+    rmdir "$BRIEF_DIR/add.lock"
+  fi
+}
+
+add_brief_note() {
+  local brief=$1 note=$2 temporary
+  temporary=$(mktemp "$brief.XXXXXX") || die "could not update brief: $brief"
+  { cat "$brief" && printf '\n%s\n' "$note"; } >"$temporary" &&
+    mv "$temporary" "$brief" || die "could not update brief: $brief"
+}
+
+add_config_append() {
+  local conf=$1
+  temporary=$(mktemp "$conf.XXXXXX") || die "cannot save config: $conf"
+  if [ -f "$conf" ]; then
+    cat "$conf" >"$temporary" || die "cannot read config: $conf"
+    [ ! -s "$conf" ] || [ -z "$(tail -c1 "$conf")" ] || printf '\n' >>"$temporary"
+  fi
+}
+
+add_split_pane() {
+  local index=$1 layout=$2 pane
+  pane=$(tmux split-window -d -P -F '#{pane_id}' -t "$SESSION":agents -c "$PWD" \
+    -e "PEON_CODE_SESSION=$SESSION" -e DISABLE_AUTO_UPDATE=true -e CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1) || die "could not add a pane to session $SESSION"
+  PANE_IDS[index]=$pane; created_panes+=("$pane")
+  tmux select-layout -t "$SESSION":agents "$layout" >/dev/null || true
+  initialize_agent_pane "$index"
+  wait_shell_ready "$pane"
+}
+
+add_copy_role() {
+  local path=$1 target=$2
+  [ -n "$target" ] || return 0
+  if [ -e "$target" ] || [ -L "$target" ]; then
+    cmp -s "$path" "$target" || die "role file already exists with different content: $target"
+  else
+    mkdir -p "$(dirname -- "$target")" && cp "$path" "$target" || die "cannot save role: $target"
+  fi
+}
+
+add_root_roles() {
+  local count=$1 conf_dir=$2 index label type
+  root_roles=()
+  for ((index = 0; index < count; index++)); do
+    label=$(tmux show-options -pqv -t "${PANE_IDS[$index]}" @peon_role_label)
+    type=$(tmux show-options -pqv -t "${PANE_IDS[$index]}" @peon_role_type)
+    if [ -n "$type" ]; then
+      [ -f "$SCRIPT_DIR/roles/$label.md" ] || [ -f "$conf_dir/roles/$label.md" ] ||
+        die "cannot save agent ${NAMES[$index]}: missing role $label; write roles/$label.md next to the config first"
+    else label=-; fi
+    root_roles+=("$label")
+  done
+}
+
+add_restart_watcher() {
+  local restart threshold watcher watcher_args=""
   restart=$(tmux show-options -qv -t "$SESSION" @peon_restart)
   threshold=$(tmux show-options -qv -t "$SESSION" @peon_compact_at)
   if [ "${threshold:-0}" -gt 0 ] || [ "$restart" = 1 ]; then
@@ -895,7 +941,318 @@ cmd_add() (
       *) nohup "$SCRIPT_DIR/peon-code.sh" watch "$SESSION" "${threshold:-0}" >/dev/null 2>>"$BRIEF_DIR/watch.log" </dev/null & ;;
     esac
   fi
+}
+
+cmd_add() (
+  local session=${PEON_CODE_SESSION:-} name role command argument path type id known index
+  local new_line new_pane project_dir brief_file temporary has_roles=0 committed=0 add_holder
+  local save=0 rebuild=0 conf conf_dir saved_role role_target="" marker team="" saved_name
+  local fields=() briefs=() root_roles=() created_panes=() created_boards=()
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --save) save=1; shift ;;
+      --team)
+        [ $# -ge 2 ] && [ -n "$2" ] || die "--team needs a team name"
+        team=$2; shift 2 ;;
+      --session)
+        [ $# -ge 2 ] && [ -n "$2" ] || die "--session needs a session name"
+        session=$2; shift 2 ;;
+      *) fields+=("$1"); shift ;;
+    esac
+  done
+  [ ${#fields[@]} -ge 3 ] || die "usage: peon-code.sh add <name> <role> <command...> [--team <name>] [--session <name>] [--save]"
+  name=${fields[0]}; role=${fields[1]}; command=${fields[2]}
+  [ ${#fields[@]} -le 3 ] || for argument in "${fields[@]:3}"; do command+=" $(printf %q "$argument")"; done
+  [[ $name =~ ^[A-Za-z0-9_-]+$ ]] || die "name \"$name\" must be letters, digits, _ or -"
+  [ "$name" != director ] || die "name director is reserved"
+  saved_name=$name
+  [ -n "${command//[[:space:]]/}" ] || die "add needs an agent command"
+  SESSION=$(session_name "$session")
+  tmux has-session -t "=$SESSION" 2>/dev/null || die "no session $SESSION"
+  is_peon_session "$SESSION" || die "session $SESSION was not created by peon-code"
+  path=$(resolve_role "$role" "$PWD")
+  [ -z "$path" ] || [ -f "$path" ] || die "role file not found: $path"
+  type=$(role_field "$path" type)
+  if [ -n "$path" ]; then
+    case $type in
+      director) die "add refuses a director-type role; use add-team" ;;
+      manager|worker|reviewer) ;;
+      *) die "role file $path needs a frontmatter type: manager, worker, or reviewer" ;;
+    esac
+  fi
+  add_lock
+  load_session_agents
+  if [ -z "$team" ] && [ -n "${TMUX_PANE:-}" ]; then
+    for index in "${!PANE_IDS[@]}"; do
+      [ "${PANE_IDS[$index]}" != "$TMUX_PANE" ] || team=${TEAMS[$index]}
+    done
+  fi
+  team=${team:-$SESSION}
+  case " ${TEAM_NAMES[*]} " in *" $team "*) ;; *) die "no team named $team in session $SESSION" ;; esac
+  [ "$team" = "$SESSION" ] || name="$team-$name"
+  for index in "${!NAMES[@]}"; do
+    known=${NAMES[$index]}; id=${PANE_IDS[$index]}
+    [ "$known" != "$name" ] || die "name \"$name\" is used twice"
+    [ "${TEAMS[$index]}" = "$team" ] || continue
+    role=$(tmux show-options -pqv -t "$id" @peon_role_type)
+    [ -z "$role" ] || has_roles=1
+    [ "$type:$role" != manager:manager ] || die "session $SESSION already has a manager"
+  done
+  [ -z "$type" ] || [ "$has_roles" -eq 1 ] || die "session $SESSION has no roles; add a roleless agent (-) or launch a role team"
+  project_dir=$(tmux show-options -qv -t "$SESSION" @peon_project_dir)
+  if [ "$save" -eq 1 ]; then
+    conf=$(session_config_path save) || exit 1
+    if [ "$team" != "$SESSION" ]; then
+      [ -n "$conf" ] || die "save the team config before adding an agent with --save"
+      conf=$(team_config_path "$conf" "$team") || die "no saved config for team $team; save the team first"
+      [ -f "$conf" ] || die "config file not found: $conf"
+    fi
+    if [ -z "$conf" ]; then
+      [ "${#TEAM_NAMES[@]}" -le 1 ] || die "save existing teams before rebuilding the session config"
+      rebuild=1
+      conf="$project_dir/peon-code.conf"
+      [ ! -e "$conf" ] && [ ! -L "$conf" ] || die "config already exists but was not used by this session: $conf"
+    fi
+    conf_dir=$(cd -- "$(dirname -- "$conf")" && pwd)
+    if [ ! -f "$conf" ]; then
+      add_root_roles "${#NAMES[@]}" "$conf_dir"
+    fi
+    add_saved_role "$path" "$conf_dir"
+  fi
+  cd -- "$project_dir" || die "cannot enter session project directory: $project_dir"
+  prepare_launch_settings
+  index=${#NAMES[@]}
+  resize_headless_agents "$SESSION" "$((index + 1))"
+  NAMES+=("$name"); CMDS+=("$command"); ROLES+=("$path"); RESUME_IDS+=("")
+  TEAMS+=("$team")
+  N=${#NAMES[@]}
+  add_split_pane "$index" main-vertical
+  new_pane=${PANE_IDS[$index]}
+  new_line=$(add_roster_line "$index")
+  ROSTER+="$new_line"$'\n'
+  FAILED_AGENTS=()
+  if ! launch_agents "$index" "pane-${new_pane#%}" || [ ${#FAILED_AGENTS[@]} -gt 0 ]; then
+    die "agent $name failed to start; killed new pane $new_pane"
+  fi
+  committed=1
+  for brief_file in "${briefs[@]}"; do
+    add_brief_note "$brief_file" "New teammate, add to the roster above: $new_line"
+  done
+  for ((index = 0; index < N - 1; index++)); do
+    if ! cmd_send "${PANE_IDS[$index]}" "[from peon-code] New teammate: $new_line"; then
+      echo "peon-code: could not notify ${NAMES[$index]} ${PANE_IDS[$index]} about $name" >&2
+    fi
+  done
+  if [ "$save" -eq 1 ]; then
+    if [ "$rebuild" -eq 1 ] && { [ -e "$conf" ] || [ -L "$conf" ]; }; then
+      die "config already exists but was not used by this session: $conf"
+    fi
+    add_copy_role "$path" "$role_target"
+    add_config_append "$conf"
+    if [ ! -f "$conf" ]; then
+      for ((index = 0; index < N - 1; index++)); do
+        marker=""
+        [ "$index" -ne "$MAIN" ] || marker='*'
+        printf '%s%s %s %s\n' "$marker" "${NAMES[$index]}" "${CMDS[$index]}" "${root_roles[$index]}" >>"$temporary" || die "cannot write config: $conf"
+      done
+    fi
+    printf '%s %s %s\n' "$saved_name" "$command" "$saved_role" >>"$temporary" &&
+      mv "$temporary" "$conf" || die "cannot save config: $conf"
+    if [ "$team" = "$SESSION" ]; then tmux set-option -t "$SESSION" @peon_conf "$conf"; fi
+  fi
+  add_restart_watcher
   echo "peon-code: added $name $new_pane to session $SESSION"
+)
+
+add_team_convert_director() {
+  local pane first order index bin args brief_file q line
+  if [ "$new_director" -eq 1 ]; then
+    pane=${PANE_IDS[$director]}
+    first=$(tmux list-panes -t "$SESSION":agents -F '#{pane_id}' | head -1)
+    [ "$first" = "$pane" ] || tmux swap-pane -d -s "$pane" -t "$first"
+    order=$(tmux show-options -qv -t "$SESSION" @peon_pane_order)
+    [ -z "$order" ] || tmux set-option -t "$SESSION" @peon_pane_order "$pane $order"
+    for ((index = 0; index < old_count; index++)); do tmux set -pt "${PANE_IDS[$index]}" @peon_team "$SESSION"; done
+    tmux set -pt "${PANE_IDS[$old_main]}" @peon_main 0
+    bin=${CMDS[$old_main]%% *}; args=""
+    [ "${CMDS[$old_main]}" = "$bin" ] || args=" ${CMDS[$old_main]#* }"
+    brief_file=$(tmux show-options -pqv -t "${PANE_IDS[$old_main]}" @peon_brief)
+    q="\"\$(cat $(printf %q "$brief_file"))\""
+    if ! line=$(cli_call "$bin" launch_command "$bin" "$args" "" "$q" "$old_main") || [ -z "$line" ] ||
+      ! tmux set -pt "${PANE_IDS[$old_main]}" @peon_launch "$line"; then
+      tmux set -pu -t "${PANE_IDS[$old_main]}" @peon_launch
+      echo 'peon-code: cannot update the manager restart command; automatic restart disabled for that pane; swap it before restarting' >&2
+    fi
+    notice="This replaces rules 1 and 2 above: a director now runs intake and git in pane $pane (director). Your team is $SESSION: the roster lines above without a [team] tag. Message only your own team and the director. Where rules 3, 4, and 5 say tell the user, tell the director instead. Team managers report plan rows to the director as D<n> done, never to the user, and the director posts the final summary. The session now has a director: never run git commit, git stash, or any history-rewriting git command; request commits from the director by message. The commit pane is now $pane."
+    printf 'peon-code: manager %s keeps git until it is swapped or restarted\n' "${NAMES[$old_main]}"
+  fi
+}
+
+add_team_save() {
+  local index target temporary team_temp team_entry marker known path
+  if [ "$save" -eq 1 ]; then
+    if [ "$rebuild" -eq 1 ] && { [ -e "$conf" ] || [ -L "$conf" ]; }; then
+      die "config already exists but was not used by this session: $conf"
+    fi
+    team_temp=$(mktemp "$team_file.XXXXXX") || die "cannot save team config: $team_file"
+    for ((index = old_count; index < N; index++)); do
+      [ "$index" -ne "$director" ] || continue
+      target=${role_targets[$index]}
+      add_copy_role "${ROLES[$index]}" "$target"
+      printf '%s %s %s\n' "${NAMES[$index]#"$team-"}" "${CMDS[$index]}" "${saved_roles[$index]}" >>"$team_temp" || die "cannot save team config: $team_file"
+    done
+    [ ! -e "$team_file" ] && [ ! -L "$team_file" ] || die "team config already exists: $team_file"
+    mv "$team_temp" "$team_file" || die "cannot save team config: $team_file"
+    add_config_append "$conf"
+    if [ ! -f "$conf" ]; then
+      for ((index = 0; index < old_count; index++)); do
+        [ "${TEAMS[$index]}" = "$SESSION" ] || continue
+        marker=""; [ "$index" -ne "$old_main" ] || marker='*'
+        printf '%s%s %s %s\n' "$marker" "${NAMES[$index]}" "${CMDS[$index]}" "${root_roles[$index]}" >>"$temporary" || die "cannot write config: $conf"
+      done
+      for known in "${TEAM_NAMES[@]}"; do
+        [ "$known" != "$SESSION" ] && [ "$known" != "$team" ] || continue
+        path="$project_dir/peon-code.$known.conf"
+        team_temp=$(mktemp "$path.XXXXXX") || die "cannot save team config: $path"
+        for ((index = 0; index < old_count; index++)); do
+          [ "${TEAMS[$index]}" = "$known" ] || continue
+          printf '%s %s %s\n' "${NAMES[$index]#"$known-"}" "${CMDS[$index]}" "${root_roles[$index]}" >>"$team_temp" || die "cannot save team config: $path"
+        done
+        [ ! -e "$path" ] && [ ! -L "$path" ] || die "team config already exists: $path"
+        mv "$team_temp" "$path" || die "cannot save team config: $path"
+        printf 'team %s %s\n' "$known" "${path##*/}" >>"$temporary"
+      done
+    fi
+    team_entry=$team_file
+    case $conf_dir in
+      "$project_dir"|"$project_dir"/*)
+        team_entry=${team_file##*/}; path=${conf_dir#"$project_dir"}
+        while [ -n "$path" ]; do team_entry="../$team_entry"; path=${path%/*}; done ;;
+    esac
+    printf 'team %s %s\n' "$team" "$team_entry" >>"$temporary"
+    mv "$temporary" "$conf" || die "cannot save config: $conf"
+    tmux set-option -t "$SESSION" @peon_conf "$conf"
+  fi
+}
+
+cmd_add_team() (
+  local session=${PEON_CODE_SESSION:-} team="" save=0 rebuild=0 argument source_conf director_command
+  local project_dir conf conf_dir team_file saved_role role_target
+  local index old_count old_main director=-1 new_director=0 known pane board team_number
+  local brief_file additions="" notice="" path j line committed=0 add_holder
+  local briefs=() created_panes=() created_boards=() indices=() saved_roles=() role_targets=() root_roles=()
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --save) save=1; shift ;;
+      --team|--session)
+        argument=$1
+        [ $# -ge 2 ] && [ -n "$2" ] || die "$argument needs a name"
+        if [ "$argument" = --team ]; then team=$2; else session=$2; fi
+        shift 2 ;;
+      *) die "unknown add-team argument: $1" ;;
+    esac
+  done
+  SESSION=$(session_name "$session")
+  tmux has-session -t "=$SESSION" 2>/dev/null || die "no session $SESSION"
+  is_peon_session "$SESSION" || die "session $SESSION was not created by peon-code"
+  source_conf=$(session_config_path source) || exit 1
+  add_lock
+  load_session_agents
+  if [ -z "$team" ]; then
+    team_number=2
+    while :; do
+      team="team$team_number"
+      case " ${TEAM_NAMES[*]} " in
+        *" $team "*) team_number=$((team_number + 1)) ;;
+        *) break ;;
+      esac
+    done
+  fi
+  [[ $team =~ ^[A-Za-z0-9_-]+$ ]] || die "team name \"$team\" must be letters, digits, _ or -"
+  [ "$team" != director ] || die "team name director is reserved"
+  case " ${TEAM_NAMES[*]} " in *" $team "*) die "team name \"$team\" is used twice" ;; esac
+  old_count=${#NAMES[@]}; old_main=$MAIN
+  for index in "${!NAMES[@]}"; do [ "${NAMES[$index]}" != director ] || director=$index; done
+  TEAM_NAMES+=("$team")
+  read_conf "$source_conf" 1 "$team"
+  for ((index = old_count; index < ${#NAMES[@]}; index++)); do
+    [ "${TEAMS[$index]}" = "$team" ] || die "add-team config must describe one team"
+    [ "$(role_field "${ROLES[$index]}" type)" != director ] || die "add-team reserves the director-type role for the director pane"
+    RESUME_IDS+=("")
+  done
+  if [ "$director" -lt 0 ]; then
+    new_director=1
+    [ "$(tmux show-options -pqv -t "${PANE_IDS[$old_main]}" @peon_role_type)" = manager ] ||
+      die "main pane ${NAMES[$old_main]} is not a manager; launch a session with its manager as main before add-team"
+    director_command=${CMDS[$old_main]}
+    path="$SCRIPT_DIR/roles/director.md"
+    [ -f "$path" ] && [ "$(role_field "$path" type)" = director ] || die "director role file not found or invalid: $path"
+    director=${#NAMES[@]}
+    NAMES+=(director); CMDS+=("$director_command"); ROLES+=("$path"); TEAMS+=(""); RESUME_IDS+=("")
+    indices+=("$director")
+  fi
+  MAIN=$director; N=${#NAMES[@]}
+  for ((index = old_count; index < N; index++)); do [ "$index" -eq "$director" ] || indices+=("$index"); done
+  ROSTER=""
+  for ((index = 0; index < old_count; index++)); do ROSTER+="$(add_roster_line "$index")"$'\n'; done
+  project_dir=$(tmux show-options -qv -t "$SESSION" @peon_project_dir)
+  if [ "$save" -eq 1 ]; then
+    conf=$(session_config_path save) || exit 1
+    if [ -z "$conf" ]; then
+      rebuild=1
+      conf="$project_dir/peon-code.conf"
+      [ ! -e "$conf" ] && [ ! -L "$conf" ] || die "config already exists but was not used by this session: $conf"
+      add_root_roles "$old_count" "$project_dir"
+      for known in "${TEAM_NAMES[@]}"; do
+        [ "$known" != "$SESSION" ] && [ "$known" != "$team" ] || continue
+        path="$project_dir/peon-code.$known.conf"
+        [ ! -e "$path" ] && [ ! -L "$path" ] || die "team config already exists: $path"
+      done
+    fi
+    conf_dir=$(cd -- "$(dirname -- "$conf")" && pwd)
+    team_file="$project_dir/peon-code.$team.conf"
+    [ ! -e "$team_file" ] && [ ! -L "$team_file" ] || die "team config already exists: $team_file"
+    for ((index = old_count; index < N; index++)); do
+      [ "$index" -ne "$director" ] || continue
+      add_saved_role "${ROLES[$index]}" "$project_dir"
+      saved_roles[index]=$saved_role; role_targets[index]=$role_target
+      for ((j = old_count; j < index; j++)); do
+        if [ -n "$role_target" ] && [ "${role_targets[$j]:-}" = "$role_target" ]; then
+          cmp -s "${ROLES[$index]}" "${ROLES[$j]}" || die "role file already exists with different content: $role_target"
+        fi
+      done
+    done
+  fi
+  cd -- "$project_dir" || die "cannot enter session project directory: $project_dir"
+  prepare_launch_settings
+  resize_headless_agents "$SESSION" "$N"
+  for index in "${indices[@]}"; do
+    add_split_pane "$index" tiled
+    line=$(add_roster_line "$index")
+    ROSTER+="$line"$'\n'; additions+="$line"$'\n'
+    board=$(board_for "$index")
+    [ -f "$board" ] || created_boards+=("$PWD/$board")
+    seed_board "$index"
+  done
+  FAILED_AGENTS=()
+  for index in "${indices[@]}"; do
+    if ! launch_agents "$index" "pane-${PANE_IDS[$index]#%}" || [ ${#FAILED_AGENTS[@]} -gt 0 ]; then
+      die "team $team failed to start; killed new panes: ${FAILED_AGENTS[*]}"
+    fi
+  done
+  committed=1
+  add_team_convert_director
+  tmux select-layout -t "$SESSION":agents main-vertical >/dev/null || true
+  for brief_file in "${briefs[@]}"; do
+    add_brief_note "$brief_file" "New teammates, add to the roster above:
+$additions
+$notice"
+  done
+  (rebrief_agents all "$SESSION" "${PANE_IDS[*]:0:$old_count}") ||
+    echo "peon-code: some old panes were not rebriefed; stored briefs include the new team" >&2
+  add_team_save
+  add_restart_watcher
+  echo "peon-code: added team $team to session $SESSION"
 )
 
 cmd_swap() {

@@ -80,7 +80,9 @@ Each pane shell, agent, and subagent inherits `PEON_CODE_SESSION` set to the ses
 
 `peon-code [-c file] [<session>] [<cmd> ...]` builds the session, or attaches it if it already exists. The team resolves as described under [Config file](#config-file).
 
-The window uses tmux's `main-vertical` layout: the main agent's pane takes the left 60% of the width, the other agents stack to its right. Main is the agent marked with a leading `*` in the config, else the first agent with the `manager` role, else the first agent in the team.
+A session created without a terminal is 220 columns by at least 60 rows, growing with the pane count, until a client attaches.
+
+The window uses tmux's `main-vertical` layout: the main agent's pane takes the left 60% of the width, the other agents stack to its right. Main is the `director` in a session of two or more [teams](#teams), else the agent marked with a leading `*` in the config, else the first agent with the `manager` role, else the first agent in the team. In a terminal, every team shares the one tmux window, so more teams means narrower panes.
 
 Only the main agent can commit and run destructive git commands (`git reset`, `checkout`, `restore`, `switch`, `clean`, `stash`, `rm`, `commit`, `branch -D/-M/-f/--delete`, `push`, `rebase`, `reflog expire`, `update-ref`, `filter-branch`, `gc`); every other agent is denied them. The denial is enforced for claude panes and stated as a rule in the brief for other CLIs. A claude pane whose config line passes its own `--settings` or `--dangerously-skip-permissions` is not covered, and the launcher says so on stderr. See [ARCHITECTURE.md](ARCHITECTURE.md#git-denial) for the limits of the enforcement.
 
@@ -116,7 +118,7 @@ peon-code-web --ssh my-server --dir /remote/path --config ./team.conf
 
 The command opens your default browser on macOS or Linux. Keep it running while you use the UI; Ctrl-C stops the web server and leaves your agents running. If a browser cannot open, use the printed URL. Start teams with `peon-code`; the browser lists them as they appear.
 
-The page lists the running teams and their agents. The **+** tab starts a team from a project path on the agent host, with an optional local team config file. A team or an agent made in the browser is kept by default as `peon-code.conf` and `roles/<name>.md` in the project folder, so the next `peon-code` launch there starts the same team. Keeping never overwrites an existing file: a project folder that already has `peon-code.conf` or a role file of the same name refuses the launch. An uploaded team config is not kept. When keeping is off, the server deletes the session roles and the composed config once the team starts, so to launch the same team again, write them as files. While no terminal is attached, the browser sizes each pane to its own view; once a terminal is attached, the terminal sets the size, and the browser view can show only what the terminal shows. After the browser has sized a pane, attach with `peon-code <session>`; a plain `tmux attach` shows each agent in its own window until a browser page polls again. Files you upload from the browser land in `<project dir>/<folder>/` on the agent host, `upload/` by default. An upload never replaces an existing file of the same name, and each file can be at most 64 MiB. The browser can list and download files only inside the team's project folder, at most 256 MiB per file. A folder downloads as a zip archive under the same 256 MiB cap, counted on the file sizes before compression. It remembers the last upload folder for each team in this browser only.
+The page lists the running teams and their agents. A new session takes a project directory on the agent host, an optional session name, and an optional local team config file. An uploaded team config is used for that launch only and is not kept, so to launch the same team again, keep it as a file in the project folder. Adding a team to a running session works like [`add-team`](#add-team): without an upload it clones the session's first team, which needs a session launched from a config file, and it is kept for future launches by default. While no terminal is attached, the browser sizes each pane to its own view; once a terminal is attached, the terminal sets the size, and the browser view can show only what the terminal shows. After the browser has sized a pane, attach with `peon-code <session>`; a plain `tmux attach` shows each agent in its own window until a browser page polls again. Files you upload from the browser land in `<project dir>/<folder>/` on the agent host, `upload/` by default. An upload never replaces an existing file of the same name, and each file can be at most 64 MiB. The browser can list and download files only inside the team's project folder, at most 256 MiB per file. A folder downloads as a zip archive under the same 256 MiB cap, counted on the file sizes before compression. It remembers the last upload folder for each team in this browser only.
 
 For SSH, install `peon-code-web` on your Mac and on the remote host, then run `peon-code-web --ssh <your-usual-SSH-host>` **on your Mac**. It starts the remote web server, forwards loopback ports over one SSH connection, and opens your local browser. Your SSH config, keys, and authentication apply, and the Mac needs no tmux. The browser lists the running teams of all project folders on the host. Keep the command running; Ctrl-C closes the tunnel and its remote web server and leaves the agents running. A stale web server from a lost tunnel is replaced automatically. The local and remote `peon-code-web` installs must both be this version or newer, because an older remote does not know the port range the local side asks for.
 
@@ -183,13 +185,22 @@ When the check passes, the swap writes folder trust for the new CLI, updates the
 
 ### Add
 
-`peon-code add <name> <role> <command...> [--session <name>] [--save]` adds an agent to a running team in a new pane of that team's session. The session defaults to the team of the pane you run it from, else the current directory name. Every word after the role is the agent command.
+`peon-code add <name> <role> <command...> [--session <name>] [--team <name>] [--save]` adds an agent to a running team in a new pane of that team's session. The session defaults to the team of the pane you run it from, else the current directory name. In a session of several teams, `--team` picks the team, defaulting to the team of the pane you run it from, else team 1; an agent added to a later team gets that team's name prefix. Every word after the role is the agent command.
 
-The role is `-`, a shipped role name, or a role file path relative to the current directory. A bare name that is not shipped reads `roles/<name>.md` in the current directory. The role file needs a `type:` frontmatter line. A team has at most one manager, so a manager-type role is refused when the team already has one. The name must match `[A-Za-z0-9_-]+` and differ from every agent name in the session. The command cannot contain the word `--session`, because `add` reads it as its own option.
+The role is `-`, a shipped role name, or a role file path relative to the current directory. A bare name that is not shipped reads `roles/<name>.md` in the current directory. The role file needs a `type:` frontmatter line (see [Config file](#config-file) for the allowed types). A team has at most one manager, so a manager-type role is refused when the team already has one. The name must match `[A-Za-z0-9_-]+`, must not be `director`, and must differ from every agent name in the session. The command cannot contain the word `--session`, because `add` reads it as its own option.
 
 The new agent's brief holds the full roster. Every other agent gets a one-line note about its new teammate, and its stored brief gains the new roster line, so `rebrief`, `compact`, and `clear` keep the new agent in the roster. If the new agent does not start, its pane is killed and the team stays as it was. `add` refuses a team whose panes have no stored brief; launch that team again first. If the team uses the [context watcher](#context-watcher) and no watcher runs, `add` starts one.
 
-`--save` keeps the new agent for future launches. It appends the agent to the config file the session launched from, when that file is inside the project folder. Otherwise it creates `peon-code.conf` in the project folder from the current roster plus the new agent. It refuses when the project folder already has a `peon-code.conf` that the session did not launch from. A custom role is copied to `roles/<name>.md` next to the config; `--save` refuses when a file of that name holds different content, or when a shipped role has that name. A new config needs every role of the current roster to be shipped or to exist in `roles/` next to it, so write any missing role file first. The user config `~/.config/peon-code/peon-code.conf` is never changed. The checks run before the new pane starts, and the save runs only after the agent has started.
+`--save` keeps the new agent for future launches. It appends the agent to the config file the session launched from, when that file is inside the project folder. Otherwise it creates `peon-code.conf` in the project folder from the current roster plus the new agent. It refuses when the project folder already has a `peon-code.conf` that the session did not launch from. A custom role is copied to `roles/<name>.md` next to the config; `--save` refuses when a file of that name holds different content, or when a shipped role has that name. A new config needs every role of the current roster to be shipped or to exist in `roles/` next to it, so write any missing role file first. The user config `~/.config/peon-code/peon-code.conf` is never changed. The checks run before the new pane starts, and the save runs only after the agent has started. For a later team, `--save` appends to that team's own config file, so it needs a saved session config that names the team with a `team` line.
+
+### Add team
+
+`peon-code [-c file] add-team [--team <name>] [--save] [--session <name>]` adds a whole team to a running session. The team comes from the `-c` file. Without `-c`, it clones the session's first team from the config file the session launched from; without either file, it refuses. The file is read as a team file (see [Teams](#teams)), and it must describe one team with its own manager, worker, and reviewer when it uses roles.
+
+- `--team` names the new team (the default is in [Teams](#teams)). The name must match `[A-Za-z0-9_-]+`, must not be `director`, and must be new to the session.
+- `--save` keeps the team for future launches: it writes the team to `peon-code.<team>.conf` in the project folder and appends a `team` line to the session config. With no session config in the project folder, it writes `peon-code.conf` for team 1 plus one `peon-code.<team>.conf` per other team, and every role of the current roster must then be shipped or exist in `roles/` there. It refuses when any of those files already exists. Custom roles are copied to `roles/` as with `add --save`.
+
+The first `add-team` on a one-team session also starts the `director` pane, which takes over intake and git. The main pane must then be a manager, and the director runs that manager's command. The manager of team 1 keeps its git access until it is swapped or restarted, because a running agent keeps the permissions it started with; the launcher says so on stdout. If any new agent does not start, every new pane is killed and the old team stays as it was. Running agents get the new roster and are briefed again.
 
 ### Compact and clear
 
@@ -229,7 +240,8 @@ peon-code explain <pane-id>                  # explain selected text from stdin 
 peon-code key [--submit] <pane-id> <name>    # press Tab, Up, Down, Left, Right, Enter, Escape, BSpace, or C-c (Ctrl+C)
 peon-code rebrief <name|all> [<session>]     # send an agent its launch brief again
 peon-code swap <name> <cli|-> <model|-> <effort|-> [<session>]  # replace an agent's CLI, model, or effort
-peon-code add <name> <role> <command...> [--session <name>] [--save]  # add an agent to a running team
+peon-code add <name> <role> <command...> [--session <name>] [--team <name>] [--save]  # add an agent to a running team
+peon-code [-c file] add-team [--team <name>] [--save] [--session <name>]  # add a team to a running session; without -c, clone team 1
 peon-code compact [<name|all>] [<session>]   # send /compact, then the brief again once it ends
 peon-code clear [<name|all>] [<session>]     # send /clear, then the brief again
 peon-code watch [<session>] [<tokens>]       # compact a pane whose context reaches <tokens> and restart dead agents; started by each launch unless both are off
@@ -264,23 +276,39 @@ fast     codex                                        -
 weird    claude                                       ./my-roles/chaos.md
 ```
 
-- Names must match `[A-Za-z0-9_-]+` and be unique. A leading `*` marks the main agent (see [Start and attach](#start-and-attach)); at most one line may carry it.
+- Names must match `[A-Za-z0-9_-]+` and be unique. The name `director` is reserved. A leading `*` marks the main agent (see [Start and attach](#start-and-attach)); at most one line may carry it.
 - The role field is required. `-` means no role.
 - A bare role name reads `roles/<name>.md` next to `peon-code.sh`, else `roles/<name>.md` next to the config file. A role token with a `/` is a file path, relative paths resolving against the config file's directory.
-- A line `compact-at <tokens>` sets the context watcher's threshold, and a line `restart-dead yes` or `restart-dead no` (default `yes`) turns the restart of dead agents on or off (see [Context watcher](#context-watcher)); these are the only non-agent lines.
+- A line `compact-at <tokens>` sets the context watcher's threshold, and a line `restart-dead yes` or `restart-dead no` (default `yes`) turns the restart of dead agents on or off (see [Context watcher](#context-watcher)). The `team` line under [Teams](#teams) is the only other non-agent line.
 - Full-line `#` comments and blank lines are skipped. Inline comments are not.
-- A role file opens with a frontmatter block: `type:` (one of `manager`, `worker`, `reviewer`), `description:` (one line, shown in the roster). The type picks the agent's duties in `roles/protocol.md`; the body below the block holds only the job-specific rules.
+- A role file opens with a frontmatter block: `type:` (one of `manager`, `worker`, `reviewer`; `director` is reserved for the shipped director role), `description:` (one line, shown in the roster). The type picks the agent's duties in `roles/protocol.md`; the body below the block holds only the job-specific rules.
 - Bad names, duplicate names, lines with fewer than three tokens, missing role files, a role file without a type, and a team with roles that lacks a manager-type, a worker-type, or a reviewer-type role all abort before the session is created.
 
-Shipped roles: `manager`, `implementer`, `reviewer`, `writer`.
+Shipped roles: `manager`, `implementer`, `reviewer`, `writer`, `director`.
 
-Types: `manager` is the manager, `implementer` and `writer` are workers, `reviewer` is the reviewer. The board and message protocol every role follows is `roles/protocol.md`; it is part of every role pane's brief.
+Types: `manager` is the manager, `implementer` and `writer` are workers, `reviewer` is the reviewer, `director` is the director. The session adds the `director` pane with the director role on its own when it has two or more teams. No config line, `add`, or `add-team` can give an agent a director-type role. The board and message protocol every role follows is `roles/protocol.md`; it is part of every role pane's brief.
+
+### Teams
+
+One session can run several teams side by side, each with its own manager, workers, reviewer, and task board. The agents of the main config file are team 1: they keep bare names, and team 1 takes the session name as its team name. Add a team to the config with one line per extra team:
+
+```
+team <name> <file>
+```
+
+- `team <name> <file>` reads the agents of team `<name>` from `<file>`, a path relative to this config. The file holds agent lines only: a `team`, `compact-at`, or `restart-dead` line in it is ignored with a warning on stderr, and a `*` mark is ignored. Each team needs its own manager, worker, and reviewer when it uses roles. Team names match `[A-Za-z0-9_-]+`, must be unique, and must differ from the session name, which team 1 uses.
+- Agents of a later team are named `<team>-<name>`, so `impl` in team `team2` is `team2-impl`. An added team without a name gets the first free one of `team2`, `team3`, and so on.
+- With two or more teams, the session adds one `director` pane. It takes the main slot, the work you type, and git; team managers report to it instead of to you. It runs the command of team 1's manager, or of team 1's first agent when team 1 has no roles. To give it another CLI or model, use [`swap director`](#swap).
+
+To add a team to a running session, see [Add team](#add-team).
 
 A team with a `writer` writes its summaries under `innovation_summary/` in the working directory, one markdown file per subject. Each innovation in a write-up has four labeled segments in order: Problem, Importance, Innovation, Implementation. The reviewer checks for that structure. When that directory is a git repository, the launcher adds `innovation_summary/` to `.gitignore` if it is not already listed.
 
 ### Task board
 
 The launcher creates `.peon-code-task.md` in the working directory if it is missing and at least one agent has a role. It is a table of `id | who | task | files | status`, one row per open task, under a header that states the editing rules the agents follow. Read it to see what the team is working on; finished rows are deleted, so the board lists only open work. The rules the agents follow are in [ARCHITECTURE.md](ARCHITECTURE.md#task-board-protocol).
+
+With several [teams](#teams), team 1 keeps `.peon-code-task.md`, each later team gets `.peon-code-task.<team>.md`, and the director plans on `.peon-code-plan.md`, a board of the same format whose rows assign a part of the work to each team.
 
 A team without roles (agent commands on the command line, or a config of all `-` roles) leaves no file behind; its agents create the board themselves, with the same header, if they need it.
 
@@ -289,7 +317,7 @@ A team without roles (agent commands on the command line, or a config of all `-`
 peon-code reads these environment variables:
 
 - `CLAUDE_CONFIG_DIR` and `CODEX_HOME`: the transcript stores `resume` searches for claude and codex, defaulting to `~/.claude` and `~/.codex`. They also locate the files the launch writes folder trust to, `.claude.json` (default `~/.claude.json`) and `config.toml`.
-- `TMPDIR`: the directory the brief files are written under, defaulting to `/tmp`.
+- `XDG_STATE_HOME`: the session's brief files and watcher log go under `$XDG_STATE_HOME/peon-code/<session>/`, defaulting to `~/.local/state/peon-code/<session>/`. `dismiss` deletes that directory.
 
 The tmux server captures its environment when it first starts. An agent that cannot see an environment variable you exported later is reading the older environment: run `tmux kill-server` and launch again. `dismiss` only kills one session, so the server keeps its old environment.
 

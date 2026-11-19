@@ -13,21 +13,21 @@ def tmux(*args):
 
 def panes(session=None):
     try:
-        rows = tmux("list-panes", "-a", "-F", "#{session_name}\t#{pane_id}\t#{@peon_name}\t#{@peon_code}\t#{pane_current_command}\t#{@peon_role_type}\t#{@peon_brief}\t#{pid}:#{session_id}:#{pane_pid}\t#{@peon_weekly}\t#{@peon_usage}\t#{@peon_bin}")
+        rows = tmux("list-panes", "-a", "-F", "#{session_name}\t#{pane_id}\t#{@peon_name}\t#{@peon_code}\t#{pane_current_command}\t#{@peon_role_type}\t#{@peon_brief}\t#{pid}:#{session_id}:#{pane_pid}\t#{@peon_weekly}\t#{@peon_usage}\t#{@peon_bin}\t#{@peon_team}")
     except subprocess.CalledProcessError:
         return []
     result = []
     for row in rows.splitlines():
         parts = row.split("\t")
-        if len(parts) != 11:
+        if len(parts) != 12:
             continue
-        team, pane, name, marked, command, role, brief, identity, weekly_text, usage_text, cli = parts
-        if marked != "1" or not name or (session and team != session):
+        session_name, pane, name, marked, command, role, brief, identity, weekly_text, usage_text, cli, team = parts
+        if marked != "1" or not name or (session and session_name != session):
             continue
-        if role not in ("manager", "reviewer", "worker") and brief:
+        if role not in ("director", "manager", "reviewer", "worker") and brief:
             try:
                 with Path(brief).open() as file:
-                    match = re.search(r"Your role: [^\n]+, type (manager|reviewer|worker):", file.read(65536))
+                    match = re.search(r"Your role: [^\n]+, type (director|manager|reviewer|worker):", file.read(65536))
                 role = match[1] if match else ""
             except (OSError, UnicodeError):
                 role = ""
@@ -57,13 +57,13 @@ def panes(session=None):
                 usage = dict(zip(("input", "cacheRead", "cacheWrite", "output"), map(int, counts)))
             except ValueError:
                 pass
-        result.append(dict(session=team, id=pane, identity=identity, name=name, command=command, agent_command=agent_command or command, swap=swap, cli=cli, role=role, projectDir=project, weekly=weekly, usage=usage))
-    for team in {pane["session"] for pane in result}:
-        group = sorted((pane for pane in result if pane["session"] == team), key=lambda pane: int(pane["id"][1:]))
+        result.append(dict(session=session_name, team=team, id=pane, identity=identity, name=name, command=command, agent_command=agent_command or command, swap=swap, cli=cli, role=role, projectDir=project, weekly=weekly, usage=usage))
+    for session_name in {pane["session"] for pane in result}:
+        group = sorted((pane for pane in result if pane["session"] == session_name), key=lambda pane: int(pane["id"][1:]))
         for index, pane in enumerate(group):
-            if pane["role"] not in ("manager", "reviewer", "worker"):
+            if pane["role"] not in ("director", "manager", "reviewer", "worker"):
                 pane["role"] = ("manager", "reviewer")[index] if index < 2 else "worker"
-    return sorted(result, key=lambda pane: (pane["session"], {"manager": 0, "reviewer": 1, "worker": 2}[pane["role"]], int(pane["id"][1:])))
+    return sorted(result, key=lambda pane: (pane["session"], {"director": 0, "manager": 1, "worker": 2, "reviewer": 3}[pane["role"]], int(pane["id"][1:])))
 
 
 def snapshot(pane, lines=1000, rows=None):

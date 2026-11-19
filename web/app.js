@@ -94,46 +94,22 @@ async function api(path, data) {
 const newSession = document.querySelector('#new-session');
 const newSessionForm = document.querySelector('#new-session-form');
 const newSessionStatus = document.querySelector('#new-session-status');
-const sessionRoles = document.querySelector('#new-session-roles');
-const sessionAgents = document.querySelector('#new-session-agents');
-let shippedRoles = [];
-function updateAgentRoles() {
-  const names = [...new Set(['-', ...shippedRoles.map(role => role.name), ...[...sessionRoles.children].map(role => role.querySelector('[name="name"]').value.trim()).filter(Boolean)])];
-  for (const agent of sessionAgents.children) {
-    const select = agent.querySelector('[name="role"]'), value = select.value;
-    select.replaceChildren(...names.map(name => new Option(name, name)));
-    select.value = names.includes(value) ? value : '-';
-  }
+async function configFields(file) {
+  if (!file) return {};
+  if (file.size > 200 * 1024) throw new Error('Team config must be at most 200 KiB.');
+  const text = await new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(new Error('Could not read the team config.'));
+    reader.readAsText(file);
+  });
+  return {config_name: file.name, config_text: text};
 }
-function updateAgentClis() {
-  for (const select of document.querySelectorAll('#new-session-agents [name="cli"], #add-agent-form [name="cli"]')) {
-    const value = select.value;
-    select.replaceChildren(...availableClis.map(cli => new Option(cli, cli)));
-    if (availableClis.includes(value)) select.value = value;
-  }
-}
-document.querySelector('#add-session-agent').onclick = () => {
-  const agent = document.querySelector('#session-agent-template').content.firstElementChild.cloneNode(true);
-  agent.querySelector('.remove-agent').onclick = () => { agent.remove(); updateAgentRoles(); };
-  sessionAgents.append(agent);
-  updateAgentClis(); updateAgentRoles();
-  agent.querySelector('[name="name"]').focus();
-};
-document.querySelector('#add-role').onclick = () => {
-  const role = document.querySelector('#role-template').content.firstElementChild.cloneNode(true);
-  role.querySelector('.remove-role').onclick = () => { role.remove(); updateAgentRoles(); };
-  role.querySelector('[name="name"]').oninput = updateAgentRoles;
-  sessionRoles.append(role);
-  updateAgentRoles();
-  role.querySelector('[name="name"]').focus();
-};
 function closeNewSession() {
   const focused = document.activeElement;
   newSessionForm.hidden = true;
   newSession.setAttribute('aria-expanded', 'false');
   if (newSessionForm.contains(focused) || focused === newSession || focused === document.body) newSession.focus();
-  sessionRoles.replaceChildren();
-  sessionAgents.replaceChildren();
 }
 newSession.onclick = () => {
   if (!newSessionForm.hidden) { closeNewSession(); return; }
@@ -157,43 +133,7 @@ newSessionForm.onsubmit = async event => {
     const data = {directory: newSessionForm.elements.directory.value};
     const session = newSessionForm.elements.session.value.trim();
     if (session) data.session = session;
-    const roles = [...sessionRoles.children].map(role => Object.fromEntries([...role.querySelectorAll('[name]')].map(input => [input.name, input.value])));
-    const agents = [...sessionAgents.children];
-    const file = newSessionForm.elements.config.files[0];
-    if (agents.length && file) throw new Error('Choose agent rows or a team config upload, not both');
-    if (roles.length && !file && !agents.length) throw new Error('Roles need a team config that names them');
-    if (roles.length) data.roles = roles;
-    if (agents.length) {
-      data.save = true;
-      const names = new Set();
-      data.config_name = 'team.conf';
-      data.config_text = agents.map(agent => {
-        const values = Object.fromEntries([...agent.querySelectorAll('[name]')].map(input => [input.name, input.value.trim()]));
-        if (!/^[A-Za-z0-9_-]+$/.test(values.name)) throw new Error('Agent name must use letters, digits, hyphens, or underscores');
-        if (names.has(values.name)) throw new Error('Agent name ' + values.name + ' is used twice');
-        names.add(values.name);
-        if (!availableClis.includes(values.cli)) throw new Error('Choose an available CLI');
-        for (const field of ['model', 'effort']) {
-          if (values[field] && !/^(-|[A-Za-z0-9._=/][A-Za-z0-9._=/-]*)$/.test(values[field])) throw new Error(field + ' must be one token');
-        }
-        if (/[\r\n\0]/.test(values.args)) throw new Error('Extra args must be one line without NUL');
-        let command = values.cli + (values.args ? ' ' + values.args : '');
-        if (values.model && values.model !== '-') command += ' --model ' + values.model;
-        if (values.effort && values.effort !== '-') command += (values.cli === 'claude' ? ' --effort ' : ' -c model_reasoning_effort=') + values.effort;
-        return (agent.querySelector('[name="main"]').checked ? '*' : '') + values.name + ' ' + command + ' ' + values.role;
-      }).join('\n') + '\n';
-    }
-    if (file) {
-      if (file.size > 200 * 1024) throw new Error('Team config must be at most 200 KiB.');
-      const text = await new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(reader.result);
-        reader.onerror = () => reject(new Error('Could not read the team config.'));
-        reader.readAsText(file);
-      });
-      data.config_name = file.name;
-      data.config_text = text;
-    }
+    Object.assign(data, await configFields(newSessionForm.elements.config.files[0]));
     let result;
     try { result = await api('/api/open', data); }
     catch (error) {
@@ -246,30 +186,40 @@ async function loadUploadFolders() {
     }));
   } catch { /* Folder suggestions are optional; typed folders still work. */ }
 }
+function hideForm(button, form) {
+  const focused = document.activeElement;
+  form.hidden = true;
+  button.setAttribute('aria-expanded', 'false');
+  if (form === addTeamForm) {
+    form.reset();
+    teamConfigName.textContent = noTeamConfig;
+    teamSession = null;
+  }
+  if (form.contains(focused) || focused === button || focused.matches(".output, body")) {
+    (button.hidden || button.disabled ? cards.get(currentPane())?.el.querySelector('.output') : button)?.focus();
+  }
+}
+function closeOtherForms(keep) {
+  for (const [button, form] of [[upload, uploadForm], [swap, swapForm], [addTeam, addTeamForm]]) {
+    if (form !== keep && !form.hidden) hideForm(button, form);
+  }
+}
 function openUpload() {
-  if (!swapForm.hidden) closeSwap();
-  if (!addAgentForm.hidden) closeAddAgent();
+  closeOtherForms(uploadForm);
   uploadForm.hidden = false;
   upload.setAttribute('aria-expanded', 'true');
   uploadDir.focus();
   loadUploadFolders();
 }
-function closeUpload() {
-  const focused = document.activeElement;
-  uploadForm.hidden = true;
-  upload.setAttribute('aria-expanded', 'false');
-  if (uploadForm.contains(focused) || !focused.matches('input, textarea') || !focused.value) {
-    (upload.hidden || upload.disabled ? cards.get(currentPane())?.el.querySelector('.output') : upload)?.focus();
-  }
-}
+
 upload.onclick = () => {
   if (upload.disabled) return;
-  if (!uploadForm.hidden) { closeUpload(); return; }
+  if (!uploadForm.hidden) { hideForm(upload, uploadForm); return; }
   openUpload();
 };
-uploadForm.querySelector('.cancel').onclick = closeUpload;
+uploadForm.querySelector('.cancel').onclick = () => hideForm(upload, uploadForm);
 uploadForm.onkeydown = event => {
-  if (event.key === 'Escape') { event.preventDefault(); closeUpload(); }
+  if (event.key === 'Escape') { event.preventDefault(); hideForm(upload, uploadForm); }
 };
 uploadForm.onsubmit = event => {
   event.preventDefault();
@@ -425,9 +375,7 @@ async function loadFiles(dir, fallback = false) {
 filesButton.onclick = () => {
   const card = cards.get(currentPane());
   if (!card || card.closed) return;
-  if (!uploadForm.hidden) closeUpload();
-  if (!swapForm.hidden) closeSwap();
-  if (!addAgentForm.hidden) closeAddAgent();
+  closeOtherForms();
   if (filesSession !== card.latest.session) fileDir = '';
   filesSession = card.latest.session;
   filesDialog.showModal();
@@ -459,85 +407,71 @@ let swapPrefill;
 let availableClis = [];
 let swapRevision = 0;
 let swapPending = false;
-const addAgent = document.querySelector('#add-agent');
-const addAgentForm = document.querySelector('#add-agent-form');
-const addAgentRole = document.querySelector('#add-agent-role');
-const addAgentStatus = document.querySelector('#add-agent-status');
-let addSession;
-let addPending = false;
-const inlineRole = document.querySelector('#role-template').content.firstElementChild.cloneNode(true);
-inlineRole.querySelector('.remove-role').remove();
-addAgentRole.append(inlineRole);
-function updateAddRoles() {
-  const select = addAgentForm.querySelector('[name="role"]'), value = select.value;
-  select.replaceChildren(new Option('-', '-'), ...shippedRoles.map(role => new Option(role.name, role.name)), new Option('New role', 'new'));
-  if ([...select.options].some(option => option.value === value)) select.value = value;
-}
-function closeAddAgent() {
-  const focused = addAgentForm.contains(document.activeElement);
-  addAgentForm.hidden = true; addAgentForm.reset(); addAgentRole.hidden = true;
-  addSession = null;
-  addAgent.setAttribute('aria-expanded', 'false');
-  if (focused) (addAgent.disabled ? cards.get(currentPane())?.el.querySelector('.output') : addAgent)?.focus();
-}
-function updateAddAgent() {
+const addTeam = document.querySelector('#add-team');
+const addTeamForm = document.querySelector('#add-team-form');
+const teamConfig = addTeamForm.elements.config;
+const teamConfigName = document.querySelector('#team-config-name');
+const noTeamConfig = teamConfigName.textContent;
+const addTeamStatus = document.querySelector('#add-team-status');
+let teamSession;
+let teamPending = false;
+
+function updateAddTeam() {
   const card = cards.get(currentPane());
-  addAgent.hidden = !card || card.closed;
-  addAgent.disabled = addAgent.hidden || card.busy || addPending || swapPending;
-  if (!addAgentForm.hidden && card?.latest?.session !== addSession) closeAddAgent();
-  for (const control of addAgentForm.querySelectorAll('input, select, textarea, button')) control.disabled = addAgent.disabled;
-  for (const control of addAgentRole.querySelectorAll('input, select, textarea')) control.disabled = addAgent.disabled || addAgentRole.hidden;
+  addTeam.hidden = !card || card.closed;
+  addTeam.disabled = addTeam.hidden || card.busy || swapPending || teamPending;
+  if (!addTeamForm.hidden && (addTeam.hidden || card.latest.session !== teamSession)) hideForm(addTeam, addTeamForm);
+  for (const control of addTeamForm.querySelectorAll('input, select, button')) control.disabled = addTeam.disabled;
 }
-addAgent.onclick = () => {
-  updateAddAgent();
-  if (addAgent.disabled) return;
-  if (!addAgentForm.hidden) { closeAddAgent(); return; }
-  if (!swapForm.hidden) closeSwap();
-  if (!uploadForm.hidden) closeUpload();
-  addSession = cards.get(currentPane()).latest.session;
-  addAgentForm.hidden = false;
-  addAgentStatus.textContent = ''; addAgentStatus.classList.remove('error');
-  addAgent.setAttribute('aria-expanded', 'true');
-  updateAddAgent();
-  addAgentForm.querySelector('[name="name"]').focus();
+addTeam.onclick = () => {
+  updateAddTeam();
+  if (addTeam.disabled) return;
+  if (!addTeamForm.hidden) { hideForm(addTeam, addTeamForm); return; }
+  closeOtherForms(addTeamForm);
+  teamSession = cards.get(currentPane()).latest.session;
+  addTeamStatus.textContent = '';
+  addTeamStatus.classList.remove('error');
+  addTeamForm.hidden = false;
+  addTeam.setAttribute('aria-expanded', 'true');
+  addTeamForm.elements.team.focus();
 };
-addAgentForm.querySelector('.cancel').onclick = closeAddAgent;
-addAgentForm.onkeydown = event => {
-  if (event.key === 'Escape' && !addPending) { event.preventDefault(); closeAddAgent(); }
+document.querySelector('#choose-team-config').onclick = () => {
+  if (!teamConfig.disabled) teamConfig.click();
 };
-addAgentForm.querySelector('[name="role"]').onchange = () => {
-  addAgentRole.hidden = addAgentForm.querySelector('[name="role"]').value !== 'new';
-  updateAddAgent();
-  if (!addAgentRole.hidden) addAgentRole.querySelector('[name="name"]').focus();
+teamConfig.onchange = () => { teamConfigName.textContent = teamConfig.files[0]?.name || noTeamConfig; };
+addTeamForm.querySelector('.cancel').onclick = () => hideForm(addTeam, addTeamForm);
+addTeamForm.onkeydown = event => {
+  if (event.key === 'Escape') { event.preventDefault(); hideForm(addTeam, addTeamForm); }
 };
-addAgentForm.onsubmit = async event => {
+addTeamForm.onsubmit = async event => {
   event.preventDefault();
-  updateAddAgent();
-  if (addAgent.disabled) return;
-  const card = cards.get(currentPane()), session = addSession;
-  const data = {session};
-  data.save = addAgentForm.querySelector('[name="save"]').checked;
-  for (const field of ['name', 'cli', 'model', 'effort', 'args', 'role']) data[field] = addAgentForm.querySelector('[name="' + field + '"]').value.trim();
-  if (data.role === 'new') {
-    data.newRole = Object.fromEntries([...addAgentRole.querySelectorAll('[name]')].map(input => [input.name, input.value]));
-    data.role = data.newRole.name;
-  }
-  addPending = true; card.busy = true; setSelection(card, card.selected);
-  addAgentStatus.classList.remove('error'); addAgentStatus.textContent = 'Adding agent...';
+  updateAddTeam();
+  if (addTeam.disabled) return;
+  const card = cards.get(currentPane()), session = teamSession;
+  const data = {session, team: addTeamForm.elements.team.value.trim(), save: addTeamForm.elements.save.value === 'yes'};
+  const file = teamConfig.files[0];
+  let succeeded = false;
+  teamPending = true;
+  card.busy = true; setSelection(card, card.selected);
+  addTeamStatus.textContent = 'Adding team...';
+  addTeamStatus.classList.remove('error');
+  feedback(card, 'Adding team...');
   try {
-    const result = await api('/api/add', data);
-    if (addSession === session && !addAgentForm.hidden) {
-      addAgentForm.reset(); addAgentRole.hidden = true;
-      addAgentStatus.textContent = result.message;
-    }
-    await refresh();
+    Object.assign(data, await configFields(file));
+    const result = await api('/api/team', data);
+    addTeamStatus.textContent = result.message;
+    feedback(card, result.message);
+    succeeded = true;
   } catch (error) {
-    if (addSession === session && !addAgentForm.hidden) {
-      addAgentStatus.textContent = error.message; addAgentStatus.classList.add('error');
-    }
+    addTeamStatus.textContent = error.message;
+    addTeamStatus.classList.add('error');
+    feedback(card, error.message, true);
   } finally {
-    addPending = false; card.busy = false; setSelection(card, card.selected);
+    teamPending = false;
+    card.busy = false; setSelection(card, card.selected);
+    if (succeeded && teamSession === session && !addTeamForm.hidden) hideForm(addTeam, addTeamForm);
   }
+  if (succeeded) await refresh();
 };
 function swapValues(card) {
   const words = [];
@@ -580,10 +514,9 @@ function updateSwap() {
     swapRevision++;
     if (!swapForm.hidden && !targetGone) prefillSwap(card);
   }
-  const disabled = !card || card.closed || card.busy || swapPending || addPending || !!card.latest?.swap?.startsWith('checking');
+  const disabled = !card || card.closed || card.busy || swapPending || teamPending || !!card.latest?.swap?.startsWith('checking');
   if (!swapForm.hidden && targetGone) {
-    swapForm.hidden = true;
-    swap.setAttribute('aria-expanded', 'false');
+    hideForm(swap, swapForm);
   }
   swap.disabled = disabled;
   filesButton.disabled = disabled;
@@ -604,7 +537,7 @@ function updateSwap() {
     if (!uploadForm.hidden) loadUploadFolders();
   }
   if (swap.hidden && filesDialog.open) filesDialog.close();
-  if (!uploadForm.hidden && targetGone) closeUpload();
+  if (!uploadForm.hidden && targetGone) hideForm(upload, uploadForm);
   for (const control of swapForm.querySelectorAll('input, select, button')) control.disabled = disabled;
   if ((disabled && focused) || ((disabled || uploading) && uploadFocused)) card?.el.querySelector('.output').focus();
 }
@@ -624,29 +557,21 @@ function updateSidebarFoot() {
   document.querySelector('.sidebar').style.setProperty('--pane-foot', foot + 'px');
 }
 const renderNavigation = updateNavigation;
-updateNavigation = () => { renderNavigation(); updateSwap(); updateAddAgent(); updateSidebarFoot(); };
-function closeSwap() {
-  const focused = document.activeElement;
-  swapForm.hidden = true;
-  swap.setAttribute('aria-expanded', 'false');
-  if (swapForm.contains(focused) || !focused.matches('input, textarea') || !focused.value) {
-    (swap.disabled ? cards.get(currentPane())?.el.querySelector('.output') : swap)?.focus();
-  }
-}
+updateNavigation = () => { renderNavigation(); updateSwap(); updateAddTeam(); updateSidebarFoot(); };
+
 swap.onclick = () => {
   if (swap.disabled) return;
-  if (!swapForm.hidden) { closeSwap(); return; }
-  if (!uploadForm.hidden) closeUpload();
-  if (!addAgentForm.hidden) closeAddAgent();
+  if (!swapForm.hidden) { hideForm(swap, swapForm); return; }
+  closeOtherForms(swapForm);
   const card = cards.get(currentPane());
   prefillSwap(card);
   swapForm.hidden = false;
   swap.setAttribute('aria-expanded', 'true');
   swapForm.elements.cli.focus();
 };
-swapForm.querySelector('.cancel').onclick = closeSwap;
+swapForm.querySelector('.cancel').onclick = () => hideForm(swap, swapForm);
 swapForm.onkeydown = event => {
-  if (event.key === 'Escape') { event.preventDefault(); closeSwap(); }
+  if (event.key === 'Escape') { event.preventDefault(); hideForm(swap, swapForm); }
 };
 swapForm.onsubmit = async event => {
   event.preventDefault();
@@ -676,7 +601,7 @@ swapForm.onsubmit = async event => {
     card.busy = false; setSelection(card, card.selected);
     if (revision === swapRevision && card.key === currentPane() && card.latest.identity === identity) {
       feedback(card, message, error);
-      if (succeeded) closeSwap();
+      if (succeeded) hideForm(swap, swapForm);
       else if (swapForm.contains(document.activeElement) || !document.activeElement.matches('input, textarea') || !document.activeElement.value) {
         (swapForm.elements.cli.disabled ? card.el.querySelector('.output') : swapForm.elements.cli).focus();
       }
@@ -703,14 +628,14 @@ function feedback(card, message, error = false) {
   card.el.querySelector('.feedback').classList.toggle('error', error);
 }
 function updateBusy() {
-  document.body.classList.toggle('busy', addPending || [...cards.values()].some(card => card.busy));
+  document.body.classList.toggle('busy', teamPending || [...cards.values()].some(card => card.busy));
 }
 function setSelection(card, text) {
   updateBusy();
   card.selected = text;
   for (const button of card.el.querySelectorAll('.prompt-buttons button, .add-button, .button-form button, .stack-order, .add-screen, .close-screen')) button.disabled = card.busy || card.closed;
   updateSwap();
-  updateAddAgent();
+  updateAddTeam();
   card.el.querySelector('.explain').disabled = !text.trim() || card.busy || card.closed;
   card.el.querySelector('.discard').hidden = !card.closed;
   card.el.querySelector('.discard').disabled = card.busy;
@@ -1124,7 +1049,7 @@ async function refresh() {
       const card = cards.get(paneKey(pane)) || createCard(pane);
       if (card.closed) { card.closed = false; setSelection(card, card.selected); feedback(card, 'Agent reconnected'); }
       // Redraws after 2 seconds may flag unread; raise the window if seen.
-      if (pane.role === 'manager' && card.latest && card.key !== currentPane() && performance.now() - resizedAt > 2000) {
+      if ((pane.role === 'director' || pane.role === 'manager') && card.latest && card.key !== currentPane() && performance.now() - resizedAt > 2000) {
         const previous = workArea(card.latest), current = workArea(pane);
         const changed = previous === null || current === null ? card.latest.output !== pane.output : previous !== current;
         if (changed) card.unread = true;
@@ -1149,7 +1074,7 @@ async function refresh() {
       updateKeys(card);
       card.el.querySelector("h2").textContent = pane.name;
       const weekly = pane.weekly ? " / " + (pane.cli ? pane.cli + " " : "") + "weekly " + (100 - pane.weekly.usedPercent).toFixed(1) + "% left, resets " + new Date(pane.weekly.resetsAt * 1000).toLocaleString(undefined, {month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit'}) : "";
-      card.el.querySelector(".meta").textContent = pane.session + " / " + pane.role + " / " + pane.id + weekly;
+      card.el.querySelector(".meta").textContent = [pane.session, pane.role, pane.id, pane.team || (pane.role === 'director' ? '' : pane.session)].filter(Boolean).join(" / ") + weekly;
       updateOutput(card);
     }
     for (const [key, card] of cards) {
@@ -1182,16 +1107,10 @@ async function refresh() {
 }
 api('/api/clis').then(clis => {
   availableClis = clis;
-  updateAgentClis();
   swapForm.elements.cli.replaceChildren(...clis.map(cli => {
     const option = document.createElement('option'); option.value = cli; option.textContent = cli; return option;
   }));
   if (!swapForm.hidden) prefillSwap(cards.get(currentPane()));
-}).catch(error => { connection.textContent = error.message; });
-api('/api/roles').then(roles => {
-  shippedRoles = roles;
-  updateAgentRoles();
-  updateAddRoles();
 }).catch(error => { connection.textContent = error.message; });
 refresh().then(async function refreshButtons() {
   try {

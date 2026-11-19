@@ -85,7 +85,50 @@ test_brief_rule7_variants() {
   assert_not_contains "$helper_brief" "$dispatch_rule"
 }
 
+test_brief_role_rules() (
+  local SCRIPT_DIR=$ROOT TASK_BOARD="$TEST_DIR/solo-task.md" SESSION=solo N=3 MAIN=0 ROSTER='' GIT_DENY_PROSE=commit
+  local NAMES=(boss impl check) CMDS=(claude codex claude) PANE_IDS=(%10 %11 %12)
+  local ROLES=("$ROOT/roles/manager.md" "$ROOT/roles/implementer.md" "$ROOT/roles/reviewer.md")
+  local TEAMS=(solo solo solo) TEAM_NAMES=(solo) i brief
+  # shellcheck source=lib/config.sh
+  source "$ROOT/lib/config.sh"
+  # shellcheck source=lib/brief.sh
+  source "$ROOT/lib/brief.sh"
+  for i in "${!NAMES[@]}"; do
+    brief="$TEST_DIR/solo-$i.md"
+    build_brief "$i" >"$brief"
+    seed_board "$i"
+    [ "$(cat "$TASK_BOARD")" = "$BOARD_HEADER" ] || fail 'single team received a director board header'
+    assert_contains "$brief" 'edit only the cells your type owns: a worker its own rows, the reviewer the status cell of a row it reviewed, the manager a done repair, the deletion, and the removal of a row it re-splits or reassigns after a blocked message; never rewrite the rest of the file'
+    assert_not_contains "$brief" 'Every task cell starts with the plan row id it serves, like D2: rename parser.'
+    assert_not_contains "$TASK_BOARD" 'Every task cell starts with the plan row id it serves, like D2: rename parser.'
+    assert_not_contains "$brief" 'Only the director edits this file; the manager named in who reports its row by message.'
+    assert_contains "$brief" 'That agent splits the work onto the task board and assigns it; every other agent waits for a board entry or a message instead of inventing work at launch.'
+    assert_contains "$brief" 'do not resend; tell the user.'
+    assert_contains "$brief" 'In every case tell the user.'
+    assert_contains "$brief" 'proceed on your best judgment or tell the user.'
+    assert_contains "$brief" 'id is T1, T2, ...'
+    assert_not_contains "$brief" 'You are in team'
+    if [ "$i" -eq 0 ]; then
+      assert_not_contains "$brief" 'Claim every open task assigned to you'
+    else
+      assert_contains "$brief" 'Claim every open task assigned to you'
+    fi
+  done
+  NAMES[3]=director
+  CMDS[3]=claude
+  PANE_IDS[3]=%13
+  ROLES[1]=''
+  MAIN=3 N=4
+  build_brief 1 >"$brief"
+  assert_contains "$brief" 'do not resend; tell the director.'
+  assert_contains "$brief" 'In every case tell the director.'
+  assert_contains "$brief" 'proceed on your best judgment or tell the director.'
+  assert_not_contains "$brief" 'tell your team manager.'
+)
+
 fake_bin=$(make_fake_commands)
 test_brief_rule9_parallel "$fake_bin"
 test_brief_rule7_variants "$fake_bin"
+test_brief_role_rules
 echo "brief: PASS"

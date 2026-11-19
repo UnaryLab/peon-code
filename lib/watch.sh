@@ -262,8 +262,7 @@ cmd_watch() {
         rebrief_rc=0
         rebrief_pane "$id" "$name" || rebrief_rc=$?
         case $rebrief_rc in
-          0) tmux set -pu -t "$id" @peon_rebrief_pending &&
-             watch_note "$session" "$name brief re-sent after compaction" ;;
+          0) watch_note "$session" "$name brief re-sent after compaction" ;;
           5) tmux set -pu -t "$id" @peon_rebrief_pending &&
              watch_note "$session" "$name brief submission not confirmed after Enter; automatic retry stopped" ;;
         esac

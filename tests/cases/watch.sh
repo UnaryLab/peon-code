@@ -41,13 +41,13 @@ test_compact_at_directive() {
   local conf="$TEST_DIR/compact-at.conf"
   printf 'compact-at 120000\nlead ./missing-agent manager\nimpl ./missing-agent implementer\ncheck ./missing-agent reviewer\n' >"$conf"
   COMPACT_AT=250000
-  NAMES=(); CMDS=(); ROLES=(); MAIN_INDEX=-1
-  read_conf "$conf"
+  NAMES=(); CMDS=(); ROLES=(); TEAMS=(); TEAM_NAMES=(watch); MAIN_INDEX=-1
+  read_conf "$conf" 0 watch
   [ "$COMPACT_AT" = 120000 ] || fail "compact-at did not set the threshold"
   [ ${#NAMES[@]} -eq 3 ] || fail "compact-at line was counted as an agent"
   printf 'compact-at soon\nlead ./missing-agent manager\n' >"$conf"
   # shellcheck disable=SC2030 # Invalid config parsing is isolated from later provider mocks.
-  if (NAMES=(); CMDS=(); ROLES=(); MAIN_INDEX=-1; read_conf "$conf") 2>"$TEST_DIR/compact-at.err"; then
+  if (NAMES=(); CMDS=(); ROLES=(); TEAMS=(); MAIN_INDEX=-1; read_conf "$conf" 0 watch) 2>"$TEST_DIR/compact-at.err"; then
     fail "a non-numeric compact-at was accepted"
   fi
   assert_contains "$TEST_DIR/compact-at.err" "compact-at takes one number of tokens"
@@ -64,12 +64,14 @@ test_watch_launch() {
   printf 'lead ./missing-agent manager\ncheck ./missing-agent reviewer\nimpl codex implementer\n' >"$config_dir/team.conf"
   (
     cd "$work_dir"
-    PATH="$fake_bin:$PATH" HOME="$home_dir" TMPDIR="$TEST_DIR" \
+    PATH="$fake_bin:$PATH" HOME="$home_dir" TMPDIR="$TEST_DIR" XDG_STATE_HOME="$TEST_DIR/watch-state" \
       FAKE_TMUX_LOG="$log" FAKE_TMUX_MODE=launch FAKE_TMUX_PANES=3 \
       "$ROOT/peon-code.sh" -c "$config_dir/team.conf" "$session"
   ) >"$TEST_DIR/watch.out" 2>"$TEST_DIR/watch.err" </dev/null || true
   assert_contains "$log" "set -pt %1 @peon_bin ./missing-agent"
   assert_contains "$log" "set -pt %3 @peon_bin codex"
+  assert_contains "$log" "set-option -t $session @peon_brief_dir $TEST_DIR/watch-state/peon-code/$session"
+  [ -d "$TEST_DIR/watch-state/peon-code/$session" ] || fail 'launch did not keep briefs in XDG state'
   block=$(sed -n '/^# The context watcher outlives this launch/,/^fi$/p' "$ROOT/lib/launch.sh")
   [ -n "$block" ] || fail "lib/launch.sh does not start the watcher"
   # shellcheck disable=SC2016  # source text to match, not an expansion
@@ -172,7 +174,11 @@ test_watch_pending_rebrief() (
   session_name() { echo "$1"; }
   pane_is_busy() { [ "$ticks" -eq 1 ]; }
   wait_pane_settled() { [ "$2" = 10 ] || fail 'pending brief wait is not short'; echo "settled $ticks" >>"$log"; }
-  rebrief_pane() { echo "brief $ticks $1 $2" >>"$log"; return "$result"; }
+  rebrief_pane() {
+    echo "brief $ticks $1 $2" >>"$log"
+    [ "$result" -ne 0 ] || tmux set -pu -t "$1" @peon_rebrief_pending
+    return "$result"
+  }
   watch_note() { echo "$2" >>"$log"; }
   sleep() { :; }
   cmd_watch "$session" 0
@@ -249,7 +255,7 @@ FAKE_AUTO_COMPACT
   }
   pane_is_busy() { [ "$ticks" -lt 4 ]; }
   wait_pane_settled() { [ "$2" = 10 ]; }
-  rebrief_pane() { echo "brief $ticks" >>"$log"; }
+  rebrief_pane() { echo "brief $ticks" >>"$log"; tmux set -pu -t "$1" @peon_rebrief_pending; }
   watch_note() { :; }
   sleep() { :; }
   cmd_watch "$session" "$threshold"

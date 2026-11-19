@@ -2,7 +2,9 @@
 
 initialize_agent_pane() {
   local i=$1
-  tmux set -pt "${PANE_IDS[$i]}" @peon_name "${NAMES[$i]}"
+  local team=""
+  [ -z "${TEAM_NAMES[1]:-}" ] || team=${TEAMS[$i]:-}
+  tmux set -pt "${PANE_IDS[$i]}" @peon_team "$team"
   tmux set -pt "${PANE_IDS[$i]}" @peon_role_type "$(role_field "${ROLES[$i]}" type)"
   tmux set -pt "${PANE_IDS[$i]}" @peon_role "${ROLES[$i]}"
   tmux set -pt "${PANE_IDS[$i]}" @peon_role_label "$(role_label "${ROLES[$i]}")"
@@ -12,6 +14,7 @@ initialize_agent_pane() {
   tmux set -pt "${PANE_IDS[$i]}" @peon_bin "${CMDS[$i]%% *}"
   tmux set -pt "${PANE_IDS[$i]}" @peon_cmd "${CMDS[$i]}"
   tmux set -pt "${PANE_IDS[$i]}" @peon_main "$((i == MAIN))"
+  tmux set -pt "${PANE_IDS[$i]}" @peon_name "${NAMES[$i]}"
 }
 
 prepare_launch_settings() {
@@ -189,8 +192,10 @@ HAS_ROLES=0
 for role_path in ${ROLES[@]+"${ROLES[@]}"}; do
   [ -n "$role_path" ] && HAS_ROLES=1
 done
-if [ "$HAS_ROLES" -eq 1 ] && [ ! -f "$TASK_BOARD" ]; then
-  printf '%s\n' "$BOARD_HEADER" >"$TASK_BOARD"
+if [ "$HAS_ROLES" -eq 1 ]; then
+  for i in "${!NAMES[@]}"; do
+    seed_board "$i"
+  done
 fi
 
 # The writer's output directory stays out of version control: a team with a
@@ -206,8 +211,8 @@ for i in "${!ROLES[@]}"; do
   fi
 done
 
-# The pane the user types into gets the main slot: the agent marked * in the
-# config, else the first manager-type role, else pane 0. Brief rule 1 names
+# The pane the user types into gets the main slot: the director, the agent
+# marked * in the config, else the first manager-type role, else pane 0. Brief rule 1 names
 # this pane as the task-intake pane.
 MAIN=$MAIN_INDEX
 if [ "$MAIN" -lt 0 ]; then
@@ -232,9 +237,9 @@ else
 fi
 # Briefs go to files: pasting one on a shell command line would fill the
 # pane with thousands of escaped characters before the agent even starts.
-# The directory is left for the OS to clear, since the launcher
-# ends in exec and the panes read the files after it is gone.
-BRIEF_DIR=$(mktemp -d "${TMPDIR:-/tmp}/peon-code.XXXXXX")
+# The session keeps these files until dismiss, including across OS tmp cleanup.
+BRIEF_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/peon-code/$SESSION"
+(umask 077; mkdir -p "$BRIEF_DIR") || die "cannot create brief directory: $BRIEF_DIR"
 
 tmux set-option -t "$SESSION" @peon_brief_dir "$BRIEF_DIR"
 tmux set-option -t "$SESSION" @peon_compact_at "$COMPACT_AT"
@@ -252,6 +257,9 @@ for i in "${!NAMES[@]}"; do
   ROSTER+="pane ${PANE_IDS[$i]}: ${NAMES[$i]} (${CMDS[$i]}) - $(role_label "${ROLES[$i]}")"
   if [ -n "${ROLES[$i]}" ]; then
     ROSTER+=" ($(role_field "${ROLES[$i]}" type)): $(role_field "${ROLES[$i]}" description)"
+  fi
+  if [ -n "${TEAM_NAMES[1]:-}" ] && [ -n "${TEAMS[$i]:-}" ]; then
+    ROSTER+=" [team ${TEAMS[$i]}]"
   fi
   ROSTER+=$'\n'
 done

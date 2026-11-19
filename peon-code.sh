@@ -14,6 +14,7 @@
 #   ./peon-code.sh rebrief <name|all> [<session>]
 #   ./peon-code.sh swap <name> <cli|-> <model|-> <effort|-> [<session>]
 #   ./peon-code.sh add <name> <role> <command...> [--session <name>] [--save]
+#   ./peon-code.sh [-c file] add-team [--team <name>] [--save] [--session <name>]
 #   ./peon-code.sh compact [<name|all>] [<session>]
 #   ./peon-code.sh clear [<name|all>] [<session>]
 #   ./peon-code.sh watch [<session>] [<tokens>]
@@ -83,7 +84,11 @@ peon-code.sh rebrief <name|all> [<session>]     send an agent its launch brief a
 peon-code.sh swap <name> <cli|-> <model|-> <effort|-> [<session>]
                                                 replace a running agent's CLI, model, or effort
 peon-code.sh add <name> <role> <command...> [--session <name>]  add an agent to the current team
+  --team <name>                               choose a team (default: the caller's team, else team 1)
   --save                                      keep the added agent and its role in the team config
+peon-code.sh [-c file] add-team [--team <name>] [--save] [--session <name>]
+                                                add a team from -c; without -c, clones the session's first team
+                                                its default name is t<number of teams + 1>
 peon-code.sh compact [<name|all>] [<session>]   send /compact to an agent pane, then send
                                                 its brief again once compaction ends,
                                                 skipping any blocked pane (typed text,
@@ -110,12 +115,17 @@ peon-code.sh --version                          print the version
             ~/.config/peon-code/peon-code.conf, if present)
 
 Config file: one agent per line, "name command... role".
+The agents of this file are team 1 and keep bare names.
 The role is required; use - for no role. A bare role name reads
 roles/<name>.md next to peon-code.sh, else roles/<name>.md next to
 the config file. A role token with a / is a file path,
 relative paths resolving against the config file's directory.
 A leading * on a name marks the main agent, whose pane gets the big
 left slot; without it, the first manager, else the first agent.
+Add another team with "team <name> <file>"; its agent names get a <name>- prefix.
+The file path is relative to this config. Each team must have its own roles.
+With two or more teams, the director is main and copies the first team's manager
+command, or its first command for a roleless team. The name director is reserved.
 Full-line # comments and blank lines are skipped.
 
   *boss  claude               manager
@@ -190,9 +200,10 @@ case "${1:-}" in
   send) shift; cmd_send "$@"; exit 0 ;;
   key) shift; cmd_key "$@"; exit 0 ;;
   explain) shift; cmd_explain "$@"; exit 0 ;;
-  rebrief) shift; cmd_rebrief "$@"; exit 0 ;;
+  rebrief) shift; cmd_rebrief "${1:-}" "${2:-}"; exit 0 ;;
   swap) shift; cmd_swap "$@"; exit $? ;;
   add) shift; cmd_add "$@"; exit $? ;;
+  add-team) shift; cmd_add_team "$@"; exit $? ;;
   __swap_job)
     shift
     swap_job "$@" &

@@ -28,6 +28,7 @@ test_rebrief() {
     "$ROOT/peon-code.sh" rebrief all owned >"$TEST_DIR/rebrief.out"
   assert_contains "$TEST_DIR/rebrief.out" "rebriefed 1 pane(s) in session owned"
   assert_contains "$log" "buffer-content:You are boss, follow the rules."
+  assert_contains "$log" 'set -pu -t %1 @peon_rebrief_pending'
   # The Enter follows the paste, and only after a box read showed the brief.
   paste_line=$(grep -n -F -- "paste-buffer" "$log" | head -1 | cut -d: -f1)
   enter_line=$(grep -n -Fx -- "send-keys -t %1 Enter" "$log" | head -1 | cut -d: -f1)
@@ -114,8 +115,77 @@ test_rebrief() {
   assert_contains "$TEST_DIR/rebrief-bare.err" "no brief sent to impl %1: it draws no prompt marker peon-code knows"
   assert_not_contains "$log" "load-buffer"
   assert_not_contains "$log" "paste-buffer"
+
+  : >"$log"
+  if PATH="$fake_bin:$PATH" HOME="$home_dir" FAKE_TMUX_LOG="$log" FAKE_TMUX_MODE=owned \
+    FAKE_TMUX_BRIEF="$TEST_DIR/rebrief-brief.md" FAKE_TMUX_CAPTURE='✻ Working (3s)
+❯
+────' "$ROOT/peon-code.sh" rebrief impl owned >"$TEST_DIR/rebrief-busy.out" 2>"$TEST_DIR/rebrief-busy.err"; then
+    fail 'rebrief sent a brief to a busy pane'
+  fi
+  assert_contains "$TEST_DIR/rebrief-busy.err" 'run peon-code.sh rebrief impl owned when it is free'
+  assert_not_contains "$log" 'load-buffer'
+  assert_not_contains "$log" '@peon_rebrief_pending'
+
+  : >"$log"
+  if PATH="$fake_bin:$PATH" HOME="$home_dir" FAKE_TMUX_LOG="$log" FAKE_TMUX_MODE=owned \
+    TMUX_PANE=%1 FAKE_TMUX_BRIEF="$TEST_DIR/rebrief-brief.md" FAKE_TMUX_CAPTURE="$empty_box" \
+    "$ROOT/peon-code.sh" rebrief all owned >"$TEST_DIR/rebrief-self.out" 2>"$TEST_DIR/rebrief-self.err"; then
+    fail 'rebrief sent a brief to its caller'
+  fi
+  assert_contains "$TEST_DIR/rebrief-self.err" 'run peon-code.sh rebrief impl owned when it is free'
+  assert_not_contains "$log" 'load-buffer'
+
+  : >"$log"
+  PATH="$fake_bin:$PATH" HOME="$home_dir" FAKE_TMUX_LOG="$log" FAKE_TMUX_MODE=owned \
+    FAKE_TMUX_BRIEF="$TEST_DIR/rebrief-brief.md" FAKE_TMUX_CAPTURE="$empty_box" \
+    FAKE_TMUX_CAPTURE_AFTER="$brief_box" \
+    "$ROOT/peon-code.sh" rebrief impl owned %999 >"$TEST_DIR/rebrief-args.out"
+  assert_contains "$TEST_DIR/rebrief-args.out" 'rebriefed 1 pane(s) in session owned'
 }
+
+# shellcheck disable=SC2329 # The command calls these mocks.
+test_rebrief_shell() (
+  # shellcheck source=lib/commands.sh
+  source "$ROOT/lib/commands.sh"
+  die() { printf '%s\n' "$*" >&2; exit 1; }
+  session_name() { echo "$1"; }
+  is_peon_session() { :; }
+  list_agent_panes() { :; }
+  tmux() { [ "$1" != list-panes ] || printf 'impl\n'; }
+  if (cmd_rebrief impl owned) >"$TEST_DIR/rebrief-shell.out" 2>"$TEST_DIR/rebrief-shell.err"; then
+    fail 'rebrief accepted an agent at a shell'
+  fi
+  assert_contains "$TEST_DIR/rebrief-shell.err" 'agent impl is at a shell; its brief is pasted when it restarts'
+  if (cmd_rebrief absent owned) >"$TEST_DIR/rebrief-missing.out" 2>"$TEST_DIR/rebrief-missing.err"; then
+    fail 'rebrief accepted a missing agent'
+  fi
+  assert_contains "$TEST_DIR/rebrief-missing.err" 'no pane named absent in session owned'
+)
+
+# shellcheck disable=SC2329 # Dismiss calls these mocks.
+test_brief_dismiss() (
+  local stored_brief_dir="$TEST_DIR/state/peon-code/owned"
+  # shellcheck source=lib/session.sh
+  source "$ROOT/lib/session.sh"
+  session_name() { echo "$1"; }
+  is_peon_session() { :; }
+  print_usage() { :; }
+  tmux() {
+    case $1 in
+      show-options) printf '%s\n' "$stored_brief_dir" ;;
+      kill-session) [ -f "$stored_brief_dir/0.md" ] || fail 'brief removed before killing the session' ;;
+    esac
+  }
+  mkdir -p "$stored_brief_dir" "$TEST_DIR/state/peon-code/other"
+  printf 'stored brief\n' >"$stored_brief_dir/0.md"
+  cmd_dismiss owned >"$TEST_DIR/brief-dismiss.out"
+  [ ! -e "$stored_brief_dir" ] || fail 'dismiss left the brief directory'
+  [ -d "$TEST_DIR/state/peon-code/other" ] || fail 'dismiss removed another session directory'
+)
 
 fake_bin=$(make_fake_commands)
 test_rebrief "$fake_bin"
+test_rebrief_shell
+test_brief_dismiss
 echo "rebrief: PASS"
