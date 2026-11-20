@@ -1022,8 +1022,11 @@ const assert = require('node:assert/strict');
       {id: '%93', identity: 'directed:%93', name: 'Second manager', role: 'manager', team: 'second', session: 'directed'}
     ];
     for (const pane of directedPanes) revision[pane.id] = 0;
+    await sessionTab('zeta').click();
+    const singleTeamTabTop = await paneTab('%8').evaluate(el => el.offsetTop);
     roles.push(...directedPanes);
     await sessionTab('directed').click();
+    assert.equal(await paneTab('%91').evaluate(el => el.offsetTop), singleTeamTabTop, 'The first tab starts at the same height with or without a director');
     await paneTab('%93').click();
     await page.waitForFunction(() => !refreshing);
     await page.evaluate(() => refresh());
