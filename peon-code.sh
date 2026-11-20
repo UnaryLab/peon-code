@@ -2,7 +2,7 @@
 # Start a tmux session of collaborating AI coding agents, one per pane,
 # each launched with a prompt telling it to watch the other panes.
 # Usage:
-#   ./peon-code.sh [-c file] [<session>] [<cmd> ...]
+#   ./peon-code.sh [-c file] [--single-team] [<session>] [<cmd> ...]
 #   ./peon-code.sh resume [<session>] [<cmd> ...]
 #   ./peon-code.sh dismiss [<session>]
 #   ./peon-code.sh usage [<session>]
@@ -54,8 +54,9 @@ WRITER_DIR=innovation_summary
 usage() {
   printf 'peon-code %s\n' "$PEON_VERSION"
   cat <<'USAGE'
-peon-code.sh [-c file] [<session>] [<cmd> ...]  start or attach a team
+peon-code.sh [-c file] [--single-team] [<session>] [<cmd> ...]  start or attach a team
                                                 (session defaults to the current directory name)
+  --single-team                               start from this config's own agent lines; team lines are skipped, not edited
 peon-code.sh resume [<session>] [<cmd> ...]     same, each agent reopening its last
                                                 conversation (claude, codex, copilot,
                                                 grok, gemini, qwen)
@@ -170,12 +171,13 @@ source "$SCRIPT_DIR/lib/launch.sh"
 
 START_ARGS=("$@")
 CONF=""
+SINGLE_TEAM=0
 CONF_GIVEN=0
 case "${1:-}" in
   --help) usage; exit 0 ;;
   --version) printf '%s\n' "$PEON_VERSION"; exit 0 ;;
 esac
-while getopts ":c:h" opt; do
+while [ "${!OPTIND:-}" != --single-team ] && getopts ":c:h" opt; do
   case $opt in
     c) CONF=$OPTARG; CONF_GIVEN=1 ;;
     h) usage; exit 0 ;;
@@ -184,6 +186,12 @@ while getopts ":c:h" opt; do
   esac
 done
 shift $((OPTIND - 1))
+if [ "${1:-}" = --single-team ]; then
+  SINGLE_TEAM=1; shift
+  case ${1:-} in
+    -*) die "options must come before --single-team: $1" ;;
+  esac
+fi
 case "${1:-}" in
   uninstall|statusline) ;;
   *) tmux_version_ok || exit 1 ;;

@@ -85,7 +85,7 @@ dialog footer { padding-top: 12px; }
 .button-form input, .swap-form input, .swap-form select { width: 100%; min-width: 0; font: inherit; border: 1px solid var(--line); border-radius: 4px; padding: 4px; }
 #new-session-form { flex-wrap: wrap; padding: 8px 0; }
 #new-session-form label { display: flex; flex: 1 1 240px; flex-direction: column; gap: 4px; min-width: 0; font-size: 13px; }
-#new-session-form input { width: 100%; min-width: 0; font: inherit; border: 1px solid var(--line); border-radius: 4px; padding: 4px; }
+#new-session-form input, #new-session-form select { width: 100%; min-width: 0; font: inherit; border: 1px solid var(--line); border-radius: 4px; padding: 4px; }
 #config-help { color: var(--muted); }
 .keys, .key-buttons, .key-shortcuts { display: flex; align-items: center; justify-content: flex-start; gap: 4px; flex-wrap: wrap; }
 .keys { flex-shrink: 0; padding: 0 12px 4px; }

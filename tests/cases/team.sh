@@ -181,6 +181,51 @@ test_teams() (
 )
 test_teams
 
+# shellcheck disable=SC2034,SC2119 # load_team reads the scoped config and flag, not CLI arguments.
+test_single_team() (
+  local project="$TEST_DIR/single-team" SESSION=single-team SINGLE_TEAM=1
+  local CONF="$project/root.conf" CONF_GIVEN=1 DEFAULT_CONF="" fake_bin
+  local NAMES=() CMDS=() ROLES=() TEAMS=() TEAM_NAMES=() MAIN_INDEX COMPACT_AT RESTART_DEAD
+  mkdir -p "$project"
+  printf '*boss sleep 600 manager\nimpl sleep 600 implementer\ncheck sleep 600 reviewer\n' >"$project/nested.conf"
+  { cat "$project/nested.conf"; printf 'team research nested.conf\n'; } >"$CONF"
+  cp "$CONF" "$project/root.expected"
+  load_team 2>"$project/single.err"
+  [ "${NAMES[*]}" = 'boss impl check' ] || fail '--single-team loaded nested agents or a director'
+  [ "${#NAMES[@]}" -eq 3 ] && [ "$MAIN_INDEX" -eq 0 ] || fail '--single-team lost its root main pane'
+  [ "${TEAM_NAMES[*]}" = "$SESSION" ] || fail '--single-team added a team name'
+  assert_contains "$project/single.err" "peon-code: $CONF line 4: team research skipped (--single-team)"
+  cmp "$CONF" "$project/root.expected" || fail '--single-team edited the config'
+
+  SINGLE_TEAM=0
+  load_team
+  [ "${#NAMES[@]}" -eq 7 ] && [ "$MAIN_INDEX" -eq 6 ] || fail 'default launch no longer loads both teams and the director'
+  [ "${NAMES[6]}" = director ] || fail 'default launch lost its director'
+  cmp "$CONF" "$project/root.expected" || fail 'default launch edited the config'
+
+  mv "$project/nested.conf" "$project/nested.kept"
+  SINGLE_TEAM=1
+  load_team 2>"$project/missing.err"
+  [ "${#NAMES[@]}" -eq 3 ] || fail '--single-team checked a skipped team file'
+  cmp "$CONF" "$project/root.expected" || fail '--single-team edited a missing team entry'
+  fake_bin=$(make_fake_commands)
+  PATH="$fake_bin:$PATH" FAKE_TMUX_LOG="$project/cli.log" FAKE_TMUX_MODE=owned \
+    "$ROOT/peon-code.sh" -c "$CONF" --single-team list >"$project/list-conf.out"
+  assert_contains "$project/list-conf.out" 'peon-code: no agent panes'
+  PATH="$fake_bin:$PATH" FAKE_TMUX_LOG="$project/cli.log" FAKE_TMUX_MODE=owned \
+    "$ROOT/peon-code.sh" --single-team list >"$project/list.out"
+  assert_contains "$project/list.out" 'peon-code: no agent panes'
+  : >"$project/cli.log"
+  if PATH="$fake_bin:$PATH" FAKE_TMUX_LOG="$project/cli.log" FAKE_TMUX_MODE=owned \
+    "$ROOT/peon-code.sh" --single-team -c "$CONF" list >"$project/order.out" 2>"$project/order.err"; then
+    fail 'options after --single-team were accepted as a session'
+  fi
+  assert_contains "$project/order.err" 'options must come before --single-team: -c'
+  assert_not_contains "$project/cli.log" 'new-session'
+  cmp "$CONF" "$project/root.expected" || fail 'flag parsing edited the config'
+)
+test_single_team
+
 # shellcheck disable=SC2317,SC2329 # The sizing helper calls this tmux mock.
 test_attached_window_size() (
   tmux() {

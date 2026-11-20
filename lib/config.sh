@@ -1,5 +1,7 @@
 # shellcheck shell=bash
 
+: "${SINGLE_TEAM:=0}"
+
 # Role token: - is none, a token with / is a path (relative to the config
 # file's directory). A bare name checks <script dir>/roles/<name>.md first,
 # then roles/<name>.md next to the config file.
@@ -83,6 +85,10 @@ read_conf() {
       continue
     fi
     if [ "${tokens[0]}" = team ]; then
+      if [ "$SINGLE_TEAM" -eq 1 ]; then
+        printf 'peon-code: %s line %s: team %s skipped (--single-team)\n' "$conf" "$lineno" "${tokens[1]:-}" >&2
+        continue
+      fi
       [ "$n" -eq 3 ] || die "$conf line $lineno: team takes a name and config file"
       name=${tokens[1]}
       [[ $name =~ ^[A-Za-z0-9_-]+$ ]] || die "$conf line $lineno: team name \"$name\" must be letters, digits, _ or -"

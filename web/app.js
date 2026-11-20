@@ -130,7 +130,7 @@ newSessionForm.onsubmit = async event => {
   newSessionStatus.classList.remove('error');
   newSessionStatus.textContent = 'Starting session...';
   try {
-    const data = {directory: newSessionForm.elements.directory.value};
+    const data = {directory: newSessionForm.elements.directory.value, single_team: newSessionForm.elements.teams.value === 'single'};
     const session = newSessionForm.elements.session.value.trim();
     if (session) data.session = session;
     Object.assign(data, await configFields(newSessionForm.elements.config.files[0]));
@@ -1045,11 +1045,12 @@ async function refresh() {
     connection.textContent = sessions + " session" + (sessions === 1 ? "" : "s") + " connected with total " + panes.length + " agent" + (panes.length === 1 ? "" : "s");
     document.querySelector("#empty").hidden = !!panes.length;
     const keys = new Set(panes.map(paneKey));
+    const directorSessions = new Set(panes.filter(pane => pane.role === 'director').map(pane => pane.session));
     for (const pane of panes) {
       const card = cards.get(paneKey(pane)) || createCard(pane);
       if (card.closed) { card.closed = false; setSelection(card, card.selected); feedback(card, 'Agent reconnected'); }
       // Redraws after 2 seconds may flag unread; raise the window if seen.
-      if ((pane.role === 'director' || pane.role === 'manager') && card.latest && card.key !== currentPane() && performance.now() - resizedAt > 2000) {
+      if ((pane.role === 'director' || (pane.role === 'manager' && !directorSessions.has(pane.session))) && card.latest && card.key !== currentPane() && performance.now() - resizedAt > 2000) {
         const previous = workArea(card.latest), current = workArea(pane);
         const changed = previous === null || current === null ? card.latest.output !== pane.output : previous !== current;
         if (changed) card.unread = true;

@@ -3,6 +3,7 @@ set -euo pipefail
 CASE_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=tests/helpers.sh
 . "$CASE_DIR/../helpers.sh"
+export PEON_DELIVERY_ROOT="$TEST_DIR/delivery"
 SCRIPT_DIR=$ROOT
 die() { printf 'peon-code: %s\n' "$*" >&2; exit 1; }
 # shellcheck source=lib/input.sh
@@ -598,27 +599,34 @@ assert_unchanged
 printf '#!/bin/sh\nexit 1\n' >"$bin_dir/systemd-run"
 
 setup_swap simultaneous claude
-with_pane_delivery %1 swap_reserve_locked %1 'codex --model one' "$SWAP_STATE:%1" >"$TEST_DIR/reserve1.out" 2>&1 &
+# The ready file proves A reserved while holding the delivery lock. Keep that
+# lock until B has tried it, regardless of how the jobs are scheduled.
+reserve_and_hold() {
+  swap_reserve_locked "$@" || return $?
+  : >"$SWAP_STATE/reserved"
+  while [ ! -e "$SWAP_STATE/release" ]; do command sleep 0.02; done
+}
+with_pane_delivery %1 reserve_and_hold %1 'codex --model one' "$SWAP_STATE:%1" >"$TEST_DIR/reserve1.out" 2>&1 &
 first=$!
-with_pane_delivery %1 swap_reserve_locked %1 'codex --model two' "$SWAP_STATE:%1" >"$TEST_DIR/reserve2.out" 2>&1 &
-second=$!
-first_rc=0 second_rc=0
-wait "$first" || first_rc=$?
-wait "$second" || second_rc=$?
-if [ "$((first_rc + second_rc))" != 1 ]; then
-  printf 'first_rc=%s second_rc=%s\n' "$first_rc" "$second_rc" >&2
-  printf 'reserve1.out:\n' >&2
-  cat "$TEST_DIR/reserve1.out" >&2
-  printf 'reserve2.out:\n' >&2
-  cat "$TEST_DIR/reserve2.out" >&2
-  printf 'tmux calls:\n' >&2
-  cat "$SWAP_STATE/log" >&2
-  for reserve_file in peon_swap peon_swap_owner peon_swap_started peon_swap_pid; do
-    printf '%s:\n' "$reserve_file" >&2
-    cat "$SWAP_STATE/$reserve_file" >&2 || true
-  done
-  fail 'concurrent reservations did not select exactly one job'
-fi
+trap ': >"$SWAP_STATE/release"; wait "$first" || true' EXIT
+for ((attempt = 0; attempt < 150; attempt++)); do
+  [ ! -e "$SWAP_STATE/reserved" ] || break
+  command sleep 0.02
+done
+[ -e "$SWAP_STATE/reserved" ] || fail 'first swap never reserved its pane'
+[ "$(cat "$SWAP_STATE/peon_swap")" = 'checking codex --model one' ] || fail 'first swap did not publish its reservation'
+second_rc=0
+with_pane_delivery %1 swap_reserve_locked %1 'codex --model two' "$SWAP_STATE:%1" >"$TEST_DIR/reserve2.out" 2>&1 || second_rc=$?
+[ "$second_rc" -eq 75 ] || fail "held delivery admitted a second reservation (status $second_rc)"
+assert_contains "$TEST_DIR/reserve2.out" 'another delivery owns %1'
+assert_contains "$TEST_DIR/reserve2.out" "Lock: $PEON_DELIVERY_ROOT/"
+: >"$SWAP_STATE/release"
+wait "$first" || fail 'first swap reservation failed'
+trap - EXIT
+second_rc=0
+with_pane_delivery %1 swap_reserve_locked %1 'codex --model two' "$SWAP_STATE:%1" >"$TEST_DIR/reserve2.out" 2>&1 || second_rc=$?
+[ "$second_rc" -eq 1 ] || fail "existing swap admitted a second reservation (status $second_rc)"
+assert_contains "$TEST_DIR/reserve2.out" 'a swap is already checking'
 assert_unchanged
 
 setup_swap detached-interrupted claude

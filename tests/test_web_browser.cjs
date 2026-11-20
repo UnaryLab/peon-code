@@ -1016,6 +1016,32 @@ const assert = require('node:assert/strict');
     assert(await teamGroup('alpha').locator('summary').evaluate(el => el.classList.contains('unread')));
     await teamGroup('alpha').locator('summary').click();
     await paneTab('%3').click(); assert.equal(await sessionTab('alpha').evaluate(el => el.classList.contains('unread')), false);
+    const directedPanes = [
+      {id: '%91', identity: 'directed:%91', name: 'Director', role: 'director', session: 'directed'},
+      {id: '%92', identity: 'directed:%92', name: 'First manager', role: 'manager', team: 'first', session: 'directed'},
+      {id: '%93', identity: 'directed:%93', name: 'Second manager', role: 'manager', team: 'second', session: 'directed'}
+    ];
+    for (const pane of directedPanes) revision[pane.id] = 0;
+    roles.push(...directedPanes);
+    await sessionTab('directed').click();
+    await paneTab('%93').click();
+    await page.waitForFunction(() => !refreshing);
+    await page.evaluate(() => refresh());
+    await page.waitForFunction(() => performance.now() - resizedAt > 2000);
+    revision['%92'] = 1;
+    await page.waitForFunction(() => cards.get('%92:directed:%92').latest.output.endsWith('1'));
+    assert.equal(await paneTab('%92').evaluate(el => el.classList.contains('unread')), false, 'A manager with a director does not flag its tab');
+    assert.equal(await sessionTab('directed').evaluate(el => el.classList.contains('unread')), false, 'A manager with a director does not flag its session');
+    screen['%3'] = 'work line 3\n❯ \nfooter tip B'; styledScreen['%3'] = screen['%3'];
+    await page.waitForFunction(() => cards.get('%3:first:%3').unread);
+    assert(await sessionTab('alpha').evaluate(el => el.classList.contains('unread')), 'Another session without a director still flags its manager');
+    revision['%91'] = 1;
+    await page.waitForSelector('#agents [data-key="%91:directed:%91"].unread');
+    assert(await sessionTab('directed').evaluate(el => el.classList.contains('unread')), 'Director output flags its session');
+    await paneTab('%91').click();
+    await sessionTab('alpha').click();
+    roles.splice(roles.length - directedPanes.length, directedPanes.length);
+    await sessionTab('directed').waitFor({state: 'detached'});
     await selectFirstLine();
     assert.equal(await page.evaluate(() => getSelection().toString()), firstLine);
     const frozen = await card('%3').locator('.output').first().textContent(); revision['%3'] = 4;
@@ -1649,7 +1675,7 @@ const assert = require('node:assert/strict');
     assert.equal(await newForm.locator('[name="directory"]').inputValue(), '/work/new project');
     assert.equal(await newForm.locator('[name="session"]').inputValue(), 'new.team');
     assert.equal(await newForm.locator('[name="config"]').evaluate(el => el.files[0].name), 'team.conf');
-    assert.deepEqual(opened[0], {directory: '/work/new project', session: 'new.team', config_name: 'team.conf', config_text: configText});
+    assert.deepEqual(opened[0], {directory: '/work/new project', single_team: false, session: 'new.team', config_name: 'team.conf', config_text: configText});
     openError = null;
     await page.waitForFunction(() => !refreshing);
     paneDelay = 800;
@@ -1687,7 +1713,7 @@ const assert = require('node:assert/strict');
     assert(await launchDraft.evaluate(el => document.activeElement === el), 'Opening a session keeps focus in a non-empty message textarea');
     assert.equal(await launchDraft.inputValue(), 'Keep typing while the new session opens');
     await sessionTab('default-team').click();
-    assert.deepEqual(opened[2], {directory: '/work/default-team'});
+    assert.deepEqual(opened[2], {directory: '/work/default-team', single_team: false});
     for (const [session, text] of [['newline-config', 'boss: codex\n' + '\n'.repeat(150 * 1024 - 12)], ['control-config', '\u0000'.repeat(200 * 1024)]]) {
       await newSession.click();
       await newForm.locator('[name="directory"]').fill('~/project');
@@ -1695,7 +1721,7 @@ const assert = require('node:assert/strict');
       await newForm.locator('[name="config"]').setInputFiles({name: session + '.conf', mimeType: 'text/plain', buffer: Buffer.from(text)});
       await newForm.locator('[type="submit"]').click();
       await page.waitForFunction(session => document.querySelector('#sessions [data-key="' + session + '"]')?.getAttribute('aria-current') === 'true', session);
-      assert.deepEqual(opened[opened.length - 1], {directory: '~/project', session, config_name: session + '.conf', config_text: text});
+      assert.deepEqual(opened[opened.length - 1], {directory: '~/project', single_team: false, session, config_name: session + '.conf', config_text: text});
       assert(openBytes[openBytes.length - 1] > 256 * 1024, 'JSON escaping can exceed 256 KiB for an allowed config');
       assert(openBytes[openBytes.length - 1] < 2 * 1024 * 1024, 'Allowed config fits the open request limit');
     }
@@ -1719,7 +1745,7 @@ const assert = require('node:assert/strict');
     openError = null;
     await newForm.locator('[type="submit"]').click();
     await newForm.waitFor({state: 'hidden'});
-    assert.deepEqual(opened[opened.length - 1], {directory: '/work/built-team', session: 'built.team', config_name: 'team.conf', config_text: builtConfig});
+    assert.deepEqual(opened[opened.length - 1], {directory: '/work/built-team', single_team: false, session: 'built.team', config_name: 'team.conf', config_text: builtConfig});
     await sessionTab('built_team').click();
     for (const [id, name, role, team] of [
       ['%200', 'director', 'director', ''],

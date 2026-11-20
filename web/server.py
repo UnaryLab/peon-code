@@ -365,7 +365,10 @@ class Handler(BaseHTTPRequestHandler):
                 adding_team = parsed.path == "/api/team"
                 directory, session = data.get("directory"), data.get("session", "")
                 create = False if adding_team else data.get("create", False)
+                single_team = False if adding_team else data.get("single_team", False)
                 save = data.get("save", False)
+                if not isinstance(single_team, bool):
+                    raise ValueError("Single team must be true or false")
                 if not isinstance(create, bool):
                     raise ValueError("Create must be true or false")
                 if not isinstance(save, bool):
@@ -447,7 +450,7 @@ class Handler(BaseHTTPRequestHandler):
                             lines = result.stdout.splitlines()
                             self.respond(200, {"session": session, "message": lines[-1] if lines else "Team added"})
                         return
-                    opened = open_project(SimpleNamespace(directory=directory, session=session, config=config), ROOT, timeout=300, create=create)
+                    opened = open_project(SimpleNamespace(directory=directory, session=session, config=config, single_team=single_team), ROOT, timeout=300, create=create)
                     launched = True
                 except FileExistsError as error:
                     self.respond(409, {"error": str(error)})

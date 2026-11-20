@@ -207,6 +207,8 @@ def open_project(args, root, timeout=None, create=False):
     command = [str(root / "peon-code.sh")]
     if config:
         command.extend(["-c", str(Path(config).expanduser().resolve())])
+    if getattr(args, "single_team", False):
+        command.append("--single-team")
     command.append(session)
     if timeout is None:
         launched = subprocess.run(command, cwd=str(project), stdin=subprocess.DEVNULL, capture_output=True, text=True)

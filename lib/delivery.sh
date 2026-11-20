@@ -34,7 +34,7 @@ with_pane_delivery() (
   key=$(printf '%s' "$identity" | cksum)
   key=${key%% *}
   [ "${PEON_DELIVERY_OWNER:-}" != "$$:$key" ] || { "$@"; exit $?; }
-  root=/tmp/peon-code-delivery-$UID
+  root=${PEON_DELIVERY_ROOT:-/tmp/peon-code-delivery-$UID}
   umask 077
   mkdir "$root" 2>/dev/null || true
   if [ ! -d "$root" ] || [ -L "$root" ] || [ ! -O "$root" ]; then

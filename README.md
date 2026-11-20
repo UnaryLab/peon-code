@@ -78,7 +78,9 @@ To add a CLI:
 
 Each pane shell, agent, and subagent inherits `PEON_CODE_SESSION` set to the session name, so hooks can identify a peon-code session.
 
-`peon-code [-c file] [<session>] [<cmd> ...]` builds the session, or attaches it if it already exists. The team resolves as described under [Config file](#config-file).
+`peon-code [-c file] [--single-team] [<session>] [<cmd> ...]` builds the session, or attaches it if it already exists. The team resolves as described under [Config file](#config-file).
+
+- `--single-team` starts from the config's own agent lines; its `team` lines are skipped, not edited. Options must come before the flag.
 
 A session created without a terminal is 220 columns by at least 60 rows, growing with the pane count, until a client attaches.
 
@@ -228,6 +230,7 @@ How the panes are identified, how text is pasted and submitted, and how `resume`
 peon-code                                    # start or attach a team
 peon-code <session>                          # custom session name
 peon-code -c team.conf lab                   # session lab, team from team.conf
+peon-code --single-team                      # start from the config's own agent lines, team lines skipped
 peon-code <session> <cmd> [<cmd> ...]        # one pane per agent command, config ignored
 peon-code lab claude codex claude            # 3-agent example
 peon-code resume [<session>] [<cmd> ...]     # same, each agent reopening its last conversation
@@ -298,6 +301,7 @@ team <name> <file>
 
 - `team <name> <file>` reads the agents of team `<name>` from `<file>`, a path relative to this config. The file holds agent lines only: a `team`, `compact-at`, or `restart-dead` line in it is ignored with a warning on stderr, and a `*` mark is ignored. Each team needs its own manager, worker, and reviewer when it uses roles. Team names match `[A-Za-z0-9_-]+`, must be unique, and must differ from the session name, which team 1 uses.
 - Agents of a later team are named `<team>-<name>`, so `impl` in team `team2` is `team2-impl`. An added team without a name gets the first free one of `team2`, `team3`, and so on.
+- A single-team start keeps the saved team line; delete the line to drop the team for good.
 - With two or more teams, the session adds one `director` pane. It takes the main slot, the work you type, and git; team managers report to it instead of to you. It runs the command of team 1's manager, or of team 1's first agent when team 1 has no roles. To give it another CLI or model, use [`swap director`](#swap).
 
 To add a team to a running session, see [Add team](#add-team).
