@@ -2,237 +2,80 @@
 
 A tmux session of side-by-side AI coding agent CLIs that watch and message each other's panes.
 
-## Overview
-
-Each pane runs one agent CLI, launched with a brief that names the pane's own id, the roster of the other panes, and the agent's role. An agent reads another's latest output with `tmux capture-pane -pt <pane-id> -S -100` and messages it with `peon-code send <pane-id>`, which pastes the text into that pane's input box and submits it. The team coordinates through a task board file, see [Task board](#task-board).
+Each pane runs one agent CLI. Its launch brief names the pane's own id, the other panes, and the agent's role. An agent reads another pane with `tmux capture-pane -pt <pane-id> -S -100` and messages it with `peon-code send <pane-id>`. The team coordinates through a [task board](#task-board) file.
 
 ## Requirements
 
-- tmux 3.2 or newer
-- bash 3.2 or newer, the macOS default
-- At least one agent CLI installed (claude, codex, copilot, ...)
-- macOS or Linux
+- macOS or Linux, with tmux 3.2 or newer and bash 3.2 or newer (the macOS default)
+- At least one agent CLI: claude, codex, copilot, gemini, grok, or qwen; any other CLI gets its brief as a positional prompt and cannot resume. The copilot launch is verified; gemini and qwen are unverified.
+- Python 3.10 or newer, only for the browser workspace
+- To add a CLI, copy a file in `lib/cli/` to `<name>.sh`, rename its functions to the `<name>_` prefix, and run `tests/test_peon_code.sh`. `<name>` is the bare command name; a path such as `/opt/bin/foo` matches no provider. [ARCHITECTURE.md](ARCHITECTURE.md#adding-a-cli) lists what each function must print. peon-code has no experiments. CI runs `shellcheck -x peon-code.sh peon-code-web.sh install.sh tests/test_peon_code.sh`, then `tests/test_peon_code.sh`, then `python3 -m unittest discover -s tests -p 'test_web*.py'`.
 
 ## Installation
 
 ```sh
-./install.sh            # symlink both commands into ~/.local/bin
+./install.sh            # symlink peon-code and peon-code-web into ~/.local/bin
 ./install.sh <bin-dir>  # symlink into another directory
+peon-code uninstall [bin-dir]  # remove both symlinks; the clone stays
 ```
 
-Installation adds both `peon-code` and `peon-code-web` command symlinks. Run either from any directory. Installation and startup require tmux 3.2 or newer; the installer offers to install missing tmux with a detected package manager and prints install commands for missing Python 3.10+ or agent CLIs without installing them. `install.sh` seeds `~/.config/peon-code/peon-code.conf` from the example if it is missing, installs [`tmux.conf`](tmux.conf) to `~/.tmux.conf` (asking before overwriting an existing one), and prints a note when the bin directory is not on your `PATH`. The shipped config enables extended keys so Shift+Enter adds a new line in agent panes. If your terminal does not send modified keys, use your agent's own terminal setup.
-
-`peon-code --version` prints the version in the `VERSION` file at the top of the clone, such as `0.1.0`, and the first line of `peon-code -h` shows it as `peon-code 0.1.0`; without that file both show `unknown`. `--version` must be the first argument. When the clone is its own Git repository, not a folder inside another one, and `core.hooksPath` is not set there, `install.sh` sets it to the tracked `.githooks` directory and prints `installed Git hooks: .githooks`; when a hooks path is already set, it keeps it and prints `kept Git hooks: <path>`. The `pre-commit` hook in `.githooks` raises the last number of `VERSION` by one and stages the file on every commit, so each commit raises the version by 0.0.1, an amended commit included. A `VERSION` that is not three plain numbers joined by dots stops the commit with an error; `git commit --no-verify` skips the hook.
-
-`~/.local/bin` is not on the default `PATH` on macOS. If the note appears, add this line to your shell profile (`~/.zshrc` or `~/.bashrc`) and open a new shell:
-
-```sh
-export PATH="$HOME/.local/bin:$PATH"
-```
-
-A start or resume first asks the public repository (`PEON_UPDATE_URL`, default `https://github.com/UnaryLab/peon-code.git`) for its newest commit, waiting at most 3 seconds (`PEON_FETCH_TIMEOUT` changes it). If that fails, it prints a notice and asks your clone's own remote instead; in a terminal that may prompt for credentials and has no time limit, otherwise it uses the same limit and never prompts. If both fail, it prints a failure line and starts the current version. When a newer version is available, it asks `update available upstream; pull now? [y/N]`; offline, already current, ahead, or diverged checkouts get no offer. Answer `y` to update: the launcher reports `updated; starting`, holds it on screen for three seconds, then starts on the new version; any other answer starts on the current one and prints the `git pull` command to run later.
-
-To uninstall, run `peon-code uninstall [bin-dir]`, which removes both command symlinks from `<bin-dir>`, with `bin-dir` defaulting to `~/.local/bin`. The repository itself is left in place. Both links are checked before either is removed; a foreign command is left alone and exits 1. Nothing there at all is reported and exits 0.
+- The installer offers to install a missing tmux. For missing Python or agent CLIs it prints the install commands only.
+- It seeds `~/.config/peon-code/peon-code.conf` from the example if that file is missing.
+- It installs [`tmux.conf`](tmux.conf) to `~/.tmux.conf`, asking before an overwrite. It makes Shift+Enter add a new line; a terminal that sends no modified keys needs the agent's own setup.
+- `~/.local/bin` is not on the default macOS `PATH`. If the installer says so, add `export PATH="$HOME/.local/bin:$PATH"` to `~/.zshrc` or `~/.bashrc`.
+- A start or resume asks upstream for a newer version, waiting at most 3 seconds, then tries your clone's remote. It asks `update available upstream; pull now? [y/N]`; any other answer, or no answer from either remote, starts the current version.
 
 ## Quick start
 
-From a terminal:
-
 ```sh
-peon-code                                    # start or attach a team
-peon-code <session>                          # custom session name
-peon-code -c team.conf lab                   # session lab, team from team.conf
-peon-code resume [<session>]                 # reopen each agent's last conversation
-peon-code msg <name|all> 'text' [<session>]  # send text to an agent pane
-peon-code dismiss [<session>]                # print the session's token usage, then kill it
-peon-code-web [--ssh <host>]                 # the same team in a browser, see Browser workspace
+peon-code                         # start or attach the team of this directory
+peon-code -c team.conf lab        # session lab, team from team.conf
+peon-code msg boss 'fix the parser'  # type into one agent's pane
+peon-code dismiss                 # print token usage, then kill the session
+peon-code-web --ssh my-server     # the same teams in your local browser
 ```
 
-Run `peon-code -h` for every subcommand, or see [Command reference](#command-reference) below.
+A `<session>` defaults to the current directory's base name, with `.` and `:` replaced by `_`. Commands refuse a same-named session that peon-code did not create. An interrupted launch removes its half-built session.
 
-An interrupted launch removes the session it was building.
-
-Every `[<session>]` argument defaults to the current directory's base name, with `.` and `:` replaced by `_`, since tmux rewrites those characters in session names. peon-code marks each session it creates; attaching and every session-scoped subcommand (`dismiss`, `detach`, `msg`, `rebrief`, `compact`, `clear`) refuse a same-named session peon-code did not create.
-
-### Supported providers
-
-| Provider | How it launches | How it resumes |
-|----------|-----------------|----------------|
-| claude | `--settings` file for the normal screen, brief pasted in once its TUI is up | `--resume <id>` |
-| codex | positional prompt and `--no-alt-screen`, stays interactive | `resume <id>` |
-| copilot | `-i <prompt>` (verified) | `--resume=<id>` |
-| gemini, qwen | `-i <prompt>` (unverified on this machine) | `--resume <id>` |
-| anything else | command as given, brief appended as a positional prompt | not supported |
-
-peon-code reads each pane's input box with the prompt marker and paste placeholder of that pane's own CLI. `send`, `rebrief`, `compact`, and `clear` skip or refuse a pane that draws no prompt marker peon-code knows.
-
-To add a CLI:
-
-1. Copy a file in `lib/cli/` to `<name>.sh`, where `<name>` is the bare command name, such as `foo`; a path such as `/opt/bin/foo` in the agent command matches no provider.
-2. Rename its functions to the `<name>_` prefix and fill in the launch, resume, prompt marker, and paste placeholder for your CLI.
-3. Run `tests/test_peon_code.sh`.
-
-[ARCHITECTURE.md](ARCHITECTURE.md#adding-a-cli) lists what each function must print.
+## Commands
 
 ### Start and attach
 
-Each pane shell, agent, and subagent inherits `PEON_CODE_SESSION` set to the session name, so hooks can identify a peon-code session.
+`peon-code [-c file] [--single-team] [<session>] [<cmd> ...]` builds the session, or attaches it if it exists. The team resolves as in [Config file](#config-file); `<cmd> ...` starts one pane per command and ignores the config. `--single-team` starts from the config's own agent lines; its `team` lines are skipped, not edited. Options must come before the flag.
 
-`peon-code [-c file] [--single-team] [<session>] [<cmd> ...]` builds the session, or attaches it if it already exists. The team resolves as described under [Config file](#config-file).
+- The main agent gets the left 60% of the window: the director with two or more teams, else the `*` agent, else the first manager, else the first agent. All teams share one window.
+- Only the main agent may commit or run destructive git commands. Claude panes are blocked; other CLIs get a rule in the brief. A claude line with its own `--settings` or `--dangerously-skip-permissions` is not blocked. See [Git denial](ARCHITECTURE.md#git-denial).
+- The launch marks the project folder trusted in `~/.claude.json` and `~/.codex/config.toml`. The entries stay after the session ends; delete them by hand to undo.
+- Launch notes go to the tmux status line; `tmux show-messages` shows older ones. On Linux with systemd, an agent survives the out-of-memory killer taking one of its child processes.
+- Without a terminal, the launcher prints `tmux attach -t <session>` and exits 0, or kills the session and exits nonzero when an agent fails.
 
-- `--single-team` starts from the config's own agent lines; its `team` lines are skipped, not edited. Options must come before the flag.
+### Session commands
 
-A session created without a terminal is 220 columns by at least 60 rows, growing with the pane count, until a client attaches.
+- `peon-code detach`, run from outside, or the tmux prefix then `d`, detaches; the agents keep running. Run `peon-code` again to reattach.
+- `peon-code resume` starts like a plain start, but each agent reopens its last conversation of this session and directory: claude, codex, copilot, gemini, grok, and qwen. An agent with no conversation in the last 30 days starts fresh and is named on stderr.
+- `peon-code usage` prints input, cache read, cache write, output, and total tokens per agent, then per CLI, counting the newest conversation plus its subagent threads. Only claude and codex log usage. `peon-code dismiss` prints the same report, then kills that one session and deletes its state directory (see [Environment](#environment)). `peon-code list` prints every agent pane on the tmux server; a pane back at a shell shows `gone (<shell>)`.
+- `peon-code msg <name|all> 'text'` types into agent panes, prefixed `[from user]`. `peon-code send <pane-id> 'text'|-` is the agent-to-agent path; `-` reads stdin. A pane in copy mode, on a dialog or a menu, or with typed text takes nothing: `msg` skips it, and `send` retries for about 10 seconds, then exits nonzero. When a box never shows the text, no `Enter` is sent; do not paste it again by hand.
+- An agent that compacts or clears loses its brief. `peon-code rebrief <name|all>` pastes it again. `peon-code compact` and `peon-code clear` send `/compact` or `/clear`, then the brief; the name defaults to `all`. Busy panes are skipped with a note. Run these from a shell or another pane. A pane still busy 2 minutes after the slash command gets no brief; rebrief it later.
+- `peon-code swap <name> <cli|-> <model|-> <effort|->` replaces an agent's CLI, model, or effort in its pane; `-` keeps a value. Only claude and codex can be swapped. Keeping the CLI keeps its flags and resumes the conversation; a new CLI starts bare and fresh. A headless test run must pass within 60 seconds first; on failure the agent keeps running. The swap fails when the old agent holds typed text or a dialog, or does not quit within 30 seconds. You cannot swap your own pane.
 
-The window uses tmux's `main-vertical` layout: the main agent's pane takes the left 60% of the width, the other agents stack to its right. Main is the `director` in a session of two or more [teams](#teams), else the agent marked with a leading `*` in the config, else the first agent with the `manager` role, else the first agent in the team. In a terminal, every team shares the one tmux window, so more teams means narrower panes.
+### Add agents and teams
 
-Only the main agent can commit and run destructive git commands (`git reset`, `checkout`, `restore`, `switch`, `clean`, `stash`, `rm`, `commit`, `branch -D/-M/-f/--delete`, `push`, `rebase`, `reflog expire`, `update-ref`, `filter-branch`, `gc`); every other agent is denied them. The denial is enforced for claude panes and stated as a rule in the brief for other CLIs. A claude pane whose config line passes its own `--settings` or `--dangerously-skip-permissions` is not covered, and the launcher says so on stderr. See [ARCHITECTURE.md](ARCHITECTURE.md#git-denial) for the limits of the enforcement.
-
-The terminal tab caption is `<session> : <directory>`, the directory being the base name of the active pane's current one. Other tmux sessions keep their own title setting.
-
-Before any agent starts, peon-code trusts the project directory for claude and codex, so neither opens on its folder-trust dialog. For claude it sets `projects["<path>"].hasTrustDialogAccepted` to true in `~/.claude.json`, or `$CLAUDE_CONFIG_DIR/.claude.json` when that is set. This needs `python3` and an existing file; without them a launch note says so and claude shows its dialog as usual. For codex it appends a `[projects."<path>"]` table with `trust_level = "trusted"` to `~/.codex/config.toml`, or `$CODEX_HOME/config.toml` when that is set, and creates the file if it is missing. A path the codex file already lists is left as it is, whatever its trust level. If the codex file defines `projects` as an inline table, the step changes nothing, prints a note, and codex shows its dialog unless the file already trusts the path. The path is the directory's physical path, plus the path you launched from when a symlink makes the two differ. This trust is permanent: the entries stay in both user config files after the session ends, and there is no option to turn the step off. To undo it, delete that entry from the file.
-
-Claude panes start with the alternate screen disabled so scrollback keeps the transcript.
-
-The session is attached as soon as its panes exist, so the agent CLIs start while the session is on screen. The agent CLIs start one after another, about a second apart, or about three seconds apart on Linux with a systemd user manager, before any pane is checked; each pane is then checked and briefed in turn. When every pane starts cleanly, launch time follows the slowest pane. A pane that times out or waits on a dialog adds its full wait, because the per-pane checks run one at a time. Their launch notes arrive as tmux status-line messages instead of terminal output, and any startup dialog is in front of you to answer. A note that has scrolled off the status line is still readable with `tmux show-messages`, and a run started from inside an existing tmux session switches that client to the new session, so the calling shell gets its prompt back while the agents are still starting.
-
-On Linux with a systemd user manager, each agent starts in a login shell inside its own systemd scope with `OOMPolicy=continue`, so when the kernel out-of-memory killer takes a child process of the agent, such as a test run, a build, or a simulator, the agent and its pane survive; without that scope, the default stop policy of the pane's own scope would end the shell and the agent too. The agent itself still dies if it is the process the killer takes, and on macOS or without systemd the launch is unchanged.
-
-With no TTY on stdin (a headless caller such as a script or an agent running the launcher), the session is still built, but instead of attaching the launcher prints the session name and the `tmux attach -t <session>` command and exits 0. In that mode the agents start before the line is printed.
-
-If any agent command does not start, its name goes to the status line and the session stays up with the failed pane in view. Headless, the launcher instead kills the new session, names the failed agents, and exits nonzero.
-
-### Browser workspace
-
-The optional `peon-code-web` command is installed alongside `peon-code`. It requires Python 3.10 or newer; the terminal launcher keeps its existing requirements.
-
-```sh
-peon-code-web                 # open all running teams in your local browser
-peon-code-web lab             # open only the existing lab session
-peon-code-web --no-open       # print the URL without opening a browser
-peon-code-web --port 9000     # use only this port
-peon-code-web --ssh my-server # run on your Mac; connect to an SSH host and open locally
-peon-code-web --ssh my-server lab # view one existing session
-peon-code-web --ssh my-server --dir /remote/path/my-project
-peon-code-web --ssh my-server custom --dir "/remote/path/my project"
-peon-code-web --ssh my-server --dir /remote/path --config ./team.conf
-```
-
-The command opens your default browser on macOS or Linux. Keep it running while you use the UI; Ctrl-C stops the web server and leaves your agents running. If a browser cannot open, use the printed URL. Start teams with `peon-code`; the browser lists them as they appear.
-
-The page lists the running teams and their agents. A new session takes a project directory on the agent host, an optional session name, and an optional local team config file. An uploaded team config is used for that launch only and is not kept, so to launch the same team again, keep it as a file in the project folder. Adding a team to a running session works like [`add-team`](#add-team): without an upload it clones the session's first team, which needs a session launched from a config file, and it is kept for future launches by default. While no terminal is attached, the browser sizes each pane to its own view; once a terminal is attached, the terminal sets the size, and the browser view can show only what the terminal shows. After the browser has sized a pane, attach with `peon-code <session>`; a plain `tmux attach` shows each agent in its own window until a browser page polls again. Files you upload from the browser land in `<project dir>/<folder>/` on the agent host, `upload/` by default. An upload never replaces an existing file of the same name, and each file can be at most 64 MiB. The browser can list and download files only inside the team's project folder, at most 256 MiB per file. A folder downloads as a zip archive under the same 256 MiB cap, counted on the file sizes before compression. It remembers the last upload folder for each team in this browser only.
-
-For SSH, install `peon-code-web` on your Mac and on the remote host, then run `peon-code-web --ssh <your-usual-SSH-host>` **on your Mac**. It starts the remote web server, forwards loopback ports over one SSH connection, and opens your local browser. Your SSH config, keys, and authentication apply, and the Mac needs no tmux. The browser lists the running teams of all project folders on the host. Keep the command running; Ctrl-C closes the tunnel and its remote web server and leaves the agents running. A stale web server from a lost tunnel is replaced automatically. The local and remote `peon-code-web` installs must both be this version or newer, because an older remote does not know the port range the local side asks for.
-
-- `--dir PATH` creates or opens the team for that project, and works locally too. The CLI asks before it creates a missing project folder and its parents on the agent host. With `--ssh`, the question appears in your local terminal. A noninteractive CLI launch stops if the folder is missing. The folder basename is the session name, with dots and colons changed to underscores; a positional name replaces it. An existing team opens only if it is a peon-code team for the same folder. A team of that name in another project reports a collision.
-- `--config FILE` uses a local team config for a new team. An existing team opens unchanged. With `--ssh`, the file goes to `~/.config/peon-code/uploads/<name>.conf` on the host, and the remote user config stays unchanged.
-- `--port N` uses port N for the local server, or for both ends of the SSH forward, and reports an error if it is busy. Without it, the local server tries 8765 and takes a free port when 8765 is busy. Over SSH without it, the connection forwards the ten ports 8765-8774, and the remote server takes the first one that is free or held by your own earlier `peon-code-web` server, which it stops; the printed URL shows the matching local port. When other programs, including other users' `peon-code-web` servers, hold all ten remote ports, the launch fails. With `--port N` over SSH, both ends use only port N. `--port 0` takes a temporary port for local tests.
-- `--no-open` prints the URL and opens no browser.
-
-`peon-code-web` runs the same update check as `peon-code`. With `--ssh`, your Mac checks its own install first, then the remote host checks, and its prompt shows in your local terminal before the team starts. The remote check never asks for credentials. Noninteractive launches decline the update.
-
-The web server and SSH forward listen only on loopback. The launch URL grants access to the team, so keep it private.
-
-### Detach and reattach
-
-From inside the session, press the tmux prefix then `d` (`Ctrl-b d` with the default prefix) to detach the current terminal.
-
-Alternatively, `peon-code detach [<session>]` detaches every terminal attached to the session. Run it from a terminal outside the session. With no such session, or one peon-code did not create, it exits 1. The session stays alive and its agents keep running in the background, so use `dismiss` to actually stop it.
-
-To come back, run `peon-code` again from the same directory, or `peon-code <session>` with the same session name: an existing session is attached instead of rebuilt.
-
-### Resume
-
-`peon-code resume [<session>] [<cmd> ...]` builds the session the same way as a plain start, except each agent reopens the conversation it had in that session and directory before, so the team keeps its memory across a `dismiss` or a reboot.
-
-Only claude, codex, copilot, gemini, grok, and qwen have a resume handle; any other provider starts fresh. An agent with no earlier conversation in the last 30 days is named on stderr and starts fresh too. A conversation counts as the agent's own only when its brief appears within the first 20 lines of the transcript, and subagent threads, a codex thread whose first line marks it as a subagent or a claude file under a `subagents` directory, are never taken as an agent's own, so resume, the usage report, and the watcher all read the conversation the agent itself started. A resumed claude pane that opens on claude's "Resume from summary" picker takes the summary default and waits out the compaction that follows before its brief is pasted. Every resumed pane still gets its full brief, since pane ids change with each session.
-
-### Dismiss
-
-`peon-code dismiss [<session>]` kills one session, matched exactly. Other sessions and the tmux server keep running.
-
-With no such session it says so and exits 0. A session peon-code did not create is left alone and exits 1.
-
-Before the kill, `dismiss` prints the token usage report described under [Usage](#usage).
-
-### Usage
-
-`peon-code usage [<session>]` prints a token usage report for one session and leaves it running. Each agent gets one line with its name, CLI, and its input, cache read, cache write, output, and total tokens; one total line per CLI follows. Only claude and codex log usage, so an agent of any other CLI shows `no usage logged`, as does a claude or codex agent whose conversation holds no usage record yet. An agent whose conversation file is not found shows `no transcript`. The report counts the newest conversation of each agent from the last 30 days plus every subagent thread that conversation spawned, each file counted once, so an earlier conversation of a resumed agent is not included. For claude these are the subagent files of its session; for codex they are its child threads, such as subagent forks and guardian reviews, up to 5 levels deep and from the last 30 days. The context size that triggers compaction and the codex weekly limit still come from the agent's own conversation only. With no such session it says so and exits 0; a session peon-code did not create exits 1.
-
-### Msg
-
-`peon-code msg <name|all> 'text' [<session>]` sends text to the named agent's pane, or to every agent pane with `all`, prefixed `[from user]`. Teams share agent names, so reaching one session keeps `msg boss` from interrupting every team on the tmux server.
-
-Panes are taken one at a time, each getting up to about 3 seconds for its input box to show the text before `Enter` follows. A pane in copy mode, on a dialog or a menu, or whose box holds typed text is skipped and takes no paste. A skipped pane, or one that refuses the paste or never shows it, is named on stderr and the rest still get theirs; text the box took but never showed is left there for you to submit. An unknown agent name prints the session's panes and exits 1, and a run where any pane took no message exits nonzero.
-
-### Send
-
-`peon-code send <pane-id> 'text'|-` is the agent-to-agent path: it pastes a message into another agent's pane and submits it. A message of `-` is read from stdin, which keeps quotes and apostrophes out of the sending agent's shell.
-
-A busy target takes nothing: a pane holding typed text, on a dialog or a menu, or in copy mode is retried up to 10 times over about 10 seconds, then exits nonzero having pasted nothing, so that pane keeps whatever it had. A pane back at a shell, a pane peon-code did not launch, and a pane drawing no prompt marker peon-code knows exit nonzero at once. After a paste, `Enter` follows only once the box shows that message: all of it, the CLI's paste placeholder, or, for a message too long for the box, its last 100 or more characters; a box that never matches keeps the message with no `Enter` sent, and the run exits nonzero. On a busy target, retry later rather than pasting by hand.
-
-### Rebrief
-
-`peon-code rebrief <name|all> [<session>]` pastes the launch brief back into the named agent's pane, or every agent pane with `all`. An agent that compacts or clears its conversation loses the brief's rules, and this puts them back.
-
-A pane whose input box holds typed text, one on a dialog or a menu, one drawing no prompt marker peon-code knows, and one from an older launch with no stored brief are each skipped with a note on stderr, and on their own do not change the exit code. The run exits nonzero when no pane took a brief at all, or when a paste was refused or left unsubmitted.
-
-### Swap
-
-`peon-code swap <name> <cli|-> <model|-> <effort|-> [<session>]` replaces a running agent's CLI, model, or reasoning effort in its own pane. A `-` keeps the current value, and at least one field must be other than `-`, and the composed command must differ as text from the pane's stored command, so a request that only reorders or respells a flag still runs a full swap. Only claude and codex can be swapped, as the old CLI or the new one. Each field must be one plain token; the effort value is not checked against a list, so a value the CLI rejects fails the check below.
-
-A swap that keeps the CLI keeps every other flag of the pane's command and replaces only the model and the effort flags. A swap to a different CLI starts from the bare binary plus the model and effort you give, so the old CLI's other flags do not carry over. The new command is checked first by one headless run in the background, a prompt of "reply ok" with a cap of 60 seconds, run from the project directory, and the agent is replaced only when that run exits 0. The command returns as soon as the check starts. While the check runs the pane is marked as checking; a failed check marks it failed with the last line of the CLI's error, a timeout, or the exit status, and the agent keeps running unchanged.
-
-When the check passes, the swap writes folder trust for the new CLI, updates the agent's brief with its new command, clears the pane's usage and weekly figures, and asks the old agent to quit with `/exit`. The [context watcher](#context-watcher) then relaunches the pane with the new command and pastes the brief, and the pane is marked done; with `restart-dead no`, the swap relaunches the pane itself. A swap to a different CLI starts a new conversation. A swap that keeps the CLI resumes the agent's conversation from this session when its transcript is found, now with the new model and effort, and starts fresh when none is found. A swap does not count toward the watcher's limit of 3 restarts per hour. The swap fails and restores the old command when the old agent's input box holds typed text, shows a dialog or a menu, or the agent has not quit within 30 seconds. A swap from the pane you run it in, of a pane already at its shell, or while another swap of that pane is still checking is refused.
-
-### Add
-
-`peon-code add <name> <role> <command...> [--session <name>] [--team <name>] [--save]` adds an agent to a running team in a new pane of that team's session. The session defaults to the team of the pane you run it from, else the current directory name. In a session of several teams, `--team` picks the team, defaulting to the team of the pane you run it from, else team 1; an agent added to a later team gets that team's name prefix. Every word after the role is the agent command.
-
-The role is `-`, a shipped role name, or a role file path relative to the current directory. A bare name that is not shipped reads `roles/<name>.md` in the current directory. The role file needs a `type:` frontmatter line (see [Config file](#config-file) for the allowed types). A team has at most one manager, so a manager-type role is refused when the team already has one. The name must match `[A-Za-z0-9_-]+`, must not be `director`, and must differ from every agent name in the session. The command cannot contain the word `--session`, because `add` reads it as its own option.
-
-The new agent's brief holds the full roster. Every other agent gets a one-line note about its new teammate, and its stored brief gains the new roster line, so `rebrief`, `compact`, and `clear` keep the new agent in the roster. If the new agent does not start, its pane is killed and the team stays as it was. `add` refuses a team whose panes have no stored brief; launch that team again first. If the team uses the [context watcher](#context-watcher) and no watcher runs, `add` starts one.
-
-`--save` keeps the new agent for future launches. It appends the agent to the config file the session launched from, when that file is inside the project folder. Otherwise it creates `peon-code.conf` in the project folder from the current roster plus the new agent. It refuses when the project folder already has a `peon-code.conf` that the session did not launch from. A custom role is copied to `roles/<name>.md` next to the config; `--save` refuses when a file of that name holds different content, or when a shipped role has that name. A new config needs every role of the current roster to be shipped or to exist in `roles/` next to it, so write any missing role file first. The user config `~/.config/peon-code/peon-code.conf` is never changed. The checks run before the new pane starts, and the save runs only after the agent has started. For a later team, `--save` appends to that team's own config file, so it needs a saved session config that names the team with a `team` line.
-
-### Add team
-
-`peon-code [-c file] add-team [--team <name>] [--save] [--session <name>]` adds a whole team to a running session. The team comes from the `-c` file. Without `-c`, it clones the session's first team from the config file the session launched from; without either file, it refuses. The file is read as a team file (see [Teams](#teams)), and it must describe one team with its own manager, worker, and reviewer when it uses roles.
-
-- `--team` names the new team (the default is in [Teams](#teams)). The name must match `[A-Za-z0-9_-]+`, must not be `director`, and must be new to the session.
-- `--save` keeps the team for future launches: it writes the team to `peon-code.<team>.conf` in the project folder and appends a `team` line to the session config. With no session config in the project folder, it writes `peon-code.conf` for team 1 plus one `peon-code.<team>.conf` per other team, and every role of the current roster must then be shipped or exist in `roles/` there. It refuses when any of those files already exists. Custom roles are copied to `roles/` as with `add --save`.
-
-The first `add-team` on a one-team session also starts the `director` pane, which takes over intake and git. The main pane must then be a manager, and the director runs that manager's command. The manager of team 1 keeps its git access until it is swapped or restarted, because a running agent keeps the permissions it started with; the launcher says so on stdout. If any new agent does not start, every new pane is killed and the old team stays as it was. Running agents get the new roster and are briefed again.
-
-### Compact and clear
-
-`peon-code compact [<name|all>] [<session>]` and `peon-code clear [<name|all>] [<session>]` send `/compact` or `/clear` to the named agent's pane, or to every agent pane, then paste that pane's brief back once the command has finished, since both commands drop the standing instructions. The name defaults to `all`.
-
-If the pane you ran the command from is among the target panes, no pane is sent anything: a note on stderr tells you to run the command from a shell or another pane instead. Otherwise, a pane in copy mode, one drawing no prompt marker peon-code knows, one on a dialog or a menu, one whose input box holds typed text, or one that tmux refused the paste for is skipped with a note on stderr, and the rest still get the command. If the box holds anything other than the slash command after the paste, no `Enter` is sent and the command is left there for you to submit. Each pane that took the command then has up to 2 minutes to finish; one still busy after that keeps its brief unsent and is named on stderr, so run `rebrief` on it later. The run exits nonzero only when no pane took the command.
+- `peon-code add <name> <role> <command...>` adds an agent in a new pane; every word after the role is the command. `<role>` is `-`, a shipped role, or a role file path; a bare unshipped name reads `./roles/<name>.md`. A team has one manager. The name must be new and not `director`, and the command cannot contain `--session`.
+- `peon-code [-c file] add-team` adds a whole team from the `-c` file, or clones team 1 from the session's config. The first added team starts the director; the main pane must be a manager, and the director runs its command. Team 1's manager keeps git access until it is swapped or restarted.
+- `--team` picks the team for `add`, the caller's team, else team 1, and names the new team for `add-team`; that default is in [Teams](#teams).
+- `--save` keeps the result for future launches. `add` appends to the session's config in the project folder, else writes `peon-code.conf` there, and copies a custom role to `roles/`. `add-team` writes `peon-code.<team>.conf` and adds a `team` line. Neither overwrites a file or changes `~/.config/peon-code/peon-code.conf`.
 
 ### Context watcher
 
-A launch starts `peon-code watch` in the background for its session unless the team config has both `compact-at 0` and `restart-dead no`. Every 5 seconds it checks the size of each claude and codex pane's transcript. It reads a pane's context size from the usage record the CLI writes there (the input tokens of the last request, which include the system prompt, tools, and conversation) as soon as the transcript is found, then again each time the transcript size has changed, at most once a minute per pane, so a pane that crosses the threshold is caught within about a minute; a transcript that does not change is not read again. It also repeats the search for each pane's transcript at most once a minute and moves to the agent's newest one, so after a `clear` or a relaunch it reads the new conversation within about a minute rather than staying on the previous one. It runs `compact` on a pane that has reached the threshold, so the pane gets its brief back in the same step. The threshold is the `compact-at <tokens>` line in the team config, default 250000; `compact-at 0` turns compaction off, and with it the transcript reads that feed the browser's token totals and codex weekly limit, while the watcher keeps running to restart dead agents unless `restart-dead no` is also set. A pane fires once per crossing: after a compact it waits until its reading has dropped below the threshold before it can fire again. Panes of other CLIs are named once on the status line as not watched, since they log no context size the watcher knows. The watcher exits when the session ends; `peon-code watch [<session>] [<tokens>]` starts one by hand.
-
-When an agent's process exits and its pane drops back to a shell, the watcher relaunches the agent in the same pane, about 5 to 10 seconds after the exit. It resumes the agent's conversation from this session when the CLI supports resuming (claude and codex) and the transcript is found, and otherwise starts the agent fresh; either way the agent gets its brief again. A status-line note names the agent and says whether it resumed or started fresh. Only an agent that was seen running is restarted, so a pane whose agent never started at launch is left alone. A pane whose screen is changing, such as while someone types at its shell prompt, is not restarted until its screen holds still; before the paste the watcher clears any partial line at the prompt, but keys typed in the second between the paste and its `Enter` can still join the command. Each pane gets at most 3 restart attempts in a rolling hour, failed attempts included and [swaps](#swap) not counted; at the cap a status-line note says so and the pane stays at the shell until the hour has passed. A new launch or resume starts a new count. The pane keeps its id, so the browser keeps showing it and the relaunch appears there without a reload. The watcher cannot tell a crash from a deliberate exit, so an agent you quit on purpose, with `/exit` or `Ctrl-C`, also comes back. To keep panes at their shell, set `restart-dead no` in the team config before launch.
-
-### List
-
-`peon-code list` prints every agent pane on the tmux server as `SESSION AGENT PANE STATUS`, so a session can be found without remembering the directory it was launched from. It takes no arguments and covers every session, not one.
-
-A pane back at a shell is reported as `gone (<shell>)`: its agent exited. With no agent panes anywhere it says so. Either way it exits 0; an argument exits 1.
-
-How the panes are identified, how text is pasted and submitted, and how `resume` finds each agent's conversation are described in [ARCHITECTURE.md](ARCHITECTURE.md).
+Each launch starts `peon-code watch`. It compacts a claude or codex pane whose context reaches `compact-at`, default 250000 tokens. It restarts an agent whose pane falls back to a shell, at most 3 times per hour, resuming when it can. An agent you quit on purpose also comes back. `compact-at 0` and `restart-dead no` together start no watcher. Run `watch` by hand only after you kill the running one.
 
 ### Command reference
 
 ```sh
 peon-code                                    # start or attach a team
-peon-code <session>                          # custom session name
-peon-code -c team.conf lab                   # session lab, team from team.conf
+peon-code -c <file> [<session>]              # team from that config file
 peon-code --single-team                      # start from the config's own agent lines, team lines skipped
 peon-code <session> <cmd> [<cmd> ...]        # one pane per agent command, config ignored
-peon-code lab claude codex claude            # 3-agent example
 peon-code resume [<session>] [<cmd> ...]     # same, each agent reopening its last conversation
 peon-code dismiss [<session>]                # print the session's token usage, then kill it
 peon-code usage [<session>]                  # print token usage per agent of one session
@@ -251,26 +94,34 @@ peon-code watch [<session>] [<tokens>]       # compact a pane whose context reac
 peon-code list                               # agent panes of every session
 peon-code statusline [<user-command>]        # internal: the claude status line wrapper the launch installs
 peon-code uninstall [bin-dir]                # remove both installed command symlinks
-peon-code -h                                 # help
-peon-code --version                          # print the version
+peon-code -h, --help                         # help
+peon-code --version                          # print the version; must be the first argument
 ```
 
-## Reproducing results
-
-peon-code has no experiments. Its two checks are the ones CI runs:
+## Browser workspace
 
 ```sh
-shellcheck -x peon-code.sh install.sh tests/test_peon_code.sh
-tests/test_peon_code.sh
+peon-code-web                      # all running teams in your local browser
+peon-code-web lab                  # only the existing session lab
+peon-code-web --no-open            # print the URL, open no browser
+peon-code-web --port 9000          # use only this port
+peon-code-web --ssh my-server      # run on your Mac against an SSH host
+peon-code-web --ssh my-server --dir /remote/path --config ./team.conf
 ```
+
+- `--dir PATH` creates or opens the team of that project folder, locally or on the SSH host. It asks before it creates a missing folder. The folder name is the session name unless you give one.
+- `--config FILE` uses a local team config for a new team, for that launch only. Over SSH it is uploaded to `~/.config/peon-code/uploads/` on the host.
+- `--port N` fails if port N is busy. Without it, the server takes 8765 or a free port; over SSH it uses the first free port of 8765 to 8774.
+- `--ssh HOST` needs `peon-code-web` of this version or newer on both machines. Your SSH config and keys apply. The Mac needs no tmux.
+- Keep the command running; Ctrl-C stops the server, not the agents. It listens on loopback only. The launch URL grants access to the team, so keep it private.
+- Uploads go to `<project>/upload/` by default, at most 64 MiB per file, and never replace a file. Downloads stay inside the project folder, at most 256 MiB per file or zipped folder.
+- An attached terminal sets the pane size, and the browser then shows only what the terminal shows. After the browser sized the panes, attach with `peon-code <session>`; a plain `tmux attach` shows each agent in its own window.
 
 ## Configuration
 
 ### Config file
 
-Team resolution: CLI agent commands > `-c` file > `./peon-code.conf` > `~/.config/peon-code/peon-code.conf` > `claude codex`. A `-c` file that does not exist aborts; the default config files may be absent.
-
-One agent per line: `name command... role`. The first token is the name, the last is the role, everything between is the command. For a full team, see [peon-code.conf.example](peon-code.conf.example).
+Team resolution: CLI agent commands > `-c` file > `./peon-code.conf` > `~/.config/peon-code/peon-code.conf` > `claude codex`. One agent per line, `name command... role`; see [peon-code.conf.example](peon-code.conf.example).
 
 ```
 # name   command                                      role
@@ -279,51 +130,35 @@ fast     codex                                        -
 weird    claude                                       ./my-roles/chaos.md
 ```
 
-- Names must match `[A-Za-z0-9_-]+` and be unique. The name `director` is reserved. A leading `*` marks the main agent (see [Start and attach](#start-and-attach)); at most one line may carry it.
-- The role field is required. `-` means no role.
-- A bare role name reads `roles/<name>.md` next to `peon-code.sh`, else `roles/<name>.md` next to the config file. A role token with a `/` is a file path, relative paths resolving against the config file's directory.
-- A line `compact-at <tokens>` sets the context watcher's threshold, and a line `restart-dead yes` or `restart-dead no` (default `yes`) turns the restart of dead agents on or off (see [Context watcher](#context-watcher)). The `team` line under [Teams](#teams) is the only other non-agent line.
-- Full-line `#` comments and blank lines are skipped. Inline comments are not.
-- A role file opens with a frontmatter block: `type:` (one of `manager`, `worker`, `reviewer`; `director` is reserved for the shipped director role), `description:` (one line, shown in the roster). The type picks the agent's duties in `roles/protocol.md`; the body below the block holds only the job-specific rules.
-- Bad names, duplicate names, lines with fewer than three tokens, missing role files, a role file without a type, and a team with roles that lacks a manager-type, a worker-type, or a reviewer-type role all abort before the session is created.
+- Names match `[A-Za-z0-9_-]+` and are unique. `director` is reserved. A leading `*` marks the main agent, on one line at most.
+- The role is required; `-` means none. A bare role name reads `roles/<name>.md` next to `peon-code.sh`, else next to the config. A role with a `/` is a path relative to the config.
+- `compact-at <tokens>` sets the [watcher](#context-watcher) threshold, `0` for off. `restart-dead yes|no` turns restarts on or off, default `yes`. `team <name> <file>` adds a [team](#teams). Full-line `#` comments and blank lines are skipped; inline comments are not. A config error aborts before the session is built.
 
 Shipped roles: `manager`, `implementer`, `reviewer`, `writer`, `director`.
 
-Types: `manager` is the manager, `implementer` and `writer` are workers, `reviewer` is the reviewer, `director` is the director. The session adds the `director` pane with the director role on its own when it has two or more teams. No config line, `add`, or `add-team` can give an agent a director-type role. The board and message protocol every role follows is `roles/protocol.md`; it is part of every role pane's brief.
+A role file opens with frontmatter: `type:` and a one-line `description:`. Types: `manager`, `worker` (`implementer` and `writer`), and `reviewer`. `director` is reserved for the shipped director role, so no config line, `add`, or `add-team` can use it. A team with roles needs one manager, one worker, and one reviewer. The protocol every role follows is `roles/protocol.md`.
 
 ### Teams
 
-One session can run several teams side by side, each with its own manager, workers, reviewer, and task board. The agents of the main config file are team 1: they keep bare names, and team 1 takes the session name as its team name. Add a team to the config with one line per extra team:
-
-```
-team <name> <file>
-```
-
-- `team <name> <file>` reads the agents of team `<name>` from `<file>`, a path relative to this config. The file holds agent lines only: a `team`, `compact-at`, or `restart-dead` line in it is ignored with a warning on stderr, and a `*` mark is ignored. Each team needs its own manager, worker, and reviewer when it uses roles. Team names match `[A-Za-z0-9_-]+`, must be unique, and must differ from the session name, which team 1 uses.
+- `team <name> <file>` in the config adds a team. One session can run several teams, each with its own manager, workers, reviewer, and board. The main config's agents are team 1 and keep bare names.
+- `<file>` is relative to this config and holds agent lines only. A `team`, `compact-at`, or `restart-dead` line in it is ignored with a warning, and so is a `*` mark.
+- Team names match `[A-Za-z0-9_-]+`, are unique, and differ from the session name, which team 1 uses.
 - Agents of a later team are named `<team>-<name>`, so `impl` in team `team2` is `team2-impl`. An added team without a name gets the first free one of `team2`, `team3`, and so on.
 - A single-team start keeps the saved team line; delete the line to drop the team for good.
-- With two or more teams, the session adds one `director` pane. It takes the main slot, the work you type, and git; team managers report to it instead of to you. It runs the command of team 1's manager, or of team 1's first agent when team 1 has no roles. To give it another CLI or model, use [`swap director`](#swap).
-
-To add a team to a running session, see [Add team](#add-team).
-
-A team with a `writer` writes its summaries under `innovation_summary/` in the working directory, one markdown file per subject. Each innovation in a write-up has four labeled segments in order: Problem, Importance, Innovation, Implementation. The reviewer checks for that structure. When that directory is a git repository, the launcher adds `innovation_summary/` to `.gitignore` if it is not already listed.
+- With two or more teams, the session adds a `director` pane. It takes the main slot, your input, and git; managers report to it. It runs team 1's manager command, or team 1's first agent's command when team 1 has no roles. Change it with [`swap director`](#session-commands).
+- To add a team to a running session, see [Add agents and teams](#add-agents-and-teams). A team with a `writer` writes summaries under `innovation_summary/`, one markdown file per subject. In a git repository, the launcher adds that directory to `.gitignore`.
 
 ### Task board
 
-The launcher creates `.peon-code-task.md` in the working directory if it is missing and at least one agent has a role. It is a table of `id | who | task | files | status`, one row per open task, under a header that states the editing rules the agents follow. Read it to see what the team is working on; finished rows are deleted, so the board lists only open work. The rules the agents follow are in [ARCHITECTURE.md](ARCHITECTURE.md#task-board-protocol).
-
-With several [teams](#teams), team 1 keeps `.peon-code-task.md`, each later team gets `.peon-code-task.<team>.md`, and the director plans on `.peon-code-plan.md`, a board of the same format whose rows assign a part of the work to each team.
-
-A team without roles (agent commands on the command line, or a config of all `-` roles) leaves no file behind; its agents create the board themselves, with the same header, if they need it.
+The launcher creates `.peon-code-task.md` when at least one agent has a role. It is a table of `id | who | task | files | status`, one row per open task. Read it to see what the team is doing; the rules are in [ARCHITECTURE.md](ARCHITECTURE.md#task-board-protocol). With several teams, each later team gets `.peon-code-task.<team>.md`, and the director plans on `.peon-code-plan.md`.
 
 ### Environment
 
-peon-code reads these environment variables:
-
-- `CLAUDE_CONFIG_DIR` and `CODEX_HOME`: the transcript stores `resume` searches for claude and codex, defaulting to `~/.claude` and `~/.codex`. They also locate the files the launch writes folder trust to, `.claude.json` (default `~/.claude.json`) and `config.toml`.
-- `XDG_STATE_HOME`: the session's brief files and watcher log go under `$XDG_STATE_HOME/peon-code/<session>/`, defaulting to `~/.local/state/peon-code/<session>/`. `dismiss` deletes that directory.
-
-The tmux server captures its environment when it first starts. An agent that cannot see an environment variable you exported later is reading the older environment: run `tmux kill-server` and launch again. `dismiss` only kills one session, so the server keeps its old environment.
+- `CLAUDE_CONFIG_DIR`, `CODEX_HOME`: where claude and codex keep transcripts, `.claude.json`, and `config.toml`; default `~/.claude` (but `~/.claude.json`) and `~/.codex`.
+- `PEON_CODE_SESSION`: set in every pane to the session name, for hooks.
+- `XDG_STATE_HOME`: briefs and the watcher log go under `$XDG_STATE_HOME/peon-code/<session>/`, default `~/.local/state/peon-code/<session>/`.
+- `PEON_UPDATE_URL`, `PEON_FETCH_TIMEOUT`: the update check's upstream, default `https://github.com/UnaryLab/peon-code.git`, and time limit, default 3 seconds.
+- The tmux server keeps the environment it started with. If an agent cannot see a variable you exported later, run `tmux kill-server` and launch again.
 
 ## Citation
 

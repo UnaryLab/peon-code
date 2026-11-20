@@ -107,7 +107,7 @@ test_config_loading() {
 # role records completion on its row before it messages.
 test_shipped_roles() {
   local role
-  for role in $(sed -n 's/^Shipped roles: //p' "$ROOT/README.md" | tr -d '`,.'); do
+  for role in $(sed -n 's/^Shipped roles: \([^.]*\)\..*/\1/p' "$ROOT/README.md" | tr -d '`,'); do
     [ -f "$ROOT/roles/$role.md" ] || fail "README lists an unshipped role: $role"
   done
   # Every shipped role carries a type, and the protocol file, which is not a

@@ -89,7 +89,7 @@ peon-code.sh add <name> <role> <command...> [--session <name>]  add an agent to 
   --save                                      keep the added agent and its role in the team config
 peon-code.sh [-c file] add-team [--team <name>] [--save] [--session <name>]
                                                 add a team from -c; without -c, clones the session's first team
-                                                its default name is t<number of teams + 1>
+                                                its default name is the first free of team2, team3, ...
 peon-code.sh compact [<name|all>] [<session>]   send /compact to an agent pane, then send
                                                 its brief again once compaction ends,
                                                 skipping any blocked pane (typed text,
