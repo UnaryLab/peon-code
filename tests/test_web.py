@@ -1517,23 +1517,24 @@ elif command == "pull":
                 self.assertTrue(run.call_args.args[0][1].startswith("http://127.0.0.1:"))
 
     def test_occupied_port_does_not_start_agents(self):
-        args = SimpleNamespace(ssh=None, directory='/project', port=8765, port_range=1)
+        args = SimpleNamespace(ssh=None, directory='/project', port=8765, port_range=1, stdio=False)
         with patch.object(web, 'arguments', return_value=args), patch.object(web, 'ThreadingHTTPServer', side_effect=OSError('address in use')), patch.object(web, 'open_project') as start, self.assertRaisesRegex(SystemExit, 'Use --port'):
             web.main()
         start.assert_not_called()
 
-    def test_directory_selects_initial_without_filtering_sessions(self):
+    def test_directory_or_session_selects_initial_without_filtering_sessions(self):
         all_panes = [dict(id="%2", session="team"), dict(id="%3", session="zeta")]
-        for directory, session, expected_filter, expected_initial in (
-                ("/project", None, None, "zeta"),
-                ("/project", "custom", None, "zeta"),
-                (None, "team", "team", "team"),
-                (None, None, None, None)):
+        for directory, session, expected_initial in (
+                ("/project", None, "zeta"),
+                ("/project", "custom", "zeta"),
+                (None, "team", "team"),
+                (None, None, None)):
             args = SimpleNamespace(ssh=None, directory=directory, session=session,
                                    port=0, port_range=1, stdio=False, no_open=True)
             with self.subTest(directory=directory, session=session), \
                     patch.object(web, "arguments", return_value=args), \
                     patch.object(web, "ThreadingHTTPServer", return_value=self.server), \
+                    patch.object(web.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)), \
                     patch.object(web, "open_project", return_value="zeta") as start, \
                     patch.object(web.secrets, "token_urlsafe", return_value="test-token"), \
                     patch.object(self.server, "serve_forever"), \
@@ -1542,7 +1543,7 @@ elif command == "pull":
                     patch.object(web, "snapshot", side_effect=lambda pane: pane), \
                     contextlib.redirect_stdout(io.StringIO()):
                 web.main()
-                self.assertEqual(self.server.session, expected_filter)
+                self.assertIsNone(self.server.session)
                 self.assertEqual(self.server.initial, expected_initial)
                 if directory:
                     start.assert_called_once_with(args, ROOT)
@@ -1550,9 +1551,9 @@ elif command == "pull":
                     start.assert_not_called()
                 status, body = self.request("GET", "/api/panes")
                 self.assertEqual(status, 200)
-                panes.assert_called_with(expected_filter)
+                panes.assert_called_with(None)
                 self.assertEqual(json.loads(body), {
-                    "panes": [pane for pane in all_panes if expected_filter is None or pane["session"] == expected_filter],
+                    "panes": all_panes,
                     "initial": expected_initial, "version": web.VERSION})
 
     def test_cli_confirms_missing_project_folder_via_tty_or_stdio(self):
@@ -1564,7 +1565,7 @@ elif command == "pull":
                 missing = launch.MissingProjectFolder(project)
                 with self.subTest(stdio=stdio, interactive=interactive, reply=reply), \
                         patch.object(web, "arguments", return_value=args), \
-                        patch.object(web, "bind_server", return_value=server), \
+                        patch.object(web, "bind_server", return_value=(server, None)), \
                         patch.object(web, "pid_file", return_value=Path(directory) / "server.pid"), \
                         patch.object(web.shutil, "which", return_value="tmux"), \
                         patch.object(web, "open_project", side_effect=[missing, "new_team"]) as start, \
@@ -1585,7 +1586,7 @@ elif command == "pull":
                     server.server_close.assert_called_once()
 
     def test_failed_creation_closes_reserved_server(self):
-        args = SimpleNamespace(ssh=None, directory='/project', port=0, port_range=1)
+        args = SimpleNamespace(ssh=None, directory='/project', port=0, port_range=1, stdio=False)
         with patch.object(web, 'arguments', return_value=args), patch.object(web, 'ThreadingHTTPServer') as server, patch.object(web, 'open_project', side_effect=RuntimeError('bad project')), self.assertRaisesRegex(SystemExit, 'bad project'):
             web.main()
         server.return_value.server_close.assert_called_once()
@@ -1605,7 +1606,7 @@ class ServerLifecycleTests(unittest.TestCase):
     def test_default_port_falls_back_with_notice_but_explicit_port_fails(self):
         server = Mock(server_port=9123)
         with patch.object(web, "ThreadingHTTPServer", side_effect=[self.error, server]) as bind, patch.object(web.os, "kill") as kill, contextlib.redirect_stderr(io.StringIO()) as error:
-            self.assertIs(web.bind_server(None), server)
+            self.assertEqual(web.bind_server(None), (server, None))
         self.assertEqual([call.args[0] for call in bind.call_args_list], [("127.0.0.1", 8765), ("127.0.0.1", 0)])
         self.assertEqual(error.getvalue(), "port 8765 is busy, using 9123\n")
         kill.assert_not_called()
@@ -1621,15 +1622,29 @@ class ServerLifecycleTests(unittest.TestCase):
         self.assertIs(raised.exception, error)
         self.assertEqual(bind.call_count, 1)
 
+    def test_free_port_inherits_only_valid_ssh_token_on_replace_path(self):
+        token = "a" * 41 + "-_"
+        for replace, kind, fragment in ((True, "ssh", token), (False, "ssh", token),
+                                        (True, "local", token), (True, "other", token),
+                                        (True, "ssh", "short"), (True, "ssh", token + "!")):
+            self.path.with_suffix(".url").write_text("http://127.0.0.1:8765/#" + fragment + "\n" + kind + "\n")
+            server = Mock(server_port=8765)
+            with self.subTest(replace=replace, kind=kind, fragment=fragment), \
+                    patch.object(web, "ThreadingHTTPServer", return_value=server), \
+                    patch.object(web.os, "kill") as kill:
+                self.assertEqual(web.bind_server(8765, replace=replace),
+                                 (server, token if replace and kind == "ssh" and fragment == token else None))
+            kill.assert_not_called()
+
     def test_port_range_skips_busy_port_and_preserves_original_error_when_full(self):
         server = Mock(server_port=8766)
         with patch.object(web, "ThreadingHTTPServer", side_effect=[self.error, server]) as bind:
-            self.assertIs(web.bind_server(8765, 10), server)
+            self.assertEqual(web.bind_server(8765, 20), (server, None))
         self.assertEqual([call.args[0] for call in bind.call_args_list], [("127.0.0.1", 8765), ("127.0.0.1", 8766)])
         with patch.object(web, "ThreadingHTTPServer", side_effect=self.error) as bind, self.assertRaises(OSError) as raised:
-            web.bind_server(8765, 10)
+            web.bind_server(8765, 20)
         self.assertIs(raised.exception, self.error)
-        self.assertEqual([call.args[0] for call in bind.call_args_list], [("127.0.0.1", port) for port in range(8765, 8775)])
+        self.assertEqual([call.args[0] for call in bind.call_args_list], [("127.0.0.1", port) for port in range(8765, 8785)])
 
     def test_port_range_replaces_stale_server_on_later_candidate(self):
         web.pid_file(8766).write_text("12345\n")
@@ -1638,16 +1653,16 @@ class ServerLifecycleTests(unittest.TestCase):
                 patch.object(web.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "python /project/web/server.py\n", "")), \
                 patch.object(web.os, "kill") as kill, \
                 patch.object(web.socket, "create_connection", side_effect=ConnectionRefusedError):
-            self.assertIs(web.bind_server(8765, 10), server)
+            self.assertEqual(web.bind_server(8765, 20), (server, None))
         self.assertEqual([call.args[0] for call in bind.call_args_list], [("127.0.0.1", 8765), ("127.0.0.1", 8766), ("127.0.0.1", 8766)])
         kill.assert_called_once_with(12345, signal.SIGTERM)
 
     def test_exhausted_port_range_reports_range_before_starting_agents(self):
-        args = SimpleNamespace(ssh=None, directory='/project', port=8765, port_range=10)
+        args = SimpleNamespace(ssh=None, directory='/project', port=8765, port_range=20, stdio=False)
         with patch.object(web, 'arguments', return_value=args), \
                 patch.object(web, 'ThreadingHTTPServer', side_effect=self.error), \
                 patch.object(web, 'open_project') as start, \
-                self.assertRaisesRegex(SystemExit, 'Cannot listen on loopback ports 8765-8774.*Use --port'):
+                self.assertRaisesRegex(SystemExit, 'Cannot listen on loopback ports 8765-8784.*Use --port'):
             web.main()
         start.assert_not_called()
 
@@ -1657,8 +1672,9 @@ class ServerLifecycleTests(unittest.TestCase):
             occupied.listen(1)
             port = occupied.getsockname()[1]
             with patch.object(web, "DEFAULT_PORT", port), contextlib.redirect_stderr(io.StringIO()) as error:
-                server = web.bind_server(None)
+                server, token = web.bind_server(None)
             try:
+                self.assertIsNone(token)
                 self.assertNotEqual(server.server_port, port)
                 self.assertEqual(server.server_address[0], "127.0.0.1")
                 self.assertEqual(error.getvalue(), f"port {port} is busy, using {server.server_port}\n")
@@ -1688,17 +1704,191 @@ class ServerLifecycleTests(unittest.TestCase):
                 patch.object(web.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "python /project/web/server.py --stdio\n", "")) as ps, \
                 patch.object(web.os, "kill") as kill, \
                 patch.object(web.socket, "create_connection", side_effect=ConnectionRefusedError) as connection:
-            self.assertIs(web.bind_server(8765), server)
+            self.assertEqual(web.bind_server(8765, replace=True), (server, None))
         ps.assert_called_once_with(["ps", "-o", "args=", "-p", "12345"], capture_output=True, text=True, timeout=1)
         kill.assert_called_once_with(12345, signal.SIGTERM)
         self.assertEqual(bind.call_count, 2)
         connection.assert_called_once_with(("127.0.0.1", 8765), timeout=0.1)
 
+    def test_local_start_reuses_verified_server_url_without_signaling(self):
+        self.path.write_text("12345\n")
+        url = "http://127.0.0.1:8765/#old-token"
+        self.path.with_suffix(".url").write_text(url + "\nlocal\n")
+        with patch.object(web, "ThreadingHTTPServer", side_effect=self.error) as bind, \
+                patch.object(web.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "python /project/web/server.py\n", "")), \
+                patch.object(web.os, "kill") as kill:
+            self.assertEqual(web.bind_server(8765, replace=False), (url, None))
+        self.assertEqual(bind.call_count, 1)
+        kill.assert_not_called()
+
+    def test_local_start_skips_verified_server_without_saved_url(self):
+        self.path.write_text("12345\n")
+        for contents in (None, "", " \n"):
+            if contents is not None:
+                self.path.with_suffix(".url").write_text(contents)
+            server = Mock(server_port=8766)
+            with self.subTest(contents=contents), \
+                    patch.object(web, "ThreadingHTTPServer", side_effect=[self.error, server]) as bind, \
+                    patch.object(web.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "python /project/web/server.py\n", "")), \
+                    patch.object(web.os, "kill") as kill:
+                self.assertEqual(web.bind_server(8765, 2, replace=False), (server, None))
+            self.assertEqual([call.args[0] for call in bind.call_args_list], [("127.0.0.1", 8765), ("127.0.0.1", 8766)])
+            kill.assert_not_called()
+
+    def test_stdio_start_skips_local_server_with_saved_url(self):
+        self.path.write_text("12345\n")
+        self.path.with_suffix(".url").write_text("http://127.0.0.1:8765/#old-token\nlocal\n")
+        server = Mock(server_port=8766)
+        with patch.object(web, "ThreadingHTTPServer", side_effect=[self.error, server]) as bind, \
+                patch.object(web.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "python /project/web/server.py\n", "")), \
+                patch.object(web.os, "kill") as kill:
+            self.assertEqual(web.bind_server(8765, 2, replace=True), (server, None))
+        self.assertEqual([call.args[0] for call in bind.call_args_list], [("127.0.0.1", 8765), ("127.0.0.1", 8766)])
+        kill.assert_not_called()
+
+    def test_local_start_skips_ssh_server(self):
+        self.path.write_text("12345\n")
+        self.path.with_suffix(".url").write_text("http://127.0.0.1:8765/#" + "a" * 43 + "\nssh\n")
+        server = Mock(server_port=8766)
+        with patch.object(web, "ThreadingHTTPServer", side_effect=[self.error, server]) as bind, \
+                patch.object(web.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "python /project/web/server.py --stdio\n", "")), \
+                patch.object(web.os, "kill") as kill:
+            self.assertEqual(web.bind_server(8765, 2, replace=False), (server, None))
+        self.assertEqual([call.args[0] for call in bind.call_args_list], [("127.0.0.1", 8765), ("127.0.0.1", 8766)])
+        kill.assert_not_called()
+
+    def test_unrecognized_server_kind_is_skipped(self):
+        self.path.write_text("12345\n")
+        for replace, kind in ((False, ""), (False, "other\n"), (True, ""), (True, "other\n")):
+            self.path.with_suffix(".url").write_text("http://127.0.0.1:8765/#" + "a" * 43 + "\n" + kind)
+            server = Mock(server_port=8766)
+            with self.subTest(replace=replace, kind=kind), \
+                    patch.object(web, "ThreadingHTTPServer", side_effect=[self.error, server]), \
+                    patch.object(web.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "python /project/web/server.py\n", "")), \
+                    patch.object(web.os, "kill") as kill:
+                self.assertEqual(web.bind_server(8765, 2, replace=replace), (server, None))
+            kill.assert_not_called()
+
+    def test_stdio_replace_preserves_valid_token_and_replaces_malformed_fragment(self):
+        inherited, fresh = "a" * 41 + "-_", "b" * 43
+        args = SimpleNamespace(ssh=None, directory=None, session=None, port=8765,
+                               port_range=1, stdio=True, no_open=True)
+        url_path = self.path.with_suffix(".url")
+        for fragment in (inherited, None, "", "short", "a" * 42, "a" * 44, "a" * 42 + "!", "a" * 42 + "é", inherited + "#extra"):
+            old_url = "http://127.0.0.1:8765/" + ("#" + fragment if fragment is not None else "")
+            self.path.write_text("12345\n")
+            url_path.write_text(old_url + "\nssh\n")
+            expected = inherited if fragment == inherited else fresh
+            new_url = "http://127.0.0.1:8765/#" + expected
+            server = Mock(server_port=8765)
+            def terminate(pid, signum):
+                self.assertEqual((pid, signum), (12345, signal.SIGTERM))
+                self.assertEqual(url_path.read_text(), old_url + "\nssh\n")
+                url_path.unlink()
+            def serve():
+                self.assertEqual(server.token, expected)
+                self.assertEqual(url_path.read_text(), new_url + "\nssh\n")
+                self.assertEqual(url_path.stat().st_mode & 0o777, 0o600)
+            server.serve_forever.side_effect = serve
+            with self.subTest(fragment=fragment), \
+                    patch.object(web, "arguments", return_value=args), \
+                    patch.object(web, "ThreadingHTTPServer", side_effect=[self.error, server]), \
+                    patch.object(web.shutil, "which", return_value="tmux"), \
+                    patch.object(web.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "python /project/web/server.py --stdio\n", "")), \
+                    patch.object(web.os, "kill", side_effect=terminate) as kill, \
+                    patch.object(web.socket, "create_connection", side_effect=ConnectionRefusedError), \
+                    patch.object(web.secrets, "token_urlsafe", return_value=fresh) as generated, \
+                    patch.object(web.threading, "Thread"), \
+                    contextlib.redirect_stdout(io.StringIO()) as output:
+                web.main()
+            kill.assert_called_once_with(12345, signal.SIGTERM)
+            self.assertEqual(json.loads(output.getvalue()), {"url": new_url})
+            self.assertEqual(generated.call_count, int(fragment != inherited))
+            self.assertFalse(self.path.exists())
+            self.assertEqual(url_path.read_text(), new_url + "\nssh\n")
+
+    def test_main_reuses_url_and_opens_project_without_owning_server_files(self):
+        url = "http://127.0.0.1:8765/#old-token"
+        self.path.write_text("12345\n")
+        self.path.with_suffix(".url").write_text(url + "\nlocal\n")
+        for directory, session, no_open in ((None, None, True), (None, None, False), ("/project", None, False), (None, "lab", False)):
+            args = SimpleNamespace(ssh=None, directory=directory, session=session, port=8765,
+                                   port_range=1, stdio=False, no_open=no_open)
+            def open_browser(opened_url):
+                self.assertEqual(opened_url, url)
+                if directory or session:
+                    start.assert_called_once_with(args, ROOT)
+            with self.subTest(directory=directory, session=session, no_open=no_open), \
+                    patch.object(web, "arguments", return_value=args), \
+                    patch.object(web, "bind_server", return_value=(url, None)) as bind, \
+                    patch.object(web.shutil, "which", return_value="tmux"), \
+                    patch.object(web.subprocess, "run", return_value=subprocess.CompletedProcess([], 1)), \
+                    patch.object(web, "open_project", return_value="new_team") as start, \
+                    patch.object(web, "panes", return_value=[{}]), \
+                    patch.object(web, "open_browser", side_effect=open_browser) as browser, \
+                    patch.object(web.threading, "Thread") as thread, \
+                    contextlib.redirect_stdout(io.StringIO()) as output:
+                web.main()
+            bind.assert_called_once_with(8765, 1, replace=False)
+            self.assertEqual(start.call_count, int(directory is not None or session is not None))
+            self.assertEqual(browser.call_count, int(not no_open))
+            thread.assert_not_called()
+            self.assertEqual(output.getvalue(), "peon-code-web: " + url + "\nServer was already running.\n")
+            self.assertEqual(self.path.read_text(), "12345\n")
+            self.assertEqual(self.path.with_suffix(".url").read_text(), url + "\nlocal\n")
+
+    def test_missing_named_session_starts_in_current_directory(self):
+        for stdio in (False, True):
+            args = SimpleNamespace(ssh=None, directory=None, session="lab", port=0,
+                                   port_range=1, stdio=stdio, no_open=True)
+            server = Mock(server_port=9123)
+            with self.subTest(stdio=stdio), \
+                    patch.object(web, "arguments", return_value=args), \
+                    patch.object(web, "bind_server", return_value=(server, None)), \
+                    patch.object(web.shutil, "which", return_value="tmux"), \
+                    patch.object(web.subprocess, "run", return_value=subprocess.CompletedProcess([], 1)) as exists, \
+                    patch.object(web, "open_project", return_value="lab") as start, \
+                    patch.object(web, "panes") as panes, \
+                    patch.object(web.threading, "Thread"), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                web.main()
+            exists.assert_called_once_with(["tmux", "has-session", "-t", "=lab"], capture_output=True, timeout=5)
+            start.assert_called_once_with(args, ROOT)
+            self.assertEqual(args.directory, os.getcwd())
+            panes.assert_not_called()
+            self.assertIsNone(server.session)
+            self.assertEqual(server.initial, "lab")
+
+    def test_existing_named_session_needs_agent_panes_without_project_check(self):
+        for stdio, agents in ((False, []), (False, [{}]), (True, []), (True, [{}])):
+            args = SimpleNamespace(ssh=None, directory=None, session="lab", port=0,
+                                   port_range=1, stdio=stdio, no_open=True)
+            server = Mock(server_port=9123)
+            with self.subTest(stdio=stdio, agents=agents), \
+                    patch.object(web, "arguments", return_value=args), \
+                    patch.object(web, "bind_server", return_value=(server, None)), \
+                    patch.object(web.shutil, "which", return_value="tmux"), \
+                    patch.object(web.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)), \
+                    patch.object(web, "open_project") as start, \
+                    patch.object(web, "panes", return_value=agents) as panes, \
+                    patch.object(web.threading, "Thread"), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                if agents:
+                    web.main()
+                    self.assertIsNone(server.session)
+                    self.assertEqual(server.initial, "lab")
+                else:
+                    with self.assertRaisesRegex(SystemExit, "no peon-code agent panes in session lab"):
+                        web.main()
+            panes.assert_called_once_with("lab")
+            start.assert_not_called()
+            self.assertIsNone(args.directory)
+
     def test_default_port_replaces_stale_server_before_considering_fallback(self):
         self.path.write_text("12345\n")
         server = Mock(server_port=8765)
         with patch.object(web, "ThreadingHTTPServer", side_effect=[self.error, server]) as bind, patch.object(web.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "python /project/web/server.py --stdio\n", "")), patch.object(web.os, "kill") as kill, patch.object(web.socket, "create_connection", side_effect=ConnectionRefusedError), contextlib.redirect_stderr(io.StringIO()) as error:
-            self.assertIs(web.bind_server(None), server)
+            self.assertEqual(web.bind_server(None), (server, None))
         self.assertEqual([call.args[0] for call in bind.call_args_list], [("127.0.0.1", 8765)] * 2)
         kill.assert_called_once_with(12345, signal.SIGTERM)
         self.assertEqual(error.getvalue(), "")
@@ -1741,21 +1931,27 @@ class ServerLifecycleTests(unittest.TestCase):
             self.assertEqual(sleep.call_count, int(retry))
 
     def test_main_records_bound_port_and_cleans_up_on_exit(self):
-        args = SimpleNamespace(ssh=None, directory=None, session=None, port=0, port_range=1, stdio=True, no_open=True)
+        args = SimpleNamespace(ssh=None, directory=None, session=None, port=0, port_range=1, stdio=False, no_open=True)
         path = web.pid_file(9123)
+        url_path = path.with_suffix(".url")
+        url = "http://127.0.0.1:9123/#test-token"
         pid = str(os.getpid())
         for outcome in ("normal", "term", "new-owner"):
             server = Mock(server_port=9123)
             def serve():
                 self.assertEqual(path.read_text(), pid + "\n")
+                self.assertEqual(url_path.read_text(), url + "\nlocal\n")
+                self.assertEqual(url_path.stat().st_mode & 0o777, 0o600)
                 if outcome == "new-owner":
                     path.write_text("54321\n")
+                    url_path.write_text("new-owner-url\n")
                 elif outcome == "term":
                     web.stop_server(signal.SIGTERM, None)
             server.serve_forever.side_effect = serve
             previous_handler = signal.getsignal(signal.SIGTERM)
             with self.subTest(outcome=outcome), patch.object(web, "arguments", return_value=args), \
-                    patch.object(web, "bind_server", return_value=server) as bind, \
+                    patch.object(web, "bind_server", return_value=(server, None)) as bind, \
+                    patch.object(web.secrets, "token_urlsafe", return_value="test-token"), \
                     patch.object(web.shutil, "which", return_value="tmux"), \
                     patch.object(web.threading, "Thread") as thread, contextlib.redirect_stdout(io.StringIO()):
                 if outcome == "term":
@@ -1764,16 +1960,85 @@ class ServerLifecycleTests(unittest.TestCase):
                     self.assertEqual(raised.exception.code, 0)
                 else:
                     web.main()
-            bind.assert_called_once_with(0, 1)
+            bind.assert_called_once_with(0, 1, replace=False)
             server.server_close.assert_called_once_with()
             self.assertEqual(signal.getsignal(signal.SIGTERM), previous_handler)
-            self.assertEqual(thread.call_count, 2)
-            watchdog = thread.call_args
-            self.assertIs(watchdog.kwargs["target"], web.watch_parent)
-            self.assertTrue(watchdog.kwargs["args"][1].is_set())
+            thread.assert_not_called()
             self.assertEqual(path.exists(), outcome == "new-owner")
+            self.assertEqual(url_path.exists(), outcome == "new-owner")
             if path.exists():
                 self.assertEqual(path.read_text(), "54321\n")
+                self.assertEqual(url_path.read_text(), "new-owner-url\n")
+
+    def test_stdio_main_has_watchdogs_and_saves_ssh_url(self):
+        args = SimpleNamespace(ssh=None, directory=None, session=None, port=0, port_range=1, stdio=True, no_open=True)
+        server = Mock(server_port=9123)
+        path = web.pid_file(9123)
+        url = "http://127.0.0.1:9123/#" + "b" * 43
+        path.with_suffix(".url").write_text("stale-local-url\n")
+        def serve():
+            self.assertEqual(path.read_text(), str(os.getpid()) + "\n")
+            self.assertEqual(path.with_suffix(".url").read_text(), url + "\nssh\n")
+            self.assertEqual(path.with_suffix(".url").stat().st_mode & 0o777, 0o600)
+        server.serve_forever.side_effect = serve
+        with patch.object(web, "arguments", return_value=args), \
+                patch.object(web, "bind_server", return_value=(server, None)) as bind, \
+                patch.object(web.secrets, "token_urlsafe", return_value="b" * 43), \
+                patch.object(web.shutil, "which", return_value="tmux"), \
+                patch.object(web.threading, "Thread") as thread, \
+                contextlib.redirect_stdout(io.StringIO()) as output:
+            web.main()
+        bind.assert_called_once_with(0, 1, replace=True)
+        server.server_close.assert_called_once_with()
+        self.assertFalse(path.exists())
+        self.assertEqual(path.with_suffix(".url").read_text(), url + "\nssh\n")
+        self.assertEqual(thread.call_count, 2)
+        watchdog = thread.call_args
+        self.assertIs(watchdog.kwargs["target"], web.watch_parent)
+        self.assertTrue(watchdog.kwargs["args"][1].is_set())
+        self.assertEqual(json.loads(output.getvalue()), {"url": url})
+
+    def test_open_only_opens_directory_or_session_without_binding_or_state_files(self):
+        for directory, exists in (("/project", False), (None, False), (None, True)):
+            args = SimpleNamespace(ssh=None, directory=directory, session="lab", stdio=True, open_only=True)
+            with self.subTest(directory=directory, exists=exists), \
+                    patch.object(web, "arguments", return_value=args), \
+                    patch.object(web, "bind_server") as bind, patch.object(web, "pid_file") as pid, \
+                    patch.object(web.shutil, "which", return_value="tmux"), \
+                    patch.object(web.subprocess, "run", return_value=subprocess.CompletedProcess([], 0 if exists else 1)), \
+                    patch.object(web, "panes", return_value=[{}]), \
+                    patch.object(web, "open_project", return_value="lab") as start, \
+                    patch.object(web.threading, "Thread") as thread, contextlib.redirect_stdout(io.StringIO()) as output:
+                web.main()
+            self.assertEqual(json.loads(output.getvalue()), {"session": "lab"})
+            if directory or not exists:
+                start.assert_called_once_with(args, ROOT)
+                self.assertEqual(args.directory, directory or os.getcwd())
+            else:
+                start.assert_not_called()
+            bind.assert_not_called()
+            pid.assert_not_called()
+            thread.assert_not_called()
+
+    def test_open_only_confirms_missing_folder_and_reports_errors_without_binding(self):
+        for reply in ("yes\n", "n\n"):
+            args = SimpleNamespace(ssh=None, directory="/missing/project", session=None, stdio=True, open_only=True)
+            missing = launch.MissingProjectFolder(args.directory)
+            with self.subTest(reply=reply), patch.object(web, "arguments", return_value=args), \
+                    patch.object(web, "bind_server") as bind, patch.object(web, "pid_file") as pid, \
+                    patch.object(web.shutil, "which", return_value="tmux"), \
+                    patch.object(web, "open_project", side_effect=[missing, "project"]) as start, \
+                    patch.object(web.sys, "stdin", io.StringIO(reply)), contextlib.redirect_stdout(io.StringIO()) as output:
+                if reply == "yes\n":
+                    web.main()
+                    self.assertEqual(start.call_args.kwargs, {"create": True})
+                    self.assertEqual([json.loads(line) for line in output.getvalue().splitlines()], [{"folder": args.directory}, {"session": "project"}])
+                else:
+                    with self.assertRaisesRegex(SystemExit, "Project folder does not exist"):
+                        web.main()
+                    self.assertEqual(json.loads(output.getvalue()), {"folder": args.directory})
+                bind.assert_not_called()
+                pid.assert_not_called()
 
 
 if __name__ == "__main__":

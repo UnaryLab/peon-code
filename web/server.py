@@ -559,18 +559,34 @@ def pid_file(port):
     return config_dir() / ("web-" + str(port) + ".pid")
 
 
-def bind_server(port, port_range=1):
+def read_server_url(port):
+    try:
+        saved = pid_file(port).with_suffix(".url").read_text().splitlines()
+    except (OSError, UnicodeError):
+        return "", "", None
+    if len(saved) < 2:
+        return "", "", None
+    url, kind = saved[:2]
+    fragment = url.partition("#")[2]
+    token = fragment if kind == "ssh" and re.fullmatch(r"[A-Za-z0-9_-]{43}", fragment) else None
+    return url, kind, token
+
+
+def bind_server(port, port_range=1, *, replace=True):
     automatic = port is None
     if automatic:
         port = DEFAULT_PORT
     for candidate in range(port, port + port_range):
         try:
-            return ThreadingHTTPServer(("127.0.0.1", candidate), Handler)
+            server = ThreadingHTTPServer(("127.0.0.1", candidate), Handler)
         except OSError as error:
             if error.errno != errno.EADDRINUSE:
                 raise
             if candidate == port:
                 original = error
+        else:
+            _, _, token = read_server_url(server.server_port)
+            return server, token if replace else None
         try:
             pid = int(pid_file(candidate).read_text())
             if not 1 < pid <= 2147483647 or pid == os.getpid():
@@ -579,6 +595,16 @@ def bind_server(port, port_range=1):
                                      capture_output=True, text=True, timeout=1)
             if process.returncode or "web/server.py" not in process.stdout:
                 raise ValueError("Port belongs to another process")
+            token = None
+            url_path = pid_file(candidate).with_suffix(".url")
+            if url_path.exists():
+                url, kind, token = read_server_url(candidate)
+                if kind == "local" and not replace and url:
+                    return url, None
+                if kind != "ssh":
+                    continue
+            if not replace:
+                continue
             os.kill(pid, signal.SIGTERM)
             deadline = time.monotonic() + 2
             while time.monotonic() < deadline:
@@ -588,13 +614,14 @@ def bind_server(port, port_range=1):
                 except OSError:
                     break
                 time.sleep(0.05)
-            return ThreadingHTTPServer(("127.0.0.1", candidate), Handler)
+            return ThreadingHTTPServer(("127.0.0.1", candidate), Handler), token
         except (OSError, ValueError, OverflowError, UnicodeError, subprocess.TimeoutExpired):
             pass
     if automatic and port_range == 1:
         server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         print(f"port {port} is busy, using {server.server_port}", file=sys.stderr)
-        return server
+        _, _, token = read_server_url(server.server_port)
+        return server, token if replace else None
     raise original
 
 
@@ -621,18 +648,27 @@ def main():
     if not shutil.which("tmux"):
         raise SystemExit("peon-code-web requires tmux on the agent host")
     try:
-        server = bind_server(args.port, args.port_range)
+        server, token = (None, None) if args.stdio and getattr(args, "open_only", False) else bind_server(args.port, args.port_range, replace=args.stdio)
     except OSError as error:
         port = args.port if args.port is not None else DEFAULT_PORT
         ports = f"ports {port}-{port + args.port_range - 1}" if args.port_range > 1 else f"port {port}"
         raise SystemExit("Cannot listen on loopback " + ports + ": " + str(error) + ". Use --port <free-port>.") from error
     stopped = threading.Event()
-    path = pid_file(server.server_port)
+    path = None if server is None or isinstance(server, str) else pid_file(server.server_port)
     pid = str(os.getpid())
     previous_handler = signal.signal(signal.SIGTERM, stop_server)
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(pid + "\n")
+        if path is not None:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if not args.stdio:
+                path.with_suffix(".url").unlink(missing_ok=True)
+            path.write_text(pid + "\n")
+        if not args.directory and args.session:
+            exists = subprocess.run(["tmux", "has-session", "-t", "=" + args.session], capture_output=True, timeout=5)
+            if exists.returncode:
+                args.directory = os.getcwd()
+            elif not panes(args.session):
+                raise SystemExit("no peon-code agent panes in session " + args.session)
         if args.directory:
             try:
                 args.session = open_project(args, ROOT)
@@ -650,15 +686,24 @@ def main():
                     raise
                 args.directory = error.directory
                 args.session = open_project(args, ROOT, create=True)
-        if args.session and not panes(args.session):
-            raise SystemExit("no peon-code agent panes in session " + args.session)
+        if server is None:
+            print(json.dumps({"session": args.session}), flush=True)
+            return
+        if isinstance(server, str):
+            print("peon-code-web: " + server + "\nServer was already running.", flush=True)
+            if not args.no_open:
+                open_browser(server)
+            return
         server.address = "127.0.0.1:" + str(server.server_port)
         server.origin = "http://" + server.address
-        server.token = secrets.token_urlsafe(32)
-        server.session = None if args.directory else args.session
+        server.token = token or secrets.token_urlsafe(32)
+        server.session = None
         server.initial = args.session
         server.send_lock = threading.Lock()
         url = server.origin + "/#" + server.token
+        with os.fdopen(os.open(path.with_suffix(".url"), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as file:
+            os.fchmod(file.fileno(), 0o600)
+            file.write(url + "\n" + ("ssh" if args.stdio else "local") + "\n")
         if args.stdio:
             print(json.dumps({"url": url}), flush=True)
             # Closing the local SSH client closes stdin and stops its remote server.
@@ -675,10 +720,13 @@ def main():
         raise SystemExit(str(error)) from error
     finally:
         stopped.set()
-        server.server_close()
+        if path is not None:
+            server.server_close()
         signal.signal(signal.SIGTERM, previous_handler)
         try:
-            if path.read_text().strip() == pid:
+            if path is not None and path.read_text().strip() == pid:
+                if not args.stdio:
+                    path.with_suffix(".url").unlink(missing_ok=True)
                 path.unlink()
         except OSError:
             pass

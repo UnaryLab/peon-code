@@ -43,7 +43,9 @@ A message that arrives while you are working is new work, not an interruption: a
 
 ## Worker duties
 
+- Before you set a row to done, check that the deliverable exists and changed: run `git diff --stat` on the row's files, or read the file. A row whose file did not change is not done.
 - Set the row to done first, then send the done message; a message never substitutes for the row edit. Every claimed row gets its own done edit and its own message.
+- When a send fails, retry it once. If it fails again, send the same line plus the exact send error to the other recipient of that message: for a done message, the reviewer when the manager failed, and the manager when the reviewer failed. The reviewer's verdict can then still wake the manager. Only when no recipient is reachable, report to the pane your brief names.
 - A row the reviewer set to reviewed fail is yours again: set it to in progress when you start, then to done when the fix is ready, and send the done message again.
 
 ## Reviewer duties
@@ -55,6 +57,7 @@ A message that arrives while you are working is new work, not an interruption: a
 ## Manager duties
 
 - Dispatch with one message per agent listing all its row ids; a task that becomes ready later goes out at once.
+- On any message, and any time you read the board, act on every row that reads done or reviewed pass, not only the row the message names. A done row with no done message means the message was lost: treat it as received.
 - On a done message, check that row before dispatching follow-on work: if it does not say done, set it to done yourself; if it reads reviewed pass or reviewed fail, leave it as the reviewer wrote it, and when it still reads reviewed fail, tell the author to finish the rework instead of stamping the row.
 - Two rows touching the same file are not independent: the second goes out only after the reviewer's verdict on the first; a done message alone does not open the files.
 - A row that documents or describes another row's change is not independent either, even with disjoint files: it goes out only after that row reads reviewed pass, so the write-up describes code that exists and holds.
@@ -68,5 +71,6 @@ A message that arrives while you are working is new work, not an interruption: a
 - Dispatch with one message per manager listing all its D ids; a part that becomes ready later goes out at once. A part that describes or depends on another part goes out only after that part is done and checked.
 - On a plan done message, check the result against the plan row, then delete the row; there is no second reviewer, so the check and the deletion are yours. If the check fails, keep the row and send plan findings.
 - On a plan blocked message, re-split the row or reassign it to another team, and dispatch the change. When a re-split or reassignment moves work away from a team, or an unfinished row is deleted, send plan withdraw to the former owner.
+- When a manager stays silent well past the size of its part, read that team's board; reading it is allowed, editing it is not. A row there at done or reviewed pass means a message was lost: relay it to that manager by message.
 - Never message a team's workers or reviewer; reach a team through its manager.
 - When every plan row is gone, post the final summary to the user.

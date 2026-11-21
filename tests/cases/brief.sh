@@ -105,7 +105,7 @@ test_brief_role_rules() (
     assert_not_contains "$brief" 'Only the director edits this file; the manager named in who reports its row by message.'
     assert_contains "$brief" 'That agent splits the work onto the task board and assigns it; every other agent waits for a board entry or a message instead of inventing work at launch.'
     assert_contains "$brief" 'do not resend; tell the user.'
-    assert_contains "$brief" 'In every case tell the user.'
+    assert_contains "$brief" 'only when no recipient is reachable, tell the user.'
     assert_contains "$brief" 'proceed on your best judgment or tell the user.'
     assert_contains "$brief" 'id is T1, T2, ...'
     assert_not_contains "$brief" 'You are in team'
@@ -122,7 +122,7 @@ test_brief_role_rules() (
   MAIN=3 N=4
   build_brief 1 >"$brief"
   assert_contains "$brief" 'do not resend; tell the director.'
-  assert_contains "$brief" 'In every case tell the director.'
+  assert_contains "$brief" 'only when no recipient is reachable, tell the director.'
   assert_contains "$brief" 'proceed on your best judgment or tell the director.'
   assert_not_contains "$brief" 'tell your team manager.'
 )

@@ -151,7 +151,7 @@ test_teams() (
       report_to='your team manager'
       [ "$(role_field "${ROLES[$i]}" type)" != manager ] || report_to='the director'
       assert_contains "$BRIEF_DIR/$i.md" "do not resend; tell $report_to."
-      assert_contains "$BRIEF_DIR/$i.md" "In every case tell $report_to."
+      assert_contains "$BRIEF_DIR/$i.md" "only when no recipient is reachable, tell $report_to."
       assert_contains "$BRIEF_DIR/$i.md" "proceed on your best judgment or tell $report_to."
     fi
     case $(role_field "${ROLES[$i]}" type) in
@@ -170,7 +170,7 @@ test_teams() (
   assert_not_contains "$BRIEF_DIR/6.md" '## Worker duties'
   assert_not_contains "$BRIEF_DIR/6.md" '## Manager duties'
   assert_not_contains "$BRIEF_DIR/6.md" 'Message only panes of your own team'
-  assert_contains "$BRIEF_DIR/6.md" 'In every case tell the user.'
+  assert_contains "$BRIEF_DIR/6.md" 'only when no recipient is reachable, tell the user.'
   awk '/^To read another agent/ { exit blanks > 1 } /^$/ { blanks++; next } { blanks = 0 }' "$BRIEF_DIR/6.md" || fail 'director brief has a double blank line before the read command'
   assert_not_contains <(printf '%s' "$ROSTER" | tail -1) '[team '
   assert_contains <(printf '%s' "$ROSTER" | head -1) " [team $SESSION]"

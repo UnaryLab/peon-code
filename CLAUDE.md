@@ -20,7 +20,7 @@ Bash launcher that builds a tmux session of side-by-side AI coding agent CLIs (c
 - `roles/*.md`: per-role prompt files
 - `install.sh`: symlinks the script into a bin dir and seeds `~/.config/peon-code/peon-code.conf`
 - `tests/test_peon_code.sh`: the test suite
-- `README.md`: user-facing only: how to install, start, configure, and the limits a user cannot find by trying (an attached terminal bounds the browser size, for example). Never describe UI behavior, buttons, or layout; users find those by using the page. Keep it concise and precise: short sentences, one idea per line, a command block plus one line over a paragraph. A change adds the fewest words that state the new fact. `ARCHITECTURE.md`: how it works inside, including every UI mechanism.
+- `README.md`: user-facing only: how to install, start, configure, and the limits a user cannot find by trying (an attached terminal bounds the browser size, for example). Never describe UI behavior, buttons, or layout; users find those by using the page. Keep it concise and precise: short sentences, one idea per line, a command block plus one line over a paragraph. A change adds the fewest words that state the new fact. `ARCHITECTURE.md`: how it works inside, including every UI mechanism. Before any README edit, decide by these two scopes which file the fact belongs in; a fact goes in exactly one of the two.
 
 ## Cross-platform: every feature must work on both macOS and Linux
 
@@ -43,6 +43,7 @@ Bash launcher that builds a tmux session of side-by-side AI coding agent CLIs (c
 - `.githooks/pre-commit` bumps the VERSION patch number on every commit. Never edit VERSION by hand.
 - Comments and docs are tool-independent: never reference an assistant skill, mode, or persona (no `ponytail:` or similar prefixes). Mark a deliberate simplification with a plain comment stating the limit and the upgrade path.
 - Browser UI: during a send, every button on the page dims the same way (body.busy in web/style.css); functional disabling stays per button.
+- User experience first: every feature needs as few user steps and decisions as it can. When two designs work, pick the simpler one for the user, even if it costs more code inside.
 
 ## Creating a role
 

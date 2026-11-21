@@ -9,12 +9,13 @@ import signal
 import socket
 import subprocess
 import sys
+import tempfile
 from contextlib import ExitStack
 from pathlib import Path
 from urllib.parse import urlsplit
 
 DEFAULT_PORT = 8765
-PORT_RANGE = 10
+PORT_RANGE = 20
 REMOTE_CONFIG_DIR = Path(".config/peon-code/uploads")
 
 
@@ -33,6 +34,7 @@ def arguments():
     parser.add_argument("--dir", dest="directory", metavar="PATH", help="create or open this project (resolved on the agent host)")
     parser.add_argument("--config", type=Path, metavar="PATH", help="use this local team config with --dir; upload it with --ssh")
     parser.add_argument("--stdio", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--open-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--port-range", type=int, default=1, help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.directory == "":
@@ -69,13 +71,17 @@ def remote_config_path(args):
     return REMOTE_CONFIG_DIR / (name + ".conf")
 
 
-def ssh_command(args, local_ports=None):
+def ssh_command(args, local_ports=None, *, open_only=False):
     remote_port = args.port if args.port is not None else DEFAULT_PORT
     if local_ports is None:
-        local_ports = {port: port for port in range(remote_port, remote_port + (PORT_RANGE if args.port is None else 1))}
-    remote_args = ["--stdio", "--no-open", "--port", str(remote_port)]
-    if args.port is None:
-        remote_args.extend(["--port-range", str(PORT_RANGE)])
+        local_ports = {} if open_only else {port: port for port in range(remote_port, remote_port + (PORT_RANGE if args.port is None else 1))}
+    remote_args = ["--stdio", "--no-open"]
+    if open_only:
+        remote_args.append("--open-only")
+    else:
+        remote_args.extend(["--port", str(remote_port)])
+        if args.port is None:
+            remote_args.extend(["--port-range", str(PORT_RANGE)])
     if args.directory:
         remote_args.extend(["--dir", args.directory])
     if getattr(args, "config", None):
@@ -89,7 +95,95 @@ def ssh_command(args, local_ports=None):
     return command + ["--", args.ssh, remote]
 
 
+def answer_remote_prompt(event, process):
+    prompt = None
+    if isinstance(event, dict) and type(event.get("update")) is int and 0 < event["update"] <= 1000000 and isinstance(event.get("host"), str) and re.fullmatch(r"[A-Za-z0-9._-]{1,255}", event["host"]):
+        prompt = f"Remote peon-code on {event['host']}: update available upstream; pull now? [y/N] "
+    elif isinstance(event, dict) and isinstance(event.get("folder"), str) and event["folder"].startswith("/") and len(event["folder"]) <= 4096 and "\0" not in event["folder"]:
+        prompt = f"Remote folder {event['folder']!r} does not exist. Create it? [y/N] "
+    if prompt is None:
+        return False
+    reply = "n"
+    if sys.stdin.isatty():
+        try:
+            reply = input(prompt)
+        except EOFError:
+            pass
+    process.stdin.write(("y" if reply.lower() in ("y", "yes") else "n") + "\n")
+    process.stdin.flush()
+    return True
+
+
+def close_ssh(process):
+    if process.stdin:
+        try:
+            process.stdin.close()
+        except OSError:
+            pass  # A disconnected peer must not prevent SSH cleanup.
+    if process.poll() is None:
+        process.terminate()
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait()
+    process.stdout.close()
+
+
+def open_remote_project(args):
+    with tempfile.TemporaryFile(mode="w+", errors="replace") as errors:
+        process = subprocess.Popen(ssh_command(args, open_only=True), stdin=subprocess.PIPE,
+                                   stdout=subprocess.PIPE, stderr=errors, text=True)
+        try:
+            session = None
+            for line in process.stdout:
+                try:
+                    event = json.loads(line)
+                except ValueError:
+                    continue
+                if answer_remote_prompt(event, process):
+                    continue
+                if isinstance(event, dict) and isinstance(event.get("session"), str) and event["session"]:
+                    session = event["session"]
+            result = process.wait()
+            errors.seek(0)
+            message = errors.read().strip()
+            if result or session is None:
+                raise RuntimeError(message or "Remote team did not start")
+            if message:
+                print(message, file=sys.stderr)
+        finally:
+            close_ssh(process)
+
+
 def remote_ui(args):
+    directory = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "peon-code"
+    host = re.sub(r"[^A-Za-z0-9_.-]", "_", args.ssh)
+    record = directory / ("web-ssh-" + host + ".url")
+    pid = str(os.getpid())
+    saved_ports = {}
+    reuse_url = None
+    try:
+        lines = record.read_text().splitlines()
+        url, saved_pid = lines[:2]
+        parsed = urlsplit(url)
+        if (parsed.scheme == "http" and parsed.port is not None and 0 < parsed.port <= 65535
+                and parsed.netloc == f"127.0.0.1:{parsed.port}" and parsed.path == "/" and not parsed.query
+                and re.fullmatch(r"[A-Za-z0-9_-]{43}", parsed.fragment) and int(saved_pid) > 0):
+            mappings = {}
+            for line in lines[2:]:
+                remote, local = map(int, line.split())
+                if not (0 < remote <= 65535 and 0 < local <= 65535):
+                    raise ValueError("Invalid saved SSH port mapping")
+                mappings[remote] = local
+            saved_ports = mappings
+            owner = subprocess.run(["ps", "-o", "args=", "-p", str(int(saved_pid))], capture_output=True, text=True, timeout=5)
+            if owner.returncode == 0 and "web/server.py" in owner.stdout:
+                with socket.create_connection(("127.0.0.1", parsed.port), timeout=1):
+                    pass
+                reuse_url = url
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        pass
     config = getattr(args, "config", None)
     if config:
         path = remote_config_path(args)
@@ -100,6 +194,13 @@ def remote_ui(args):
             raise RuntimeError("Config copy to SSH host timed out") from error
         if copied.returncode:
             raise RuntimeError(copied.stderr.decode(errors="replace").strip() or "Config copy to SSH host failed")
+    if reuse_url:
+        if args.directory or args.session or config:
+            open_remote_project(args)
+        print("peon-code-web: " + reuse_url + "\nServer was already running.", flush=True)
+        if not args.no_open:
+            open_browser(reuse_url)
+        return 0
     remote_port = args.port if args.port is not None else DEFAULT_PORT
     local_ports = {remote_port: remote_port}
     if args.port is None:
@@ -107,35 +208,23 @@ def remote_ui(args):
             for port in range(DEFAULT_PORT, DEFAULT_PORT + PORT_RANGE):
                 probe = probes.enter_context(socket.socket())
                 probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                local_ports[port] = port
+                local = saved_ports.get(port, port)
+                local_ports[port] = local
                 try:
-                    probe.bind(("127.0.0.1", port))
+                    probe.bind(("127.0.0.1", local))
                 except OSError as error:
                     if error.errno != errno.EADDRINUSE:
                         raise
                     probe.bind(("127.0.0.1", 0))
                     local_ports[port] = probe.getsockname()[1]
-                    print(f"local port {port} is busy, using {local_ports[port]}", file=sys.stderr)
+                    print(f"local port {local} is busy, using {local_ports[port]}", file=sys.stderr)
     process = subprocess.Popen(ssh_command(args, local_ports), stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
     try:
         # Remote startup may include shell greetings; only trust a validated loopback rendezvous.
         for line in process.stdout:
             try:
                 event = json.loads(line)
-                prompt = None
-                if isinstance(event, dict) and type(event.get("update")) is int and 0 < event["update"] <= 1000000 and isinstance(event.get("host"), str) and re.fullmatch(r"[A-Za-z0-9._-]{1,255}", event["host"]):
-                    prompt = f"Remote peon-code on {event['host']}: update available upstream; pull now? [y/N] "
-                elif isinstance(event, dict) and isinstance(event.get("folder"), str) and event["folder"].startswith("/") and len(event["folder"]) <= 4096 and "\0" not in event["folder"]:
-                    prompt = f"Remote folder {event['folder']!r} does not exist. Create it? [y/N] "
-                if prompt is not None:
-                    reply = "n"
-                    if sys.stdin.isatty():
-                        try:
-                            reply = input(prompt)
-                        except EOFError:
-                            pass
-                    process.stdin.write(("y" if reply.lower() in ("y", "yes") else "n") + "\n")
-                    process.stdin.flush()
+                if answer_remote_prompt(event, process):
                     continue
                 url = event["url"]
                 if not isinstance(url, str):
@@ -146,25 +235,25 @@ def remote_ui(args):
             except (ValueError, TypeError, KeyError):
                 continue
             url = parsed._replace(netloc=f"127.0.0.1:{local_ports[parsed.port]}").geturl()
+            directory.mkdir(parents=True, exist_ok=True)
+            with os.fdopen(os.open(record, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as saved:
+                os.fchmod(saved.fileno(), 0o600)
+                saved.write(url + "\n" + pid + "\n")
+                for remote, local in local_ports.items():
+                    if remote != local:
+                        saved.write(f"{remote} {local}\n")
             print("peon-code-web: " + url + "\nKeep this command running. Press Ctrl-C to stop the SSH connection.", flush=True)
             if not args.no_open:
                 open_browser(url)
             return process.wait()
         raise RuntimeError("Remote UI did not start. Install peon-code-web on the SSH host and check the port is free.")
     finally:
-        if process.stdin:
-            try:
-                process.stdin.close()
-            except OSError:
-                pass  # A disconnected peer must not prevent SSH cleanup.
-        if process.poll() is None:
-            process.terminate()
+        close_ssh(process)
         try:
-            process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            process.wait()
-        process.stdout.close()
+            if all(remote == local for remote, local in local_ports.items()) and record.read_text().splitlines()[1] == pid:
+                record.unlink()
+        except (OSError, IndexError, UnicodeError):
+            pass
 
 
 def verify_project(session, project):

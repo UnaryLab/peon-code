@@ -102,7 +102,7 @@ peon-code --version                          # print the version; must be the fi
 
 ```sh
 peon-code-web                      # all running teams in your local browser
-peon-code-web lab                  # only the existing session lab
+peon-code-web lab                  # open lab first; create it here if missing
 peon-code-web --no-open            # print the URL, open no browser
 peon-code-web --port 9000          # use only this port
 peon-code-web --ssh my-server      # run on your Mac against an SSH host
@@ -111,7 +111,13 @@ peon-code-web --ssh my-server --dir /remote/path --config ./team.conf
 
 - `--dir PATH` creates or opens the team of that project folder, locally or on the SSH host. It asks before it creates a missing folder. The folder name is the session name unless you give one.
 - `--config FILE` uses a local team config for a new team, for that launch only. Over SSH it is uploaded to `~/.config/peon-code/uploads/` on the host.
-- `--port N` fails if port N is busy. Without it, the server takes 8765 or a free port; over SSH it uses the first free port of 8765 to 8774.
+- `--port N` fails if port N is busy. Without `--ssh`, a local `peon-code-web` server on port N is reused instead. Without `--port`, the server takes 8765 or a free port; over SSH it uses the first free port of 8765 to 8784.
+- The page lists every team on the machine.
+- Running `peon-code-web` again while a local server runs reopens that page and adds the named team to it.
+- Over SSH, a server started on the host without `--ssh` keeps running: the launch takes the next free port, or fails with `--port N`.
+- Running `peon-code-web --ssh HOST` again reopens the same page, whether the first launch still runs or not. A team it names is still created or opened.
+- An SSH launch keeps its token in `~/.config/peon-code/web-<port>.url` on the host, and later SSH launches reuse it. Anyone with that host account can read it.
+- Delete that file on the host to give the next SSH launch a fresh token.
 - `--ssh HOST` needs `peon-code-web` of this version or newer on both machines. Your SSH config and keys apply. The Mac needs no tmux.
 - Keep the command running; Ctrl-C stops the server, not the agents. It listens on loopback only. The launch URL grants access to the team, so keep it private.
 - Uploads go to `<project>/upload/` by default, at most 64 MiB per file, and never replace a file. Downloads stay inside the project folder, at most 256 MiB per file or zipped folder.

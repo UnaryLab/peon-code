@@ -55,10 +55,10 @@ print(", \"statusLine\": " + json.dumps({"type": "command", "command": command})
   ) || STATUSLINE_SETTINGS=""
 fi
 NORMAL_SETTINGS="$BRIEF_DIR/normal-screen.json"
-printf '{"tui":"%s"%s}\n' "$NORMAL_TUI" "$STATUSLINE_SETTINGS" >"$NORMAL_SETTINGS"
+printf '{"tui":"%s", "promptSuggestionEnabled":false%s}\n' "$NORMAL_TUI" "$STATUSLINE_SETTINGS" >"$NORMAL_SETTINGS"
 DENY_SETTINGS="$BRIEF_DIR/deny-git.json"
 {
-  printf '{\n  "tui": "%s"%s,\n  "permissions": {\n    "deny": [\n' "$NORMAL_TUI" "$STATUSLINE_SETTINGS"
+  printf '{\n  "tui": "%s",\n  "promptSuggestionEnabled": false%s,\n  "permissions": {\n    "deny": [\n' "$NORMAL_TUI" "$STATUSLINE_SETTINGS"
   DENY_SEP=""
   for CMD in "${GIT_DENY[@]}"; do
     printf '%s      "Bash(%s)", "Bash(%s:*)"' "$DENY_SEP" "$CMD" "$CMD"

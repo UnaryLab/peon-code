@@ -1119,6 +1119,7 @@ for path in sys.argv[1:3]:
     with open(path, encoding="utf-8") as file:
         data = json.load(file)
     assert data["tui"] == "default"
+    assert data["promptSuggestionEnabled"] is False
     assert data["statusLine"]["type"] == "command"
     assert shlex.split(data["statusLine"]["command"]) == [sys.argv[3], "statusline", sys.argv[4]]
 PYTHON

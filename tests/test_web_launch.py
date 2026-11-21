@@ -20,6 +20,14 @@ import launch
 
 
 class LaunchTests(unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        environment = patch.dict(os.environ, {"XDG_CONFIG_HOME": directory.name})
+        environment.start()
+        self.addCleanup(environment.stop)
+        self.ssh_record = Path(directory.name) / "peon-code" / "web-ssh-host.url"
+
     def test_port_choice_preserves_omitted_default_and_validates_explicit_ports(self):
         for options, expected in (([], None), (["--ssh", "host"], None), (["--port", "0"], 0), (["--port", "65535"], 65535)):
             with self.subTest(options=options), patch.object(sys, "argv", ["peon-code-web"] + options):
@@ -29,14 +37,17 @@ class LaunchTests(unittest.TestCase):
                 launch.arguments()
 
     def test_hidden_port_range_validates_bounds(self):
-        with patch.object(sys, "argv", ["peon-code-web", "--stdio", "--port", "8765", "--port-range", "10"]):
-            self.assertEqual(launch.arguments().port_range, 10)
+        with patch.object(sys, "argv", ["peon-code-web", "--stdio", "--port", "8765", "--port-range", "20"]):
+            self.assertEqual(launch.arguments().port_range, 20)
         for options in (["--port-range", "0"], ["--port-range", "-1"], ["--port", "65535", "--port-range", "2"], ["--port", "0", "--port-range", "2"]):
             with self.subTest(options=options), patch.object(sys, "argv", ["peon-code-web"] + options), contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
                 launch.arguments()
         with patch.object(sys, "argv", ["peon-code-web", "--help"]), contextlib.redirect_stdout(io.StringIO()) as output, self.assertRaises(SystemExit):
             launch.arguments()
         self.assertNotIn("--port-range", output.getvalue())
+        self.assertNotIn("--open-only", output.getvalue())
+        with patch.object(sys, "argv", ["peon-code-web", "--stdio", "--open-only", "--dir", "/remote/project"]):
+            self.assertTrue(launch.arguments().open_only)
 
     def test_config_requires_directory_and_local_file(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -126,20 +137,21 @@ class LaunchTests(unittest.TestCase):
         args.port = None
         command = launch.ssh_command(args)
         forwards = [command[i + 1] for i, value in enumerate(command) if value == '-L']
-        self.assertEqual(forwards, [f'127.0.0.1:{port}:127.0.0.1:{port}' for port in range(8765, 8775)])
+        self.assertEqual(forwards, [f'127.0.0.1:{port}:127.0.0.1:{port}' for port in range(8765, 8785)])
         remote_args = shlex.split(command[-1].split('exec peon-code-web ', 1)[1].split('; else', 1)[0])
-        self.assertEqual(remote_args, ['--stdio', '--no-open', '--port', '8765', '--port-range', '10', '--', session])
+        self.assertEqual(remote_args, ['--stdio', '--no-open', '--port', '8765', '--port-range', '20', '--', session])
 
     def test_ssh_default_adapts_only_local_forward_and_rewrites_validated_url(self):
         for port, busy, remote, local in ((None, False, 8765, 8765), (None, True, 8765, 9123), (None, True, 8767, 9123), (9123, False, 9123, 9123)):
-            candidates = list(range(8765, 8775)) if port is None else [port]
+            self.ssh_record.unlink(missing_ok=True)
+            candidates = list(range(8765, 8785)) if port is None else [port]
             args = SimpleNamespace(port=port, session=None, ssh="host", no_open=False, directory=None)
             with self.subTest(port=port, busy=busy), patch.object(launch.socket, "socket") as socket, patch.object(launch.subprocess, "Popen") as popen, patch.object(launch, "open_browser") as opened, contextlib.redirect_stdout(io.StringIO()) as output, contextlib.redirect_stderr(io.StringIO()) as error:
                 probe = socket.return_value.__enter__.return_value
                 probe.bind.side_effect = [result for candidate in candidates for result in ([OSError(errno.EADDRINUSE, "address in use"), None] if busy and candidate == remote else [None])]
                 probe.getsockname.return_value = ("127.0.0.1", local)
                 process = popen.return_value
-                urls = ["http://evil.test/#" + "a" * 43, "http://127.0.0.1:8775/#" + "a" * 43]
+                urls = ["http://evil.test/#" + "a" * 43, "http://127.0.0.1:8785/#" + "a" * 43]
                 if busy:
                     urls.append(f"http://127.0.0.1:{local}/#" + "a" * 43)
                 urls.append(f"http://127.0.0.1:{remote}/#" + "b" * 43)
@@ -157,10 +169,10 @@ class LaunchTests(unittest.TestCase):
             self.assertIn("peon-code-web: " + url + "\n", output.getvalue())
             self.assertEqual(error.getvalue(), f"local port {remote} is busy, using {local}\n" if busy else "")
             if port is None:
-                self.assertEqual(probe.setsockopt.call_count, 10)
+                self.assertEqual(probe.setsockopt.call_count, 20)
                 self.assertEqual([call[0] for call in probe.method_calls[:2]], ["setsockopt", "bind"])
                 self.assertEqual([call.args[0] for call in probe.bind.call_args_list], [address for candidate in candidates for address in ([("127.0.0.1", candidate), ("127.0.0.1", 0)] if busy and candidate == remote else [("127.0.0.1", candidate)])])
-                self.assertEqual(socket.return_value.__exit__.call_count, 10)
+                self.assertEqual(socket.return_value.__exit__.call_count, 20)
             else:
                 socket.assert_not_called()
 
@@ -170,6 +182,160 @@ class LaunchTests(unittest.TestCase):
             socket.return_value.__enter__.return_value.bind.side_effect = PermissionError(errno.EACCES, "permission denied")
             launch.remote_ui(args)
         popen.assert_not_called()
+
+    def test_ssh_reuses_live_launch_without_team_arguments_or_port_probes(self):
+        url = "http://127.0.0.1:9123/#" + "a" * 43
+        record = self.ssh_record.with_name("web-ssh-user_host.url")
+        record.parent.mkdir()
+        record.write_text(url + "\n1234\n8765 9123\n")
+        for no_open in (False, True):
+            args = SimpleNamespace(port=None, session=None, ssh="user@host", no_open=no_open, directory=None)
+            with self.subTest(no_open=no_open), patch.object(launch.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "python3 /repo/web/server.py --ssh user@host\n", "")) as run, patch.object(launch.socket, "create_connection") as connect, patch.object(launch.socket, "socket") as probe, patch.object(launch.subprocess, "Popen") as popen, patch.object(launch, "open_browser") as opened, contextlib.redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(launch.remote_ui(args), 0)
+            run.assert_called_once_with(["ps", "-o", "args=", "-p", "1234"], capture_output=True, text=True, timeout=5)
+            connect.assert_called_once_with(("127.0.0.1", 9123), timeout=1)
+            probe.assert_not_called()
+            popen.assert_not_called()
+            self.assertEqual(output.getvalue(), "peon-code-web: " + url + "\nServer was already running.\n")
+            self.assertEqual(opened.call_count, 0 if no_open else 1)
+            if not no_open:
+                opened.assert_called_once_with(url)
+            self.assertEqual(record.read_text(), url + "\n1234\n8765 9123\n")
+
+    def test_ssh_reuse_opens_requested_team_with_config_and_folder_prompt(self):
+        url = "http://127.0.0.1:9123/#" + "a" * 43
+        self.ssh_record.parent.mkdir()
+        self.ssh_record.write_text(url + "\n1234\n")
+        config = self.ssh_record.parent / "team.conf"
+        config.write_text("codex codex -\n")
+        args = SimpleNamespace(port=None, session="new team", ssh="host", no_open=False, directory="/remote/project", config=config)
+        outcomes = [subprocess.CompletedProcess([], 0, "python3 /repo/web/server.py --ssh host\n", ""), subprocess.CompletedProcess([], 0, b"", b"")]
+        with patch.object(launch.subprocess, "run", side_effect=outcomes) as run, \
+                patch.object(launch.socket, "create_connection"), patch.object(launch.socket, "socket") as probe, \
+                patch.object(launch.subprocess, "Popen") as popen, patch.object(launch, "open_browser") as opened, \
+                patch.object(sys, "stdin", SimpleNamespace(isatty=lambda: True)), patch("builtins.input", return_value="yes") as prompt, \
+                contextlib.redirect_stdout(io.StringIO()) as output, contextlib.redirect_stderr(io.StringIO()) as errors:
+            process = popen.return_value
+            process.stdout = io.StringIO(json.dumps({"folder": args.directory}) + "\n" + json.dumps({"session": args.session}) + "\n")
+            def wait(timeout=None):
+                if timeout is None:
+                    popen.call_args.kwargs["stderr"].write("Remote team opened\n")
+                return 0
+            process.wait.side_effect = wait
+            process.poll.return_value = 0
+            self.assertEqual(launch.remote_ui(args), 0)
+        self.assertEqual(run.call_count, 2)
+        self.assertEqual(run.call_args.kwargs["input"], config.read_bytes())
+        self.assertIn('cat > "$HOME/.config/peon-code/uploads/new_team.conf"', run.call_args.args[0][-1])
+        popen.assert_called_once()
+        command = popen.call_args.args[0]
+        self.assertNotIn("-L", command)
+        remote = shlex.split(command[-1].split("exec peon-code-web ", 1)[1].split("; else", 1)[0])
+        self.assertEqual(remote, ["--stdio", "--no-open", "--open-only", "--dir", args.directory, "--config", "~/.config/peon-code/uploads/new_team.conf", "--", args.session])
+        process.stdin.write.assert_called_once_with("y\n")
+        prompt.assert_called_once_with(f"Remote folder {args.directory!r} does not exist. Create it? [y/N] ")
+        probe.assert_not_called()
+        self.assertEqual(output.getvalue(), "peon-code-web: " + url + "\nServer was already running.\n")
+        self.assertEqual(errors.getvalue(), "Remote team opened\n")
+        opened.assert_called_once_with(url)
+        self.assertEqual(self.ssh_record.read_text(), url + "\n1234\n")
+
+    def test_ssh_reuse_requires_successful_team_acknowledgment(self):
+        url = "http://127.0.0.1:9123/#" + "a" * 43
+        self.ssh_record.parent.mkdir()
+        self.ssh_record.write_text(url + "\n1234\n")
+        args = SimpleNamespace(port=None, session="lab", ssh="host", no_open=False, directory=None)
+        for result, event in ((1, {"session": "lab"}), (0, {"session": 12}), (0, {"url": url})):
+            def start(command, **options):
+                options["stderr"].write("Cannot open remote team\n")
+                process = Mock(stdout=io.StringIO(json.dumps(event) + "\n"))
+                process.wait.return_value = result
+                process.poll.return_value = result
+                return process
+            with self.subTest(result=result, event=event), \
+                    patch.object(launch.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "python3 web/server.py", "")), \
+                    patch.object(launch.socket, "create_connection"), patch.object(launch.subprocess, "Popen", side_effect=start), \
+                    patch.object(launch, "open_browser") as opened, contextlib.redirect_stdout(io.StringIO()) as output, \
+                    self.assertRaisesRegex(RuntimeError, "Cannot open remote team"):
+                launch.remote_ui(args)
+            self.assertEqual(output.getvalue(), "")
+            opened.assert_not_called()
+            self.assertEqual(self.ssh_record.read_text(), url + "\n1234\n")
+
+    def test_ssh_stale_or_invalid_record_starts_normal_launch(self):
+        url = "http://127.0.0.1:9123/#" + "a" * 43
+        self.ssh_record.parent.mkdir()
+        args = SimpleNamespace(port=9123, session=None, ssh="host", no_open=True, directory=None)
+        for case in ("missing", "dead", "other process", "refused", "bad url", "bad token", "bad pid", "bad mapping"):
+            with self.subTest(case=case):
+                if case != "missing":
+                    saved_url = url.replace("127.0.0.1", "evil.test") if case == "bad url" else url[:-1] if case == "bad token" else url
+                    self.ssh_record.write_text(saved_url + "\n" + ("invalid" if case == "bad pid" else "1234") + "\n" + ("8765 0\n" if case == "bad mapping" else ""))
+                owner = subprocess.CompletedProcess([], 1 if case == "dead" else 0, "shell" if case == "other process" else "python3 /repo/web/server.py", "")
+                with patch.object(launch.subprocess, "run", return_value=owner), patch.object(launch.socket, "create_connection", side_effect=ConnectionRefusedError()) as connect, patch.object(launch.subprocess, "Popen") as popen, contextlib.redirect_stdout(io.StringIO()):
+                    process = popen.return_value
+                    process.stdout = io.StringIO(json.dumps({"url": url}) + "\n")
+                    process.wait.return_value = 0
+                    process.poll.return_value = 0
+                    self.assertEqual(launch.remote_ui(args), 0)
+                popen.assert_called_once()
+                self.assertEqual(connect.call_count, 1 if case == "refused" else 0)
+                self.assertFalse(self.ssh_record.exists())
+
+    def test_ssh_reconnect_keeps_saved_remap_and_falls_back_only_if_it_is_busy(self):
+        token = "a" * 43
+        remote_url = "http://127.0.0.1:8765/#" + token
+        self.ssh_record.parent.mkdir()
+        args = SimpleNamespace(port=None, session=None, ssh="host", no_open=True, directory=None)
+        for busy in (False, True):
+            self.ssh_record.write_text("http://127.0.0.1:9123/#" + token + "\n1234\n8765 9123\n")
+            local = 9345 if busy else 9123
+            url = f"http://127.0.0.1:{local}/#" + token
+            with self.subTest(busy=busy), \
+                    patch.object(launch.subprocess, "run", return_value=subprocess.CompletedProcess([], 1)), \
+                    patch.object(launch.socket, "socket") as socket, \
+                    patch.object(launch.socket, "create_connection") as connect, \
+                    patch.object(launch.subprocess, "Popen") as popen, \
+                    contextlib.redirect_stdout(io.StringIO()) as output, contextlib.redirect_stderr(io.StringIO()):
+                probe = socket.return_value.__enter__.return_value
+                probe.bind.side_effect = ([OSError(errno.EADDRINUSE, "address in use"), None] if busy else [None]) + [None] * 19
+                probe.getsockname.return_value = ("127.0.0.1", local)
+                process = popen.return_value
+                process.stdout = io.StringIO(json.dumps({"url": remote_url}) + "\n")
+                process.wait.return_value = 0
+                process.poll.return_value = 0
+                self.assertEqual(launch.remote_ui(args), 0)
+            expected = [("127.0.0.1", 9123)] + ([("127.0.0.1", 0)] if busy else [])
+            expected += [("127.0.0.1", port) for port in range(8766, 8785)]
+            self.assertEqual([call.args[0] for call in probe.bind.call_args_list], expected)
+            self.assertIn(f"127.0.0.1:{local}:127.0.0.1:8765", popen.call_args.args[0])
+            self.assertIn("peon-code-web: " + url + "\n", output.getvalue())
+            self.assertEqual(self.ssh_record.read_text(), url + f"\n{os.getpid()}\n8765 {local}\n")
+            self.assertEqual(self.ssh_record.stat().st_mode & 0o777, 0o600)
+            connect.assert_not_called()
+
+    def test_ssh_record_is_private_and_cleanup_checks_owner(self):
+        url = "http://127.0.0.1:9123/#" + "b" * 43
+        args = SimpleNamespace(port=9123, session=None, ssh="host", no_open=True, directory=None)
+        self.ssh_record.parent.mkdir()
+        for replaced in (False, True):
+            self.ssh_record.write_text("stale record\n")
+            self.ssh_record.chmod(0o644)
+            def inspect_record(timeout=None):
+                if timeout is not None:
+                    return 0
+                self.assertEqual(self.ssh_record.read_text(), url + "\n" + str(os.getpid()) + "\n")
+                self.assertEqual(self.ssh_record.stat().st_mode & 0o777, 0o600)
+                if replaced:
+                    self.ssh_record.write_text(url + "\n" + str(os.getpid() + 1) + "\n")
+                return 0
+            with self.subTest(replaced=replaced), patch.object(launch.subprocess, "Popen") as popen, contextlib.redirect_stdout(io.StringIO()):
+                process = popen.return_value
+                process.stdout = io.StringIO(json.dumps({"url": url}) + "\n")
+                process.wait.side_effect = inspect_record
+                process.poll.return_value = 0
+                self.assertEqual(launch.remote_ui(args), 0)
+            self.assertEqual(self.ssh_record.exists(), replaced)
 
     def test_rejects_ssh_option_or_shell_injection(self):
         for host in ('-oProxyCommand=bad', 'host;touch /tmp/nope', 'host\ncommand'):

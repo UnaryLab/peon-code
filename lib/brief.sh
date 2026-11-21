@@ -132,8 +132,8 @@ $CLAIM_PARA
 Rules:
 $RULE1
 $RULE2
-3. Held sends: when send gives up on a blocked target (in copy mode, on a dialog or a menu, or holding typed text in its box), do something else and retry later. When send says no Enter sent, the message is already in the box: do not resend; tell $REPORT_TO. Never paste into that pane by hand.
-4. Dead-pane guard: when send refuses a pane that is back at a shell, or a pane you read shows a shell prompt instead of an agent, that agent is gone. When send refuses a pane as missing, not an agent pane, or drawing no prompt marker it knows, check the id against the roster. In every case tell $REPORT_TO.
+3. Held sends: when send gives up on a blocked target (in copy mode, on a dialog or a menu, or holding typed text in its box), do something else and retry later. Always attempt the send and trust its exit code; never judge an input box from a pane capture, because hint text there looks like typed text. When send says no Enter sent, the message is already in the box: do not resend; tell $REPORT_TO. Never paste into that pane by hand.
+4. Dead-pane guard: when send refuses a pane that is back at a shell, or a pane you read shows a shell prompt instead of an agent, that agent is gone. When send refuses a pane as missing, not an agent pane, or drawing no prompt marker it knows, check the id against the roster. In every case, send the same line plus the exact send error to the other recipient of that message first (for a done message, the reviewer when the manager failed, and the reverse); only when no recipient is reachable, tell $REPORT_TO.
 5. No idle deadlocks: if you are blocked, message once, work on something else, then re-check once. After that, proceed on your best judgment or tell $REPORT_TO.
 6. Rate limits: if you hit a usage limit, note it and the reset time on the task board so the others can reassign the work.
 $RULE7
