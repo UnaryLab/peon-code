@@ -287,8 +287,13 @@ class Handler(BaseHTTPRequestHandler):
                             if not tmux("show-options", "-qv", "-t", session, "@peon_pane_order").strip():
                                 order = tmux("list-panes", "-t", window, "-F", "#{pane_id}").split()
                                 tmux("set-option", "-t", session, "@peon_pane_order", " ".join(order))
-                            for pane in tmux("list-panes", "-s", "-t", "=" + session, "-F", "#{pane_id}").split():
-                                if int(tmux("display-message", "-p", "-t", pane, "#{window_panes}").strip()) > 1:
+                            windows = {}
+                            for line in tmux("list-panes", "-s", "-t", "=" + session, "-F", "#{pane_id}\t#{window_id}").splitlines():
+                                pane, window = line.split("\t")
+                                if window:
+                                    windows.setdefault(window, []).append(pane)
+                            for group in windows.values():
+                                for pane in group[:-1]:
                                     tmux("break-pane", "-d", "-s", pane, "-t", "=" + session + ":", "-n", "p" + pane[1:])
                             window = tmux("display-message", "-p", "-t", target, "#{window_id}").strip()
                             width, height, pane_height = map(int, tmux("display-message", "-p", "-t", window, "#{window_width}\t#{window_height}\t#{pane_height}").split())
@@ -296,7 +301,7 @@ class Handler(BaseHTTPRequestHandler):
                             desired_height = rows + height - pane_height
                             if (width, height) != (cols, desired_height):
                                 tmux("resize-window", "-t", window, "-x", str(cols), "-y", str(desired_height))
-                        except (OSError, subprocess.TimeoutExpired, subprocess.CalledProcessError):
+                        except (OSError, subprocess.TimeoutExpired, subprocess.CalledProcessError, ValueError):
                             errors = self.server.__dict__.setdefault("resize_errors", set())
                             if session not in errors:
                                 errors.add(session)

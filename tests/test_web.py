@@ -53,11 +53,11 @@ class SizingTmux:
             selected = [pane for pane in self.group if pane["session"] == target] if "-s" in args else [next(pane for pane in self.group if pane["id"] == identity) for identity in self.layout[target]]
             if "#{window_name}" in args[-1]:
                 return "\n".join(pane["id"] + "\t" + self.windows[pane["id"]].split(":")[-1] for pane in selected)
+            if "#{window_id}" in args[-1]:
+                return "\n".join(pane["id"] + "\t" + self.windows[pane["id"]] for pane in selected)
             return "\n".join(pane["id"] for pane in selected)
         if command == "display-message":
             window = self.windows.get(target, target)
-            if args[-1] == "#{window_panes}":
-                return str(list(self.windows.values()).count(window))
             if args[-1] == "#{window_id}":
                 return window
             width, height = map(int, self.sizes.get(window, "80x24").split("x"))
@@ -450,6 +450,21 @@ class WebTests(unittest.TestCase):
             ("resize-window", "-t", "team:p2", "-x", "120", "-y", "35")])
         self.assertEqual(fake.sizes, {"team:p2": "120x35"})
         self.assertNotIn("select-layout", [call.args[0] for call in tmux.call_args_list])
+
+    def test_browser_size_empty_window_id_leaves_poll_available(self):
+        group = [dict(id="%" + str(index), session="team") for index in (1, 2, 3)]
+        fake = SizingTmux(group)
+        def missing(*args):
+            output = fake(*args)
+            if args[0] == "list-panes" and "#{window_id}" in args[-1]:
+                return "\n".join("%1\t" if line.startswith("%1\t") else line for line in output.splitlines())
+            return output
+        with patch.object(web, "panes", return_value=group), patch.object(web, "tmux", side_effect=missing) as tmux, patch.object(web, "snapshot", side_effect=lambda pane, *args: pane):
+            status, body = self.request("GET", "/api/panes?cols=120&rows=35&session=team&pane=%252")
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)["panes"], group)
+        self.assertFalse(any(call.args[0] == "break-pane" and call.args[3] == "%1" for call in tmux.call_args_list))
+        self.assertEqual(fake.sizes, {"team:p2": "120x35"})
 
     def test_browser_size_attached_client_joins_saved_order_and_restores_once(self):
         group = [dict(id="%" + str(index), session="team") for index in (1, 2, 10)]
