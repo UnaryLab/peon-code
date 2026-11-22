@@ -58,9 +58,9 @@ wait_agent_ready() {
 }
 
 # Answer a startup dialog whose default row is the wanted answer, by pressing
-# Enter once the pane shows text matching the glob pattern. One dialog is
-# answered this way: claude's picker for resuming a large or old session
-# ("Resume from summary (recommended)"). A pane that reaches its input line
+# Enter once the pane shows text matching the glob pattern. Claude's folder
+# trust dialog and picker for resuming a large or old session are answered
+# this way. A pane that reaches its input line
 # first never showed the dialog, so the wait ends there. Always returns 0: a
 # pane still drawing after the cap, 15s, is left for wait_pane_settled to
 # judge.
@@ -95,8 +95,7 @@ pane_is_busy() {
   local pane=$1 screen nearby
   screen=$(tmux capture-pane -pt "$pane" 2>/dev/null) || return 1
   nearby=$(awk -v markers="$CLI_ALL_PROMPT_MARKERS" '
-    BEGIN { gsub(/!/, "^!", markers) }
-    { rows[NR] = $0; if ($0 ~ "^[[:space:]]*(" markers ")") prompt = NR }
+    { rows[NR] = $0; if ($0 ~ "^[[:space:]]*(" markers ")" && $0 !~ /^[[:space:]]+!/) prompt = NR }
     END {
       for (r = prompt - 1; r > 0 && count < 4; r--) {
         if (rows[r] ~ /[^[:space:]]/) { print rows[r]; count++ }

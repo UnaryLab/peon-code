@@ -194,7 +194,7 @@ assert_unchanged() {
 # Run the reserved job directly so result checks do not depend on scheduling.
 run_swap() (
   local identity="$SWAP_STATE:%1" name=$1 command=$2 session=${3:-swap-test}
-  # shellcheck disable=SC2317 # slash_locked calls the pane parser stub.
+  # shellcheck disable=SC2317,SC2329 # slash_locked calls the pane parser stub.
   if [ -s "$SWAP_STATE/dialog" ]; then pane_box_text() { return 1; }; fi
   with_pane_delivery %1 swap_reserve_locked %1 "$command" "$identity" "$SWAP_STATE/job.log" || return $?
   [ "$(cat "$SWAP_STATE/peon_swap")" = "checking $command" ] || fail 'swap reservation missing'
@@ -366,7 +366,7 @@ for mode in shell self unsupported missing invalid no-path changed bad-directory
     [ "$mode" != unsupported-cli ] || bin=unknown-swap-agent
     if [ "$mode" = unchanged ]; then bin=-; model=-; fi
     if [ "$mode" = no-path ]; then
-      # shellcheck disable=SC2317 # swap_run checks PATH through this stub.
+      # shellcheck disable=SC2317,SC2329 # swap_run checks PATH through this stub.
       command() {
         if [ "$1" = -v ] && [ "${2:-}" = codex ]; then return 1; fi
         builtin command "$@"
@@ -427,7 +427,7 @@ for isolation in scope child; do
   if (
     export SWAP_PROBE_MODE=hang
     if [ "$isolation" = child ]; then
-      # shellcheck disable=SC2317 # swap_check calls this command lookup stub.
+      # shellcheck disable=SC2317,SC2329 # swap_check calls this command lookup stub.
       command() {
         if [ "$1" = -v ] && [ "${2:-}" = setsid ]; then return 1; fi
         builtin command "$@"
@@ -474,7 +474,7 @@ setup_swap probe-interrupted claude
   exit "$rc"
 ) >"$TEST_DIR/probe-interrupted.out" 2>"$TEST_DIR/probe-interrupted.err" &
 swap_pid=$!
-for _ in 1 2 3 4 5 6 7 8 9 10; do
+for ((check_poll = 0; check_poll < 100; check_poll++)); do
   [ ! -s "$SWAP_STATE/check_pid" ] || break
   command sleep 0.1
 done
@@ -659,7 +659,7 @@ printf 'owner\n' >"$SWAP_STATE/peon_swap_owner"
 printf 'checking claude --model next\n' >"$SWAP_STATE/peon_swap"
 if (
   eval "$(declare -f watch_launch_locked | sed '1s/watch_launch_locked/real_watch_launch_locked/')"
-  # shellcheck disable=SC2317 # watch_restart dispatches this claim-race stub.
+  # shellcheck disable=SC2317,SC2329 # watch_restart dispatches this claim-race stub.
   watch_launch_locked() {
     tmux set -pt %1 @peon_swap_pending 'running winner:1 claude --model next'
     real_watch_launch_locked "$@"
@@ -702,7 +702,7 @@ FAKE_SCOPE
   else printf '#!/bin/sh\nexit 1\n' >"$bin_dir/systemd-run"; fi
   (
     if [ "$isolation" = fallback ]; then
-      # shellcheck disable=SC2317 # The launch helper checks this lookup stub.
+      # shellcheck disable=SC2317,SC2329 # The launch helper checks this lookup stub.
       command() {
         if [ "$1" = -v ] && [ "${2:-}" = setsid ]; then return 1; fi
         builtin command "$@"

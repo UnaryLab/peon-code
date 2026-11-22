@@ -509,6 +509,13 @@ test_claude_login_input() (
   if printf '%s' "$capture" | strip_styles 0 | login_box_text 6 >/dev/null; then
     fail 'a login label four rows above the cursor was accepted'
   fi
+  capture=$'Paste code here if prompted >\nEsc to cancel\n! echo shell-mode\n'
+  if printf '%s' "$capture" | login_box_text 2 >/dev/null; then
+    fail 'a column-zero shell prompt left a stale login label active'
+  fi
+  capture=$'Paste code here if prompted >\nEsc to cancel\n  ! for shell mode\n'
+  box=$(printf '%s' "$capture" | login_box_text 2) || fail 'an indented shell footer invalidated the login label'
+  [ -z "$box" ] || fail 'an indented shell footer changed the login input'
   for provider in codex ''; do
     cli_select_pane %9
     rc=0

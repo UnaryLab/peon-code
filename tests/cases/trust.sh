@@ -5,6 +5,48 @@ CASE_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 . "$CASE_DIR/../helpers.sh"
 TEST_DIR=$(cd "$TEST_DIR" && pwd -P)
 
+# shellcheck disable=SC2034,SC2317,SC2329 # Startup hook reads locals and invokes these mocks.
+test_claude_trust_dialog() (
+  local mode RID='' i=0 PANE_IDS=(%9) NAMES=(impl) BRIEF='test brief' PASTE_RC
+  local dialog_log="$TEST_DIR/trust-dialog.log"
+  # shellcheck source=lib/tmux.sh
+  source "$ROOT/lib/tmux.sh"
+  # shellcheck source=lib/input.sh
+  source "$ROOT/lib/input.sh"
+  tmux() {
+    case $1 in
+      show-options) printf 'claude\n' ;;
+      display) printf '0\n' ;;
+      send-keys) printf '%s\n' "$*" >>"$dialog_log" ;;
+      capture-pane)
+        if [ "$mode" = input ]; then
+          printf '❯ try "fix the tests"\n'
+        elif [ "$mode" = no ]; then
+          printf 'Do you trust this folder?\n  1. Yes, I trust this folder\n❯ 2. No, exit\n'
+        elif [ ! -s "$dialog_log" ]; then
+          printf 'Do you trust this folder?\n❯ 1. Yes, I trust this folder\n  2. No, exit\n'
+        else
+          printf '❯ 1. Resume from summary (recommended)\n'
+        fi ;;
+    esac
+  }
+  sleep() { :; }
+  wait_pane_settled() { return 0; }
+  paste_to_pane() { cat >/dev/null; }
+  for mode in trust input no resume; do
+    : >"$dialog_log"
+    RID=''
+    [ "$mode" != resume ] || RID=thread-id
+    claude_brief_after_start
+    case $mode in
+      trust) [ "$(grep -c '^send-keys -t %9 Enter$' "$dialog_log")" = 1 ] || fail 'trust dialog did not get exactly one Enter' ;;
+      input|no) assert_not_contains "$dialog_log" send-keys ;;
+      resume) [ "$(grep -c '^send-keys -t %9 Enter$' "$dialog_log")" = 2 ] || fail 'trust dialog was not answered before the resume picker' ;;
+    esac
+  done
+)
+test_claude_trust_dialog
+
 command -v python3 >/dev/null 2>&1 || { echo 'trust: SKIP (python3 unavailable)'; exit 0; }
 export TRUST_TEST_PYTHON
 TRUST_TEST_PYTHON=$(command -v python3)

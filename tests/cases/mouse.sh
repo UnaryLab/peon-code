@@ -7,11 +7,7 @@ CASE_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 test_explain() {
   local bin_dir log="$TEST_DIR/explain.log" text
   bin_dir=$(make_send_bin "$(make_fake_commands)")
-  text=$(cat <<'TEXT'
-It's "quoted" text, with `backticks` and $(shell syntax).
-A second line: 日本語.
-TEXT
-)
+  text=$'It\'s "quoted" text, with `backticks` and $(shell syntax).\nA second line: 日本語.'
   PATH="$bin_dir:$PATH" FAKE_TMUX_LOG="$log" \
     FAKE_BOX=$'output\n❯\n────' FAKE_CURSOR='2 1' \
     FAKE_BOX_AFTER=$'output\n❯ [Pasted Content 180 chars]\n────' FAKE_CURSOR_AFTER='36 1' \
@@ -32,6 +28,7 @@ TEXT
   assert_not_contains "$log" 'paste-buffer'
   assert_not_contains "$log" 'send-keys'
   assert_contains "$log" 'target box busy after 10 tries'
+  [ -z "$(ls -A "$PEON_DELIVERY_ROOT" 2>/dev/null)" ] || fail "failed explain left a delivery lock"
 
   : >"$log"
   if PATH="$bin_dir:$PATH" FAKE_TMUX_LOG="$log" \

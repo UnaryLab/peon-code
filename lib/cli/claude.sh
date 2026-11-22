@@ -175,6 +175,7 @@ claude_login_prompt() {
 }
 
 claude_brief_after_start() {
+  answer_dialog "${PANE_IDS[$i]}" "*❯ 1. Yes, I trust this folder*"
   # A resumed pane may open on the summary picker; take its default,
   # "Resume from summary", then allow for the compaction that starts:
   # 400 settle tries (~2 min) instead of the usual 100.

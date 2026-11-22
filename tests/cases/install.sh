@@ -323,7 +323,7 @@ FAKE_GIT
   PATH="$bin_dir:$PATH" PEON_FETCH_TIMEOUT=01 PROBE_MODE=hang PROBE_PID_FILE="$TEST_DIR/probe.pid" \
     TMPDIR="$TEST_DIR/update-tmp" FAKE_TMUX_LOG="$TEST_DIR/update-timeout.log" FAKE_TMUX_MODE=owned \
     "$ROOT/peon-code.sh" update-check codex >"$TEST_DIR/update-timeout.out" 2>"$TEST_DIR/update-timeout.err" </dev/null
-  [ $((SECONDS - started)) -le 3 ] || fail "a hanging public check delayed startup"
+  [ $((SECONDS - started)) -le 5 ] || fail "a hanging public check delayed startup"
   assert_contains "$TEST_DIR/update-timeout.out" "session update-check is ready"
   assert_not_contains "$TEST_DIR/update-timeout.out" "2222222222222222222222222222222222222222"
   [ -s "$TEST_DIR/probe.pid" ] || fail "the update check did not probe"

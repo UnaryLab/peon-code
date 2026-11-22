@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Test hooks are invoked by the sourced delivery helpers.
-# shellcheck disable=SC2317
+# shellcheck disable=SC2317,SC2329
 set -euo pipefail
 CASE_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=tests/helpers.sh
@@ -34,7 +34,7 @@ run_delivery() {
   REVIEW_SOCKET="$TEST_DIR/$1" REVIEW_PANE=$2 REVIEW_LABEL=$3 REVIEW_MODE=$4 bash "$runner"
 }
 lock_key=$(printf '%s:%%1' "$TEST_DIR/server-one" | cksum)
-lock_dir=/tmp/peon-code-delivery-$UID/${lock_key%% *}
+lock_dir=$PEON_DELIVERY_ROOT/${lock_key%% *}
 wait_holder() {
   local i
   for ((i = 0; i < 150; i++)); do

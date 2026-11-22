@@ -54,7 +54,9 @@ with_pane_delivery() (
   # for the actual guard PID, so killing the caller cannot unlock a live guard.
   holder=$(exec sh -c 'echo "$PPID"')
   printf '%s\n' "$holder" >"$lock/owner" || { rmdir "$lock" 2>/dev/null || true; return 75; }
-  trap 'rm -f "$lock/owner"; rmdir "$lock" 2>/dev/null || true' EXIT
+  # Bash 3.2 can unwind function locals before the EXIT trap in a command substitution.
+  PEON_DELIVERY_LOCK=$lock
+  trap 'rm -f "$PEON_DELIVERY_LOCK/owner"; rmdir "$PEON_DELIVERY_LOCK" 2>/dev/null || true' EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM HUP
   PEON_DELIVERY_OWNER=$$:$key

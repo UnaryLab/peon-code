@@ -253,6 +253,16 @@ $marker"
 ────
   ! for shell mode'
   pane_is_busy %1 || fail 'shell-mode footer hid the working row'
+  busy_test_screen='output row
+✽ Fermenting… (48s · ↓ 1.9k tokens)
+────
+! echo shell-mode
+output row 1
+output row 2
+output row 3
+output row 4
+  ! for shell mode'
+  pane_is_busy %1 || fail 'distant shell-mode footer replaced the input prompt'
 )
 
 fake_bin=$(make_fake_commands)

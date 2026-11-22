@@ -305,13 +305,13 @@ login_box_text() {
   [ -n "${CLI_LOGIN_PROMPT:-}" ] || return 1
   # Claude hides its cursor up to three rows below the login label; a later prompt means scrollback.
   LC_ALL=C awk -v prompt="$CLI_LOGIN_PROMPT" -v cy="${1:-}" -v markers="$CLI_PROMPT_MARKERS" '
-    BEGIN { marker = "^[ \t]*(" markers ")"; gsub(/!/, "^!", marker) }
+    BEGIN { marker = "^[ \t]*(" markers ")" }
     {
       s = $0; sub(/^[ \t]*/, "", s)
       if (!found && cy ~ /^[0-9]+$/ && NR >= cy - 2 && NR <= cy + 1 && index(s, prompt) == 1) {
         text = substr(s, length(prompt) + 1); found = 1; next
       }
-      if (found && NR <= cy + 1 && markers != "" && $0 ~ marker) invalid = 1
+      if (found && NR <= cy + 1 && markers != "" && $0 ~ marker && $0 !~ /^[ \t]+!/) invalid = 1
       if (found && s == "Esc to cancel") { matched = 1; next }
       if (found && !matched) text = text s
     }
