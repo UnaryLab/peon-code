@@ -230,7 +230,7 @@ key_locked() {
 }
 
 send_locked() {
-  local pane=${1:-} text=${2:-} append=${3:-0} want box i rc reason cursor end_cursor last key login=0 previous=""
+  local pane=${1:-} text=${2:-} append=${3:-0} want box i rc shell_status reason cursor end_cursor last key login=0 previous=""
   # shellcheck disable=SC2015 # Both required arguments must be present.
   [ -n "$pane" ] && [ -n "$text" ] || die "usage: peon-code.sh send [--append] <pane-id> 'text'|-"
   pane_identity_matches "$pane" || die "no message sent: agent changed"
@@ -314,14 +314,16 @@ send_locked() {
     die "no message sent: tmux refused the paste"
   for ((i = 0; i < 25; i++)); do
     sleep 0.2
-    box=$(pane_box_text "$pane") || box=""
+    rc=0
+    box=$(pane_box_text "$pane") || { rc=$?; [ "$rc" -eq 5 ] || box=""; }
     if [ "$box" != "$previous" ]; then previous=$box; continue; fi
-    if box_holds_message "$box" "$want" "$login"; then
+    if box_holds_message "$box" "$want" "$login" "$rc"; then
       pane_takes_keys "$pane" ||
         die "no Enter sent: pane $pane went into copy mode, and the message is in its box for the user to submit"
       pane_identity_matches "$pane" || die "no Enter sent: agent changed"
+      shell_status=$rc
       rc=0
-      submit_paste "$pane" "$want" "$login" || rc=$?
+      submit_paste "$pane" "$want" "$login" "$shell_status" || rc=$?
       case $rc in
         0) echo "peon-code: sent to $pane"; return 0 ;;
         2) die "Enter sent to $pane but submission not confirmed: pane went into copy mode" ;;

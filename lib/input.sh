@@ -64,14 +64,16 @@ paste_checked() {
 
 # A paste can absorb Enter while it is still arriving.
 submit_paste() {
-  local pane=$1 want=$2 login=${3:-0} box previous="" i extra=0
+  local pane=$1 want=$2 login=${3:-0} shell_status=${4:-0} box previous="" i extra=0 rc
   tmux send-keys -t "$pane" Enter || return 4
   for ((i = 0; i < 10; i++)); do
     sleep 0.2
     pane_identity_matches "$pane" || return 3
-    box=$(pane_box_text "$pane") || { previous=""; continue; }
+    rc=0
+    box=$(pane_box_text "$pane") || rc=$?
+    if [ "$rc" -ne 0 ] && [ "$rc:$shell_status" != 5:5 ]; then previous=""; continue; fi
     [ -n "$box" ] || return 0
-    if [ "$box" = "$previous" ] && [ "$extra" -lt 2 ] && box_holds_message "$box" "$want" "$login"; then
+    if [ "$box" = "$previous" ] && [ "$extra" -lt 2 ] && box_holds_message "$box" "$want" "$login" "$rc"; then
       pane_takes_keys "$pane" || return 2
       pane_identity_matches "$pane" || return 3
       tmux send-keys -t "$pane" Enter || return 5
@@ -91,9 +93,16 @@ submit_paste() {
 # leftover hint or one stray character cannot pass as the message; a shorter
 # tail gets no Enter.
 # Spaces are left out of the comparison, since a composer that wraps a long row can break inside a token, so the joined rows hold a space the message does not.
+# A shell-mode read must equal the command after its leading ! is removed.
 box_holds_message() {
   local box=$1 want=$2
   [ -n "$box" ] || return 1
+  if [ "${4:-0}" -eq 5 ]; then
+    [ "${want#!}" != "$want" ] || return 1
+    want=$(printf '%s' "${want#!}" | plain_text)
+    [ "$box" = "$want" ]
+    return
+  fi
   if [ "${3:-0}" = 1 ]; then
     [ "${#box}" -eq "${#want}" ] || return 1
     # Claude masks the code except for its final six characters.
@@ -321,10 +330,12 @@ login_box_text() {
 # What a pane's input box holds: everything from the prompt marker to the end
 # of the cursor's row, with hint text left out. Text after the cursor counts
 # too, so a box whose cursor was moved back to the start still measures busy.
-# Empty output means an empty box. Shell mode prints its text with status 5,
-# so only an explicit key submission accepts it. A menu returns 1; a pane
-# drawing no prompt marker at or above the cursor returns 2, which no wait can
-# change. The menu check reads the capture with its hint text in place: a
+# Empty output means an empty box. Shell mode prints its text with status 5.
+# An explicit key submission accepts it; send also accepts it after pasting
+# a message that starts with ! when the box holds the matching command.
+# A menu returns 1; a pane drawing no prompt marker at or above the cursor
+# returns 2, which no wait can change. The menu check reads the capture with
+# its hint text in place: a
 # dialog draws its "Enter to confirm" footer dim.
 # Dim and gray are the only hint styles modeled. A style the parser does not
 # model can blank text the user typed, so a busy box measures empty and

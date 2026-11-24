@@ -217,6 +217,76 @@ test_paste_submission_retry() (
 )
 test_paste_submission_retry
 
+# shellcheck disable=SC2034,SC2317 # The evaluated send uses these fixture variables and mocks.
+test_claude_shell_send() (
+  local shell_send_mode message rc enters shell_send_capture log="$TEST_DIR/shell-send.log" pasted="$TEST_DIR/shell-paste"
+  # shellcheck source=lib/input.sh
+  source "$ROOT/lib/input.sh"
+  # shellcheck source=lib/delivery.sh
+  source "$ROOT/lib/delivery.sh"
+  eval "$(sed -n '/^send_locked() {/,/^}/p' "$ROOT/lib/commands.sh")"
+  die() { printf '%s\n' "$*" >&2; exit 1; }
+  sleep() { :; }
+  paste_only() { cat >"$pasted"; }
+  tmux() {
+    case $1 in
+      show-options) printf 'claude\n' ;;
+      display)
+        case $4 in '#{pane_current_command}') printf 'claude\n' ;; *) printf '0\n' ;; esac ;;
+      capture-pane)
+        shell_send_capture='❯'
+        case $shell_send_mode in pre_empty) shell_send_capture='!' ;; pre_text) shell_send_capture='! pwd' ;; esac
+        if [ -s "$pasted" ]; then
+          shell_send_capture='! ls'
+          [ "$shell_send_mode" != wrong ] || shell_send_capture='! pwd'
+          enters=$(wc -l <"$log")
+          if [ "$enters" -gt 0 ]; then
+            case $shell_send_mode in
+              retry) [ "$enters" -lt 2 ] || shell_send_capture='❯' ;;
+              empty_shell) shell_send_capture='!' ;;
+              held) : ;;
+              *) shell_send_capture='❯' ;;
+            esac
+          fi
+        fi
+        printf '%s\n' "$shell_send_capture" ;;
+      send-keys) printf '%s\n' "$*" >>"$log" ;;
+    esac
+  }
+  for shell_send_mode in command spaced retry empty_shell held wrong plain pre_empty pre_text; do
+    message='!ls'
+    case $shell_send_mode in spaced) message='! ls' ;; plain) message='ls' ;; esac
+    : >"$pasted"
+    : >"$log"
+    rc=0
+    (send_locked %9 "$message") >"$TEST_DIR/shell-send.out" 2>"$TEST_DIR/shell-send.err" || rc=$?
+    case $shell_send_mode in
+      command|spaced|retry|empty_shell)
+        [ "$rc" -eq 0 ] || fail "shell send $shell_send_mode failed: $(cat "$TEST_DIR/shell-send.err")"
+        assert_contains "$TEST_DIR/shell-send.out" 'sent to %9'
+        enters=1
+        [ "$shell_send_mode" != retry ] || enters=2
+        [ "$(wc -l <"$log")" -eq "$enters" ] || fail "shell send $shell_send_mode sent the wrong number of Enters" ;;
+      held)
+        [ "$rc" -eq 1 ] || fail 'a held shell command reported success'
+        assert_contains "$TEST_DIR/shell-send.err" 'Enter sent to %9 but submission not confirmed'
+        [ "$(wc -l <"$log")" -eq 3 ] || fail 'shell send did not cap the extra Enters at two' ;;
+      *)
+        [ "$rc" -eq 1 ] && [ ! -s "$log" ] || fail "shell send $shell_send_mode submitted an unexpected command"
+        case $shell_send_mode in
+          pre_empty|pre_text)
+            assert_contains "$TEST_DIR/shell-send.err" 'skipped %9: it is in shell mode'
+            [ ! -s "$pasted" ] || fail 'send pasted into an existing shell box'
+            rc=0
+            printf '!ls' | paste_checked %9 || rc=$?
+            [ "$rc" -eq 3 ] && [ ! -s "$pasted" ] || fail 'guarded paste accepted an existing shell box' ;;
+          *) assert_contains "$TEST_DIR/shell-send.err" 'no Enter sent' ;;
+        esac ;;
+    esac
+  done
+)
+test_claude_shell_send
+
 test_interrupted_launch() (
   local launch_phase=$1 launch_socket="peon-launch-interrupt-$$-$1" launch_session="launch-interrupt-$$-$1"
   local bin_dir="$TEST_DIR/interrupt-bin" work_dir="$TEST_DIR/interrupt-work" real_tmux
