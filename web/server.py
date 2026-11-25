@@ -282,7 +282,8 @@ class Handler(BaseHTTPRequestHandler):
                                     tmux("select-layout", "-t", window, "main-vertical")
                                     tmux("set-option", "-u", "-t", session, "@peon_pane_order")
                                 continue
-                            if session != resize_session or not any(pane["id"] == target and pane["session"] == session for pane in current):
+                            viewed = next((pane for pane in current if pane["id"] == target and pane["session"] == session), None)
+                            if session != resize_session or viewed is None:
                                 continue
                             if not tmux("show-options", "-qv", "-t", session, "@peon_pane_order").strip():
                                 order = tmux("list-panes", "-t", window, "-F", "#{pane_id}").split()
@@ -297,8 +298,10 @@ class Handler(BaseHTTPRequestHandler):
                                     tmux("break-pane", "-d", "-s", pane, "-t", "=" + session + ":", "-n", "p" + pane[1:])
                             window = tmux("display-message", "-p", "-t", target, "#{window_id}").strip()
                             width, height, pane_height = map(int, tmux("display-message", "-p", "-t", window, "#{window_width}\t#{window_height}\t#{pane_height}").split())
+                            # Claude can omit table headers when its input and footer fill a short pane.
+                            content_rows = max(rows, 12) if viewed.get("cli") == "claude" else rows
                             # A single broken pane has no border; agents retains its top border row.
-                            desired_height = rows + height - pane_height
+                            desired_height = content_rows + height - pane_height
                             if (width, height) != (cols, desired_height):
                                 tmux("resize-window", "-t", window, "-x", str(cols), "-y", str(desired_height))
                         except (OSError, subprocess.TimeoutExpired, subprocess.CalledProcessError, ValueError):

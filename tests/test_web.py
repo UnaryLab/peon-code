@@ -451,6 +451,20 @@ class WebTests(unittest.TestCase):
         self.assertEqual(fake.sizes, {"team:p2": "120x35"})
         self.assertNotIn("select-layout", [call.args[0] for call in tmux.call_args_list])
 
+    def test_browser_size_keeps_room_for_claude_table_headers(self):
+        for cli in ("claude", "codex", ""):
+            for rows in (7, 12, 35):
+                group = [dict(id="%" + str(index), session="team", cli=cli) for index in (1, 2, 3)]
+                fake = SizingTmux(group)
+                with self.subTest(cli=cli, rows=rows), patch.object(web, "panes", return_value=group), patch.object(web, "tmux", side_effect=fake) as tmux, patch.object(web, "snapshot", side_effect=lambda pane, *args: pane) as snapshot:
+                    for _ in range(2):
+                        status, _ = self.request("GET", f"/api/panes?cols=120&rows={rows}&session=team&pane=%252")
+                        self.assertEqual(status, 200)
+                    height = max(12, rows) if cli == "claude" else rows
+                    self.assertEqual(fake.sizes, {"team:p2": f"120x{height}"})
+                    self.assertEqual(len([call for call in tmux.call_args_list if call.args[0] == "resize-window"]), 1)
+                    snapshot.assert_any_call(group[1], 1000, rows)
+
     def test_browser_size_empty_window_id_leaves_poll_available(self):
         group = [dict(id="%" + str(index), session="team") for index in (1, 2, 3)]
         fake = SizingTmux(group)
