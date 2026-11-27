@@ -84,10 +84,15 @@ dialog footer { padding-top: 12px; }
 .button-form label:last-of-type { flex-basis: 100%; }
 .swap-form { padding: 0; }
 .button-form input, .swap-form input, .swap-form select { width: 100%; min-width: 0; font: inherit; border: 1px solid var(--line); border-radius: 4px; padding: 4px; }
-#new-session-form { flex-wrap: wrap; padding: 8px 0; }
+#new-session-form { --control-height: 29px; flex-wrap: wrap; padding: 8px 0; }
+#new-session-form button { align-self: flex-end; line-height: 17px; }
 #new-session-form label { display: flex; flex: 1 1 240px; flex-direction: column; gap: 4px; min-width: 0; font-size: 13px; }
-#new-session-form input, #new-session-form select { width: 100%; min-width: 0; font: inherit; border: 1px solid var(--line); border-radius: 4px; padding: 4px; }
-#config-help { color: var(--muted); }
+#new-session-form label:has(select) { flex: 0 0 96px; }
+#new-session-form label:has(select[name="teams"]) { flex-basis: 134px; }
+#new-session-form label:has(input[type="file"]) { flex: 0 1 200px; }
+#new-session-form input, #new-session-form select { width: 100%; height: var(--control-height); min-width: 0; font: inherit; border: 1px solid var(--line); border-radius: 4px; padding: 4px; }
+#new-session-form input[type="file"] { padding: 2px 4px; }
+#new-session-form input[type="file"]::file-selector-button { font: inherit; padding: 0 4px; }
 .keys, .key-buttons, .key-shortcuts { display: flex; align-items: center; justify-content: flex-start; gap: 4px; flex-wrap: wrap; }
 .keys { flex-shrink: 0; padding: 0 12px 4px; }
 .keys button, .font-smaller, .font-larger, .add-screen, .close-screen, .stack-order { background: transparent; font-size: 12px; padding: 2px 6px; touch-action: none; user-select: none; }

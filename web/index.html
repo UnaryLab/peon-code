@@ -24,8 +24,8 @@
       <label>Project directory<input name="directory" required placeholder="Absolute or ~ path, resolved on the agent host"></label>
       <label>Session name (optional)<input name="session" placeholder="Folder basename; dots and colons become underscores"></label>
       <label>Resume<select name="resume"><option value="yes">Yes</option><option value="no">No</option></select></label>
-      <label>Saved teams<select name="teams" disabled><option value="all">Saved teams: launch</option><option value="single">Saved teams: skip</option></select></label>
-      <label>Team config (optional)<input name="config" type="file" aria-describedby="config-help"><small id="config-help">Local UTF-8 file, up to 200 KiB. Uploaded to the agent host.</small></label>
+      <label>Saved teams<select name="teams" disabled><option value="all">Launch</option><option value="single">Skip</option></select></label>
+      <label>Team config (optional)<input name="config" type="file"></label>
       <button type="submit">Start session</button>
       <button type="button" class="cancel">Cancel</button>
     </form>

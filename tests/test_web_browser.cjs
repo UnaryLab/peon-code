@@ -477,15 +477,15 @@ const assert = require('node:assert/strict');
     await page.waitForTimeout(2100);
     assert(await tooltip.isHidden(), 'Mouse focus after a click does not show help');
     const focusedTip = page.locator('.font-larger');
-    await focusedTip.evaluate(el => el.setAttribute('aria-describedby', 'config-help'));
+    await focusedTip.evaluate(el => el.setAttribute('aria-describedby', 'add-team-status'));
     await page.locator('.font-smaller').focus();
     await page.keyboard.press('Tab');
     await tooltip.waitFor({state: 'visible'});
     assert.equal(await tooltip.textContent(), 'Larger output text');
-    assert.equal(await focusedTip.getAttribute('aria-describedby'), 'config-help tip');
+    assert.equal(await focusedTip.getAttribute('aria-describedby'), 'add-team-status tip');
     await focusedTip.press('Escape');
     assert(await tooltip.isHidden(), 'A key hides help');
-    assert.equal(await focusedTip.getAttribute('aria-describedby'), 'config-help');
+    assert.equal(await focusedTip.getAttribute('aria-describedby'), 'add-team-status');
     await focusedTip.evaluate(el => el.removeAttribute('aria-describedby'));
     assert.equal(await page.locator('.pane:not([hidden])').getAttribute('data-pane'), '%3');
     const agentTabs = teamGroup('alpha').locator('button');
@@ -1644,9 +1644,13 @@ const assert = require('node:assert/strict');
     assert.equal(await newForm.locator('[name="directory"]').getAttribute('placeholder'), 'Absolute or ~ path, resolved on the agent host');
     assert(await newForm.locator('[name="directory"]').evaluate(el => el === document.activeElement));
     assert.deepEqual(await newForm.locator('button').allTextContents(), ['Start session', 'Cancel']);
+    assert.equal(await newForm.locator('[name="config"]').getAttribute('aria-describedby'), null);
+    assert(await newForm.locator('[name="config"]').isVisible());
+    assert.equal(await newForm.locator('small').count(), 0);
     assert.deepEqual(await newForm.locator('input').evaluateAll(inputs => inputs.map(input => input.name)), ['directory', 'session', 'config']);
     assert.deepEqual(await newForm.locator('input, select').evaluateAll(fields => fields.map(field => field.name)), ['directory', 'session', 'resume', 'teams', 'config']);
     assert.equal(await newForm.locator('[name="resume"]').inputValue(), 'yes');
+    assert.deepEqual(await newForm.locator('[name="teams"] option').allTextContents(), ['Launch', 'Skip']);
     assert(await newForm.locator('[name="teams"]').isDisabled());
     await newForm.locator('[name="resume"]').selectOption('no');
     assert(await newForm.locator('[name="teams"]').isEnabled());
@@ -1655,9 +1659,43 @@ const assert = require('node:assert/strict');
     assert(await newForm.locator('[name="teams"]').isDisabled());
     await newForm.locator('.cancel').click();
     assert(await newSession.evaluate(el => el === document.activeElement));
-    for (const viewport of [{width: 1440, height: 950}, {width: 390, height: 812}]) {
+    for (const viewport of [{width: 1440, height: 950}, {width: 1280, height: 800}, {width: 390, height: 812}]) {
       await page.setViewportSize(viewport);
       await newSession.click();
+      const sizes = await newForm.locator('input, select').evaluateAll(fields => fields.map(field => {
+        const box = field.getBoundingClientRect();
+        return {height: box.height, width: box.width, top: box.top, bottom: box.bottom, labelTop: field.closest('label').getBoundingClientRect().top};
+      }));
+      const buttonHeights = await newForm.locator('button').evaluateAll(buttons => buttons.map(button => button.getBoundingClientRect().height));
+      assert(buttonHeights.every(height => sizes.every(field => field.height === height)), 'All five fields match both button heights');
+      assert.deepEqual(sizes.slice(2, 4).map(field => field.width), [96, 134], 'Selects keep their fixed widths');
+      if (viewport.width >= 1280) {
+        assert.equal(new Set(sizes.map(field => field.top)).size, 1, 'All five boxes share one line');
+        assert.equal(new Set(sizes.map(field => field.labelTop)).size, 1, 'All five labels share one line');
+        const buttons = await newForm.locator('button').evaluateAll(buttons => buttons.map(button => {
+          const box = button.getBoundingClientRect();
+          return {top: box.top, bottom: box.bottom, height: box.height};
+        }));
+        for (const button of buttons) {
+          for (const field of sizes) assert.deepEqual(button, {top: field.top, bottom: field.bottom, height: field.height}, 'All five fields match both buttons in height and edges');
+        }
+        const fields = await newForm.locator('input[name="directory"], input[name="session"]').evaluateAll(inputs => inputs.map(input => {
+          const style = getComputedStyle(input), measure = document.createElement('canvas').getContext('2d');
+          measure.font = style.font;
+          return {name: input.name, available: input.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight), needed: measure.measureText(input.placeholder).width};
+        }));
+        for (const field of fields) assert(field.available >= field.needed, `${field.name} placeholder fits at ${viewport.width}px`);
+        if (viewport.width === 1280) {
+          await newForm.evaluate(form => { form.style.fontFamily = '"DejaVu Sans", sans-serif'; });
+          const fallbackBoxes = await newForm.locator('input, select, button').evaluateAll(controls => controls.map(control => {
+            const box = control.getBoundingClientRect();
+            return {top: box.top, bottom: box.bottom, height: box.height};
+          }));
+          for (const box of fallbackBoxes) assert.deepEqual(box, fallbackBoxes[0], 'Fallback font preserves matching control heights and edges');
+          await newForm.evaluate(form => { form.style.removeProperty('font-family'); });
+        }
+      }
+      assert(await newForm.evaluate(form => form.scrollWidth <= form.clientWidth), 'Session form wraps without horizontal overflow');
       assert((await newForm.boundingBox()).height <= viewport.height * 0.61, 'Session form stays within the viewport');
       const start = newForm.locator('[type="submit"]');
       await start.scrollIntoViewIfNeeded();
