@@ -90,6 +90,7 @@ weird    claude                                       ./my-roles/chaos.md
 - Names match `[A-Za-z0-9_-]+` and are unique. `director` is reserved. A leading `*` marks the main agent, on one line at most.
 - The role is required; `-` means none. A bare role name reads `roles/<name>.md` next to `peon-code.sh`, else next to the config. A role with a `/` is a path relative to the config.
 - `compact-at <tokens>` compacts a claude or codex pane whose context reaches that size; default 250000, `0` for off.
+  A running session applies edits within one scan (default 5 seconds). A session launched with `compact-at 0` and `restart-dead no` needs a restart.
 - `restart-dead yes|no` restarts an agent whose pane falls back to a shell, at most 3 times an hour; default `yes`. An agent you quit on purpose also comes back.
 - `team <name> <file>` adds a [team](#teams).
 - Full-line `#` comments and blank lines are skipped; inline comments are not. A config error aborts before the session is built.

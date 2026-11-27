@@ -932,6 +932,8 @@ refresh().then(parameters => {document.querySelector('#result').textContent = JS
             run.assert_called_once_with([str(ROOT / "peon-code.sh"), "add-team", "--session", "team"], "", "", timeout=300)
             self.assertEqual(self.request("POST", "/api/team", dict(session="team", save=True))[0], 200)
             run.assert_called_with([str(ROOT / "peon-code.sh"), "add-team", "--session", "team", "--save"], "", "", timeout=300)
+            self.assertEqual(self.request("POST", "/api/team", dict(session="team", resume=True, single_team=True))[0], 200)
+            run.assert_called_with([str(ROOT / "peon-code.sh"), "add-team", "--session", "team"], "", "", timeout=300)
         with patch.object(web, "run_delivery", return_value=subprocess.CompletedProcess([], 1, "", "Team already exists")):
             status, body = self.request("POST", "/api/team", dict(session="team", team="research"))
             self.assertEqual((status, json.loads(body)), (409, {"error": "Team already exists"}))
@@ -1087,16 +1089,17 @@ refresh().then(parameters => {document.querySelector('#result').textContent = JS
             self.skipTest("Node is required to test browser confirmation")
         source = (ROOT / "web/app.js").read_text()
         api = source[source.index("async function api("):source.index("const newSession =")]
+        settings = source[source.index("newSessionForm.elements.resume.onchange ="):source.index("async function configFields(")]
         upload = source[source.index("async function configFields("):source.index("function closeNewSession()")]
         submit = source[source.index("newSessionForm.onsubmit ="):source.index("document.querySelector('#dismiss')")]
         script = '''const assert = require('node:assert/strict');
-async function check(approved, retryFails = false, teams = 'all') {
+async function check(approved, retryFails = false, teams = 'all', resume = 'yes') {
   const token = '', calls = [], button = {disabled: false};
   const message = 'Project folder does not exist: /resolved/new.team';
   let prompts = 0, openedSession, closed = false;
   const newSessionStatus = {classList: {remove() {}, add() {}}};
-  const newSessionForm = {elements: {directory: {value: '~/new.team'}, session: {value: ''}, config: {files: []}, teams: {value: teams}},
-    querySelector: () => button, reset() {}};
+  const newSessionForm = {elements: {directory: {value: '~/new.team'}, session: {value: ''}, config: {files: []}, teams: {value: teams}, resume: {value: resume}},
+    querySelector: () => button, reset() {this.elements.resume.value = 'yes';}};
   async function fetch(path, options) {
     assert.equal(path, '/api/open');
     calls.push(JSON.parse(options.body));
@@ -1110,17 +1113,21 @@ async function check(approved, retryFails = false, teams = 'all') {
   }
   function closeNewSession() {closed = true;}
   async function refresh() {}
-''' + api + upload + submit + '''
+''' + api + settings + upload + submit + '''
+  newSessionForm.elements.resume.onchange();
+  assert.equal(newSessionForm.elements.teams.disabled, resume === 'yes');
   await newSessionForm.onsubmit({preventDefault() {}});
   assert.equal(prompts, 1);
   assert.equal(calls.length, approved ? 2 : 1);
-  assert.deepEqual(calls[0], {directory: '~/new.team', single_team: teams === 'single'});
-  if (approved) assert.deepEqual(calls[1], {directory: '/resolved/new.team', single_team: teams === 'single', create: true});
+  const options = {resume: resume === 'yes', single_team: resume === 'no' && teams === 'single'};
+  assert.deepEqual(calls[0], {directory: '~/new.team', ...options});
+  if (approved) assert.deepEqual(calls[1], {directory: '/resolved/new.team', ...options, create: true});
   assert.equal(button.disabled, false);
   assert.equal(closed, approved && !retryFails);
   assert.equal(newSessionStatus.textContent, approved && !retryFails ? '' : message);
+  if (approved && !retryFails) assert.equal(newSessionForm.elements.teams.disabled, true);
 }
-(async () => {await check(false); await check(true); await check(true, true); await check(true, false, 'single');})()
+(async () => {await check(false); await check(true); await check(true, true); await check(true, false, 'single'); await check(true, false, 'single', 'no');})()
   .catch(error => {console.error(error); process.exitCode = 1;});'''
         result = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=10)
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -1135,7 +1142,7 @@ async function check(approved, retryFails = false, teams = 'all') {
             with self.subTest(session=session), patch.object(web, "open_project", return_value="custom_team") as start:
                 status, body = self.request("POST", "/api/open", data)
                 self.assertEqual((status, json.loads(body)), (200, {"session": "custom_team"}))
-                start.assert_called_once_with(SimpleNamespace(directory=directory, session=session or "", config=None, single_team=False), ROOT, timeout=300, create=False)
+                start.assert_called_once_with(SimpleNamespace(directory=directory, session=session or "", config=None, single_team=False, resume=False), ROOT, timeout=300, create=False)
                 self.assertIsNone(self.server.session)
                 with patch.object(web, "snapshot", side_effect=lambda pane: pane), patch.object(web, "panes", return_value=[dict(id="%3", session="custom_team")]) as panes:
                     status, body = self.request("GET", "/api/panes")
@@ -1162,6 +1169,44 @@ async function check(approved, retryFails = false, teams = 'all') {
                 for value in ("true", 1, None):
                     self.assertEqual(self.request("POST", "/api/open", dict(directory=directory, single_team=value))[0], 400)
                 start.assert_not_called()
+
+    def test_open_resume_controls_launcher_command_with_uploads(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(web.Path, "home", return_value=Path(directory)):
+            for resume in (False, True):
+                for single_team in (False, True):
+                    for upload in (False, True):
+                        data = dict(directory=directory, session="browser", resume=resume, single_team=single_team)
+                        if upload:
+                            data.update(config_name="team.conf", config_text="boss codex -\n")
+                        process = Mock(returncode=0)
+                        process.communicate.return_value = ("ready", "")
+                        with self.subTest(resume=resume, single_team=single_team, upload=upload), patch.object(web, "open_project", wraps=launch.open_project) as start, patch.object(launch.subprocess, "run", return_value=subprocess.CompletedProcess([], 1)), patch.object(launch.subprocess, "Popen", return_value=process) as popen, patch.object(launch, "verify_project"), contextlib.redirect_stderr(io.StringIO()):
+                            status, body = self.request("POST", "/api/open", data)
+                            self.assertEqual((status, json.loads(body)), (200, {"session": "browser"}))
+                            args = start.call_args.args[0]
+                            self.assertIs(args.resume, resume)
+                            self.assertIs(args.single_team, single_team and not resume)
+                            expected = [str(ROOT / "peon-code.sh")]
+                            if upload:
+                                self.assertEqual(args.config.name, "team.conf")
+                                expected.extend(["-c", str(args.config)])
+                            if resume:
+                                expected.append("resume")
+                            elif single_team:
+                                expected.append("--single-team")
+                            self.assertEqual(popen.call_args.args[0], expected + ["browser"])
+            with patch.object(web, "open_project") as start:
+                for value in ("true", 1, None, []):
+                    self.assertEqual(self.request("POST", "/api/open", dict(directory=directory, resume=value))[0], 400)
+                start.assert_not_called()
+
+    def test_open_resume_uses_existing_session_without_launch(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(launch.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)), patch.object(launch.subprocess, "Popen") as popen, patch.object(launch, "verify_project") as verify:
+            for resume in (False, True):
+                with patch.object(web, "open_project", wraps=launch.open_project):
+                    self.assertEqual(self.request("POST", "/api/open", dict(directory=directory, session="browser", resume=resume, single_team=True))[0], 200)
+            popen.assert_not_called()
+            self.assertEqual(verify.call_count, 2)
 
     def test_open_uploads_are_private_unique_and_ignore_xdg(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(web.Path, "home", return_value=Path(directory)):

@@ -94,6 +94,9 @@ async function api(path, data) {
 const newSession = document.querySelector('#new-session');
 const newSessionForm = document.querySelector('#new-session-form');
 const newSessionStatus = document.querySelector('#new-session-status');
+newSessionForm.elements.resume.onchange = () => {
+  newSessionForm.elements.teams.disabled = newSessionForm.elements.resume.value === 'yes';
+};
 async function configFields(file) {
   if (!file) return {};
   if (file.size > 200 * 1024) throw new Error('Team config must be at most 200 KiB.');
@@ -130,7 +133,8 @@ newSessionForm.onsubmit = async event => {
   newSessionStatus.classList.remove('error');
   newSessionStatus.textContent = 'Starting session...';
   try {
-    const data = {directory: newSessionForm.elements.directory.value, single_team: newSessionForm.elements.teams.value === 'single'};
+    const resume = newSessionForm.elements.resume.value === 'yes';
+    const data = {directory: newSessionForm.elements.directory.value, resume, single_team: !resume && newSessionForm.elements.teams.value === 'single'};
     const session = newSessionForm.elements.session.value.trim();
     if (session) data.session = session;
     Object.assign(data, await configFields(newSessionForm.elements.config.files[0]));
@@ -145,6 +149,7 @@ newSessionForm.onsubmit = async event => {
     newSessionStatus.hidden = true;
     newSessionStatus.textContent = '';
     newSessionForm.reset();
+    newSessionForm.elements.resume.onchange();
     closeNewSession();
     await refresh();
   } catch (error) {

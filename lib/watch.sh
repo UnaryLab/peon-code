@@ -157,6 +157,7 @@ cmd_watch() {
   local session threshold panes id name bin file new_file tokens weekly usage owner pid_file
   local now size last_size last_lookup min=${PEON_WATCH_MIN:-60}
   local last_beat=0 beat_time
+  local conf conf_hash last_conf="" last_conf_hash="" new_threshold
   local created stamp ref exit_trap cleanup restart current state count launch capture hash last_hash pending
   local unwatched="" disarmed="" files="" reads="" lookups=""
   local compacts="" compact_size compact_count new_count rebrief_rc
@@ -191,6 +192,24 @@ cmd_watch() {
   while tmux has-session -t "=$session" 2>/dev/null; do
     owner=$(tmux show-options -qv -t "=$session:" @peon_watch_pid 2>/dev/null) || owner=""
     [ -z "$owner" ] || [ "$owner" = "$$" ] || break
+    conf=$(tmux show-options -qv -t "=$session:" @peon_conf 2>/dev/null) || conf=""
+    conf_hash=$(cksum 2>/dev/null <"$conf") || conf_hash=""
+    if [ "$conf" != "$last_conf" ] || [ "$conf_hash" != "$last_conf_hash" ]; then
+      last_conf=$conf
+      last_conf_hash=$conf_hash
+      if [ -n "$conf_hash" ]; then
+        new_threshold=$(awk '
+          $1 == "compact-at" { value = (NF == 2 && $2 ~ /^[0-9]+$/) ? $2 : "" }
+          END { print value }' "$conf" 2>/dev/null) || new_threshold=""
+        if [[ $new_threshold =~ ^[0-9]+$ ]] && [ "$new_threshold" != "$threshold" ]; then
+          threshold=$new_threshold
+          tmux set-option -t "=$session:" @peon_compact_at "$threshold" 2>/dev/null || true
+          # Recheck unchanged transcripts against the new threshold on this scan.
+          reads=""
+          watch_note "$session" "compact-at changed to $threshold tokens"
+        fi
+      fi
+    fi
     if [ "$restart" = 1 ]; then
       panes=$(tmux list-panes -s -t "=$session" -F '#{pane_id} #{@peon_name}' 2>/dev/null) || panes=""
     else

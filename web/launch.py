@@ -296,7 +296,9 @@ def open_project(args, root, timeout=None, create=False):
     command = [str(root / "peon-code.sh")]
     if config:
         command.extend(["-c", str(Path(config).expanduser().resolve())])
-    if getattr(args, "single_team", False):
+    if getattr(args, "resume", False):
+        command.append("resume")
+    elif getattr(args, "single_team", False):
         command.append("--single-team")
     command.append(session)
     if timeout is None:

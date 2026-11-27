@@ -880,6 +880,74 @@ test_weekly_watch() (
 )
 test_weekly_watch
 
+test_watch_config_threshold() (
+  local session="peon-watch-config-$$" ticks=0 conf_path="" config="$TEST_DIR/watch config.conf"
+  local transcript="$TEST_DIR/watch-config.jsonl" log="$TEST_DIR/watch-config.log"
+  local read_log="$TEST_DIR/watch-config-reads" notes="$TEST_DIR/watch-config-notes"
+  # shellcheck disable=SC2030 # The compact stub belongs only to this test's subshell.
+  local SCRIPT_DIR="$TEST_DIR/watch-config-bin" WATCH_COMPACT_LOG="$TEST_DIR/watch-config-compacts"
+  export WATCH_COMPACT_LOG
+  # shellcheck source=lib/watch.sh
+  source "$ROOT/lib/watch.sh"
+  mkdir -p "$SCRIPT_DIR"
+  : >"$transcript"; : >"$log"; : >"$read_log"; : >"$notes"; : >"$WATCH_COMPACT_LOG"
+  cat >"$SCRIPT_DIR/peon-code.sh" <<'COMPACT'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$WATCH_COMPACT_LOG"
+COMPACT
+  chmod +x "$SCRIPT_DIR/peon-code.sh"
+  tmux() {
+    case $1 in
+      display) echo 100 ;;
+      has-session) ticks=$((ticks + 1)); [ "$ticks" -le 18 ]; return ;;
+      show-options)
+        case $* in
+          *@peon_conf*) printf '%s\n' "$conf_path" ;;
+          *@peon_bin*) echo codex ;;
+        esac ;;
+      set-option)
+        case $* in *@peon_compact_at*) printf '%s %s\n' "$ticks" "${@: -1}" >>"$log" ;; esac ;;
+    esac
+    return 0
+  }
+  session_name() { echo "$1"; }
+  list_agent_panes() { printf '%%0 impl\n'; }
+  last_thread_file() { echo "$transcript"; }
+  context_tokens() { echo "$ticks" >>"$read_log"; echo 500; }
+  watch_note() { printf '%s %s\n' "$ticks" "$2" >>"$notes"; }
+  date() { if [ "$1" = +%s ]; then echo 100; else command date "$@"; fi; }
+  sleep() {
+    case $ticks in
+      1) conf_path=$config ;;
+      2) printf 'restart-dead no\n' >"$config" ;;
+      3) printf 'compact-at bad\n' >"$config" ;;
+      4) printf '# threshold\n\tcompact-at 800\n' >"$config" ;;
+      6) printf 'compact-at 0\n' >"$config" ;;
+      7) printf 'compact-at 1.5\n' >"$config" ;;
+      8) printf 'compact-at 100\n' >"$config" ;;
+      9) printf '# unrelated edit\ncompact-at 100\n' >"$config" ;;
+      10) printf 'compact-at 800\n' >"$config" ;;
+      11) printf 'compact-at 100\n' >"$config" ;;
+      12) mv "$config" "$config.old" ;;
+      13) printf 'compact-at 900' >"$config" ;;
+      14) printf 'compact-at 20 extra\n' >"$config" ;;
+      15) printf 'compact-at -1\n' >"$config" ;;
+      16) conf_path="" ;;
+      17) conf_path=$config; printf 'restart-dead no\n' >"$config" ;;
+    esac
+  }
+  PEON_WATCH_MIN=60 cmd_watch "$session" 1000 2>"$TEST_DIR/watch-config.err"
+  [ "$ticks" -eq 19 ] || fail 'config edit stopped the watcher'
+  [ "$(cat "$log")" = "$(printf '5 800\n7 0\n9 100\n11 800\n12 100\n14 900\n')" ] ||
+    fail "watch did not retain or update the threshold correctly: $(cat "$log")"
+  [ "$(cat "$read_log")" = "$(printf '1\n5\n9\n11\n12\n14\n')" ] ||
+    fail "watch did not recheck unchanged transcripts only on threshold changes: $(cat "$read_log")"
+  [ "$(grep -c '^compact ' "$WATCH_COMPACT_LOG")" -eq 2 ] || fail 'watch did not compact after enabling or lowering the threshold'
+  [ "$(grep -c 'compact-at changed to' "$notes")" -eq 6 ] || fail 'watch did not announce each threshold change once'
+  [ ! -s "$TEST_DIR/watch-config.err" ] || fail "config read wrote an error: $(cat "$TEST_DIR/watch-config.err")"
+)
+test_watch_config_threshold
+
 test_watch_new_transcript() (
   local socket="peon-watch-new-test-$$" session="watch-new-test-$$" pane ticks=0
   local transcripts="$TEST_DIR/watch-transcripts" old_transcript new_transcript
